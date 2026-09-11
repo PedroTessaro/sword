@@ -1,0 +1,41 @@
+{
+  "name": "sword",
+  "displayName": "Sword",
+  "description": "Language support for Sword: diagnostics and theme-aware semantic highlighting.",
+  "version": "0.1.0",
+  "publisher": "sword",
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:sword"],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "sword",
+        "aliases": ["Sword", "sword"],
+        "extensions": [".sw"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "sword",
+        "scopeName": "source.sword",
+        "path": "./syntaxes/sword.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Sword",
+      "properties": {
+        "sword.serverPath": {
+          "type": "string",
+          "default": "swordls",
+          "description": "Path to the swordls binary."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

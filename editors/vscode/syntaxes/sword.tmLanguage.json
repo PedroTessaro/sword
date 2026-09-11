@@ -1,0 +1,68 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Sword",
+  "scopeName": "source.sword",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#errors" },
+    { "include": "#numbers" },
+    { "include": "#functions" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.sword", "match": "//.*$" },
+        {
+          "name": "comment.block.sword",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.sword",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        { "name": "constant.character.escape.sword", "match": "\\\\[nrt0\\\\\"']" }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.sword",
+          "match": "\\b(if|else|for|in|return|break|continue|try|catch|orelse|defer|errdefer|scope|spawn|parallel|reduce)\\b"
+        },
+        {
+          "name": "keyword.declaration.sword",
+          "match": "\\b(package|import|func|struct|interface|extern|const|chan|shared)\\b"
+        },
+        { "name": "storage.modifier.sword", "match": "\\bmut\\b" },
+        { "name": "constant.language.sword", "match": "\\b(true|false|nil)\\b" }
+      ]
+    },
+    "types": {
+      "name": "support.type.primitive.sword",
+      "match": "\\b(void|bool|string|error|int|uint|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64)\\b"
+    },
+    "errors": {
+      "name": "variable.other.enummember.sword",
+      "match": "\\berror\\.[A-Za-z_][A-Za-z0-9_]*"
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.hex.sword", "match": "\\b0x[0-9A-Fa-f_]+\\b" },
+        { "name": "constant.numeric.binary.sword", "match": "\\b0b[01_]+\\b" },
+        { "name": "constant.numeric.octal.sword", "match": "\\b0o[0-7_]+\\b" },
+        { "name": "constant.numeric.sword", "match": "\\b[0-9][0-9_]*(\\.[0-9][0-9_]*)?([eE][-+]?[0-9]+)?\\b" }
+      ]
+    },
+    "functions": {
+      "name": "entity.name.function.sword",
+      "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
+    }
+  }
+}
