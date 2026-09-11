@@ -1,0 +1,85 @@
+#pragma once
+
+#include "types.h"
+
+#include <cstdio>
+#include <deque>
+#include <string>
+#include <vector>
+
+enum IrOp {
+  IR_CONST,
+  IR_ALLOCA,
+  IR_LOAD,
+  IR_STORE,
+  IR_MEMCPY, // a = dst, b = src, imm = bytes
+  IR_ZERO,   // a = dst, imm = bytes
+
+  IR_ADD, IR_SUB, IR_MUL, IR_DIV, IR_MOD,
+  IR_AND, IR_OR, IR_XOR, IR_SHL, IR_SHR,
+  IR_EQ, IR_NE, IR_LT, IR_LE, IR_GT, IR_GE,
+  IR_NEG, IR_NOT, IR_CAST,
+  IR_ATOMIC_ADD, // a = destination, b = value
+  IR_OVF, // imm = the arithmetic IrOp being tested; yields the overflow bit
+
+  IR_GEP_FIELD, // a = base, imm = field index, type = the struct
+  IR_GEP_INDEX, // a = base, b = index, type = element
+  IR_STR_VALUE, // imm = string id, yields a ptr to the {ptr, len} constant
+  IR_STR_DATA,  // imm = string id, yields a ptr to the bytes
+  IR_VTABLE,    // imm = vtable id, yields a ptr to the method table
+  IR_FUNCADDR,  // callee = function name, yields its address
+
+  IR_CALL,
+  IR_BR,
+  IR_CONDBR,
+  IR_RET,
+  IR_UNREACHABLE,
+};
+
+struct IrInst {
+  IrOp op;
+  int dst = -1;   // result value id, -1 when the instruction yields nothing
+  int a = -1;     // first operand / condition / stored value
+  int b = -1;     // second operand / store destination
+  int64_t imm = 0;
+  Type *type = nullptr; // result type, or the type moved by load/store
+  std::string callee; // empty for an indirect call, which uses `a` instead
+  std::vector<int> args;
+  int target = -1;  // branch destination
+  int target2 = -1; // false destination of a conditional branch
+};
+
+struct IrBlock {
+  int id = 0;
+  std::vector<IrInst> insts;
+};
+
+struct IrFunc {
+  std::string name;
+  std::vector<Type *> params;
+  Type *ret = nullptr;
+  bool is_extern = false;
+  // Aggregate returns go through a hidden pointer parameter, ahead of the
+  // declared ones.
+  bool ret_by_pointer = false;
+  std::vector<IrBlock> blocks;
+  std::vector<Type *> value_type; // indexed by value id
+};
+
+struct IrModule {
+  // A deque: lowering holds a pointer to the function it is building while
+  // task thunks are appended alongside it.
+  std::deque<IrFunc> funcs;
+  std::vector<std::string> strings;
+  std::vector<Type *> structs; // every struct type the backend must name
+  std::vector<std::vector<std::string>> vtables;
+
+  int intern(const std::string &text) {
+    for (size_t i = 0; i < strings.size(); i++)
+      if (strings[i] == text) return (int)i;
+    strings.push_back(text);
+    return (int)strings.size() - 1;
+  }
+};
+
+void ir_print(const IrModule &mod, FILE *out);
