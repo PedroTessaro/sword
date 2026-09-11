@@ -1424,11 +1424,15 @@ struct Lowerer {
   // `defer` that frees scratch memory cannot clobber what is being returned.
   void return_stmt(Node *n) {
     if (!ret->is_error_union) {
-      int value = n->lhs ? expr(n->lhs) : -1;
-      if (sret >= 0 && value >= 0) {
-        copy(sret, value, n->lhs->type);
-        value = -1;
+      // Through the out pointer this goes via assign_into, which is where an
+      // optional gets wrapped around a plain value.
+      if (sret >= 0 && n->lhs) {
+        assign_into(sret, n->lhs, ret);
+        emit_defers(0, false);
+        emit_ret(-1, nullptr);
+        return;
       }
+      int value = n->lhs ? expr(n->lhs) : -1;
       emit_defers(0, false);
       emit_ret(value, n->lhs ? n->lhs->type : nullptr);
       return;
