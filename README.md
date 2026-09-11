@@ -48,6 +48,15 @@ make
 make install
 ```
 
+```sword
+import "std/io"
+
+func main() !int {
+    try io.Printf("{} workers, {.1}ms each\n", 8, 12.5)
+    return 0
+}
+```
+
 That puts `shield` (the compiler) and `swordls` (the language server) in
 `~/.local/bin`. See [docs/install.md](docs/install.md) for prefixes, editor
 setup and what the build needs.
@@ -81,15 +90,16 @@ synchronisation at all, which is what the race checker leans on.
 ## Status
 
 Sword compiles to native code through LLVM and the language is usable, but it
-is young. Working today: functions, methods, interfaces with dynamic dispatch, generics
-over both functions and structs, floating point, top-level constants, structs,
+is young. Working today: functions with variadic parameters, methods, interfaces with
+dynamic dispatch, generics over both functions and structs, floating point,
+top-level constants, atomics, structs,
 slices, strings, pointers, optionals, error unions, `defer`, packages, and the
 whole concurrency story with a work-stealing scheduler behind it.
 
 The standard library covers memory (`std/mem`), byte buffers (`std/bytes`),
 byte-level strings (`std/strings`), generic containers (`std/collections`),
-formatting (`std/fmt`), JSON (`std/json`), TCP (`std/net`), and HTTP/1.1 with
-keep-alive, server and client (`std/http`).
+printing and formatting (`std/io`, `std/fmt`), JSON (`std/json`), TCP
+(`std/net`), and HTTP/1.1 with keep-alive, server and client (`std/http`).
 
 Not there yet: `shared[T]`, channels, and function values.
 

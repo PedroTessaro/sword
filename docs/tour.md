@@ -27,6 +27,29 @@ outside world, `func main() int` is fine on its own.
 There are no semicolons. The lexer inserts them at line ends, the same way Go
 does, so a statement ends where the line does.
 
+To print something other than a string, `Printf` takes values of any type:
+
+```sword
+import "std/io"
+
+func main() !int {
+    count := 42
+    ratio := 1.5
+    try io.Printf("{} items, {} each\n", count, ratio)
+    try io.Println("or just this:", count, ratio, true)
+    return 0
+}
+```
+
+`{}` takes the next argument. There are no type letters like `%d`, because
+there is nothing for them to do — the argument already knows what it is, so a
+format string cannot disagree with it. `{x}` asks for hex and `{.3}` for a
+float with three places.
+
+Neither of these needs an allocator. They format into a block of stack and
+flush as it fills, which matters because printing is the first thing anybody
+writes.
+
 ## Values
 
 `:=` binds a name to a value. The binding is **immutable**:
@@ -83,7 +106,34 @@ func main() int {
 }
 ```
 
-Types come after names, as in Go. A function with no result just omits it.
+Types come after names, as in Go. A function with no result just omits it. When
+several parameters share a type, write it once:
+
+```sword
+func area(w, h u64) u64 {
+    return w * h
+}
+```
+
+A last parameter can gather whatever is left:
+
+```sword
+func total(label string, xs ...i64) i64 {
+    mut sum i64 = 0
+    for i in 0..xs.len {
+        sum += xs[i]
+    }
+    return sum
+}
+
+func main() int {
+    return int(total("a", 20, 22))
+}
+```
+
+Inside the function `xs` is an ordinary `[]i64`. Gathering `...any` is how
+`Printf` accepts a mixed list; passing an already-gathered list on to another
+such function is written `f(xs...)`.
 
 Parameters are immutable too. When a function needs to write through one, the
 parameter says so, and the caller has to have that permission to give away:

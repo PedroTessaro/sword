@@ -21,6 +21,7 @@ For looking things up. [The tour](tour.md) is the place to learn from.
 | `[*]T` | raw pointer, no length, for FFI |
 | `struct` `interface` | |
 | `atomic[T]` | an integer or bool many tasks may write at once |
+| `any` | a boxed value, what a `...any` parameter gathers |
 
 `?*T` and `?[*]T` cost one word. Over anything else, `?T` is the value with a
 flag beside it.
@@ -43,6 +44,7 @@ an integer may be used as an array length.
 ```sword
 func name(a T, mut b U) R { ... }
 func name(a, b T) R { ... }        // one type covers the names before it
+func name(a T, rest ...U) R { ... } // the last one gathers what is left
 func name[T, U: Constraint](a T) R { ... }
 func (r *T) Method() R { ... }
 func (mut r *T) Method() R { ... }
@@ -108,6 +110,31 @@ wrapping forms below.
 any build mode.
 
 `[*]T` supports `p + n` and `p - n`. `*T` and `[]T` do not.
+
+## Variadic functions
+
+The last parameter may gather the rest of the arguments, and inside the
+function it is an ordinary slice:
+
+```sword
+func total(xs ...i64) i64
+total(1, 2, 3)
+total()                 // an empty slice
+total(already...)       // pass a gathered list straight through
+```
+
+`...any` gathers a mixed list. An `any` carries the value together with a tag
+saying what it is, filled in by the compiler from the static type at the call
+site — there is no reflection anywhere. It is four fields:
+
+| | |
+|---|---|
+| `Kind` | `u8`: 0 none, 1 bool, 2 int, 3 uint, 4 float, 5 string, 6 pointer |
+| `Int` | signed, unsigned and bool values, widened to 64 bits |
+| `Real` | floats, widened to `f64` |
+| `Text` | strings |
+
+`std/fmt` mirrors the tags as `KindBool`, `KindInt` and so on.
 
 ## Atomics
 
@@ -214,10 +241,24 @@ inference.
 
 ### `std/io`
 
+Printing takes a fixed block of stack and flushes as it fills, so none of it
+needs an allocator.
+
 ```sword
-func Write(fd i32, s string) !u64      // bytes written
-func Print(s string) !void             // to stdout
-func Fail(s string) !void              // to stderr
+func Print(s string) !void                              // stdout
+func Fail(s string) !void                               // stderr
+func Write(fd i32, s string) !u64                       // bytes written
+
+func Printf(format string, args ...any) !void
+func Errorf(format string, args ...any) !void
+func Fprintf(fd i32, format string, args ...any) !void
+func Println(args ...any) !void                         // spaced, newline
+
+// A Writer is a buffered sink over a descriptor; it satisfies fmt.Sink.
+func NewWriter(fd i32) Writer
+func (mut w *Writer) WriteByte(c u8) !void
+func (mut w *Writer) Write(p []u8) !void
+func (mut w *Writer) Flush() !void
 ```
 
 ### `std/mem`
@@ -328,19 +369,39 @@ constraints, and there is nowhere to hang those yet.
 
 ### `std/fmt`
 
-There is no `Sprintf`: Sword has no variadic functions. Formatting is a
-sequence of writes into a buffer, which costs a line or two more and never has
-a format string that disagrees with its arguments.
+Everything writes into a sink rather than one particular buffer, so the same
+code serves a growable buffer, a socket, or a block of stack.
+`bytes.Buffer` and `io.Writer` both satisfy it without being told to.
 
 ```sword
-func U64(mut b *bytes.Buffer, v u64) !void
-func I64(mut b *bytes.Buffer, v i64) !void
-func Bool(mut b *bytes.Buffer, v bool) !void
-func Hex(mut b *bytes.Buffer, v u64, width u64) !void
-func F64(mut b *bytes.Buffer, v f64, decimals u64) !void
-func Pad(mut b *bytes.Buffer, s string, width u64) !void
-func Quote(mut b *bytes.Buffer, s string) !void      // JSON string, escaped
+interface Sink {
+    WriteByte(c u8) !void
+    Write(p []u8) !void
+}
+
+func Format(mut out Sink, format string, args []any) !void
+func Sprintf(mut a mem.Allocator, format string, args ...any) !string
+func Value(mut out Sink, v any) !void
+
+func Str(mut out Sink, s string) !void
+func U64(mut out Sink, v u64) !void
+func I64(mut out Sink, v i64) !void
+func Bool(mut out Sink, v bool) !void
+func Hex(mut out Sink, v u64, width u64) !void
+func F64(mut out Sink, v f64, decimals u64) !void
+func Float(mut out Sink, v f64) !void     // up to six places, zeros trimmed
+func Pad(mut out Sink, s string, width u64) !void
+func Quote(mut out Sink, s string) !void  // JSON string, escaped
 ```
+
+The format language is small on purpose:
+
+| | |
+|---|---|
+| `{}` | the next argument, formatted by what it is |
+| `{x}` | an integer in hexadecimal |
+| `{.N}` | a float with N decimal places |
+| `{{` `}}` | a literal brace |
 
 ### `std/json`
 
@@ -416,6 +477,7 @@ strings point into the connection's read buffer, so they are valid for as long
 as the handler runs.
 
 ```sword
+func (mut r *Response) Printf(format string, args ...any) !void
 func (mut r *Response) Text(status u64, s string) !void
 func (mut r *Response) JSON(status u64, s string) !void
 func (mut r *Response) SetHeader(name string, value string) !void
