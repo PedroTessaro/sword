@@ -1053,6 +1053,25 @@ struct Lowerer {
     return in.dst;
   }
 
+  // The gathered arguments go into an array on the caller's frame, handed over
+  // as a slice. The callee never learns it was called with loose arguments.
+  int gather(Node *n, size_t from, Type *slice) {
+    Type *element = slice->elem;
+    size_t count = n->kids.size() - from;
+    int backing = alloca_slot(types.array(element, (int64_t)count));
+    for (size_t i = 0; i < count; i++) {
+      int at = gep_index(backing, constant((int64_t)i, types.usize_ty),
+                         element);
+      assign_into(at, n->kids[from + i], element);
+    }
+
+    int header = alloca_slot(slice);
+    store(backing, gep_slice_ptr(header), types.rawptr(types.u8_ty));
+    store(constant((int64_t)count, types.usize_ty), gep_slice_len(header),
+          types.usize_ty);
+    return header;
+  }
+
   int call(Node *n) {
     if (n->form == 3) return atomic_call(n);
     IrInst in{};
@@ -1074,7 +1093,16 @@ struct Lowerer {
     } else if (n->form == 2) {
       dispatch(n, in);
     }
-    for (Node *arg : n->kids) in.args.push_back(materialize(arg));
+
+    size_t fixed = n->variadic_at >= 0 ? (size_t)n->variadic_at
+                                       : n->kids.size();
+    for (size_t i = 0; i < fixed; i++)
+      in.args.push_back(materialize(n->kids[i]));
+    if (n->variadic_at >= 0) {
+      // Already a list: hand it over rather than copying it into a new one.
+      if (n->is_variadic) in.args.push_back(expr(n->kids.back()));
+      else in.args.push_back(gather(n, fixed, n->sym->type->params.back()));
+    }
     if (result < 0 && n->type->kind != TY_VOID) in.dst = new_value(n->type);
     emit(in);
     return result >= 0 ? result : in.dst;
@@ -1193,9 +1221,51 @@ struct Lowerer {
     }
   }
 
+  // Boxes a value into an `any`: the tag comes from the static type, so there
+  // is no reflection anywhere, only what the compiler already knew.
+  void box_any(int at, Node *value, Type *any) {
+    Type *source = value->type;
+    int kind = any_kind_of(source);
+    zero(at, any);
+    store(constant(kind, types.named("u8")),
+          gep_named(at, any, "Kind"), types.named("u8"));
+
+    if (kind == ANY_STRING) {
+      copy(gep_named(at, any, "Text"), expr(value), types.string_ty);
+      return;
+    }
+    if (kind == ANY_FLOAT) {
+      Type *wide = types.named("f64");
+      int v = expr(value);
+      if (source->bits != 64) v = widen(v, wide);
+      store(v, gep_named(at, any, "Real"), wide);
+      return;
+    }
+
+    // Everything else travels in the integer slot, widened to a word.
+    Type *wide = types.named("i64");
+    int v = expr(value);
+    if (source->kind == TY_BOOL || source->bits != 64) v = widen(v, wide);
+    store(v, gep_named(at, any, "Int"), wide);
+  }
+
+  int widen(int value, Type *to) {
+    IrInst in{};
+    in.op = IR_CAST;
+    in.dst = new_value(to);
+    in.a = value;
+    in.type = to;
+    emit(in);
+    return in.dst;
+  }
+
   // Writes the value of `value` into the address `at`, copying when the type
   // is an aggregate and wrapping when an optional is being given a payload.
   void assign_into(int at, Node *value, Type *type) {
+    if (type->is_any && !(value->type && value->type->is_any)) {
+      box_any(at, value, type);
+      return;
+    }
     if (value->vtable >= 0) {
       // The node still has its own pointer type; the vtable the checker picked
       // is what turns the pair into an interface value.
@@ -1618,6 +1688,9 @@ void lower(Program &prog, TypeTable &types, Mode mode, IrModule &mod) {
           decl->type)
         mod.structs.push_back(decl->type);
   for (const auto &vt : types.vtables()) mod.vtables.push_back(vt.entries);
+  // `any` belongs to the language rather than to a package, so nothing else
+  // would have put it in front of the backend.
+  mod.structs.push_back(types.any_ty);
   for (Type *t : types.error_unions_made()) mod.structs.push_back(t);
   for (Type *t : types.optionals_made()) mod.structs.push_back(t);
   for (Type *t : types.instances_made()) mod.structs.push_back(t);

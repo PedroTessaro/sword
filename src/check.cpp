@@ -941,6 +941,15 @@ struct Checker {
       apply_type(value, to);
       return true;
     }
+    if (to->is_any) {
+      settle(value);
+      if (any_kind_of(value->type) < 0) {
+        note(value->pos, "%s cannot be passed as 'any'",
+             type_str(value->type).c_str());
+        return false;
+      }
+      return true;
+    }
     return to->is_interface && bind_interface(value, to);
   }
 
@@ -1075,6 +1084,63 @@ struct Checker {
                   bool already_checked = false) {
     Type *sig = sym->type;
     size_t wanted = sig->params.size() - skip;
+
+    Node *last = sym->decl && !sym->decl->kids.empty() ? sym->decl->kids.back()
+                                                       : nullptr;
+    if (last && last->is_variadic) {
+      size_t fixed = wanted - 1;
+      if (n->kids.size() < fixed) {
+        error(n->pos, "'%s' takes at least %zu argument%s, got %zu",
+              sym->name.c_str(), fixed, fixed == 1 ? "" : "s",
+              n->kids.size());
+        return false;
+      }
+      n->variadic_at = (int)fixed;
+      Type *element = sig->params.back()->elem;
+
+      // `f(xs...)` passes the list through instead of building a new one.
+      if (n->kids.size() == fixed + 1 && n->kids.back()->is_variadic) {
+        for (size_t i = 0; i < fixed; i++) {
+          Type *arg = already_checked ? n->kids[i]->type
+                                      : check_expr(n->kids[i]);
+          if (!arg || !convert(n->kids[i], sig->params[i + skip])) {
+            error(n->kids[i]->pos, "argument %zu of '%s' expects %s",
+                  i + 1, sym->name.c_str(),
+                  type_str(sig->params[i + skip]).c_str());
+            return false;
+          }
+        }
+        Node *rest = n->kids.back();
+        Type *given = already_checked ? rest->type : check_expr(rest);
+        if (!given) return false;
+        if (!assignable(given, sig->params.back())) {
+          error(rest->pos, "'%s' gathers %s, got %s", sym->name.c_str(),
+                type_str(sig->params.back()).c_str(), type_str(given).c_str());
+          return false;
+        }
+        n->is_variadic = true;
+        return true;
+      }
+
+      for (size_t i = 0; i < n->kids.size(); i++) {
+        Type *want = i < fixed ? sig->params[i + skip] : element;
+        Type *arg = already_checked ? n->kids[i]->type
+                                    : check_expr(n->kids[i]);
+        if (!arg) return false;
+        if (!convert(n->kids[i], want)) {
+          error(n->kids[i]->pos, "argument %zu of '%s' expects %s, got %s",
+                i + 1, sym->name.c_str(), type_str(want).c_str(),
+                type_str(arg).c_str());
+          return false;
+        }
+        Node *param = i < fixed && sym->decl ? sym->decl->kids[i + skip]
+                                             : nullptr;
+        if (param && param->is_mut && !require_mutable(n->kids[i], "pass"))
+          return false;
+      }
+      return true;
+    }
+
     if (n->kids.size() != wanted) {
       error(n->pos, "'%s' takes %zu argument%s, got %zu",
             sym->name.c_str(), wanted, wanted == 1 ? "" : "s", n->kids.size());
@@ -2502,8 +2568,16 @@ struct Checker {
       }
 
       std::vector<Type *> params;
-      for (Node *p : fn->kids) {
+      for (size_t i = 0; i < fn->kids.size(); i++) {
+        Node *p = fn->kids[i];
         p->type = resolve(p->type_expr);
+        if (p->is_variadic) {
+          if (i + 1 != fn->kids.size()) {
+            error(p->pos, "only the last parameter can gather the rest");
+            continue;
+          }
+          p->type = types.slice(p->type);
+        }
         params.push_back(p->type);
       }
       Type *ret = fn->type_expr ? resolve(fn->type_expr) : types.void_ty;

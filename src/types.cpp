@@ -55,6 +55,23 @@ TypeTable::TypeTable() {
   by_name["error"] = error_ty;
 
   t = Type{};
+  t.kind = TY_STRUCT;
+  t.is_any = true;
+  t.name = "any";
+  any_ty = add(t);
+  by_name["any"] = any_ty;
+  {
+    std::vector<Field> fields;
+    // Named as an API rather than as internals: reading an `any` is just
+    // reading these four fields.
+    fields.push_back(Field{"Kind", by_name["u8"], 0, 0});
+    fields.push_back(Field{"Int", by_name["i64"], 0, 0});
+    fields.push_back(Field{"Real", by_name["f64"], 0, 0});
+    fields.push_back(Field{"Text", string_ty, 0, 0});
+    layout_struct(any_ty, std::move(fields));
+  }
+
+  t = Type{};
   t.kind = TY_OPT;
   t.untyped = true;
   t.elem = void_ty;
@@ -330,6 +347,18 @@ bool is_integer(const Type *t) { return t && t->kind == TY_INT; }
 bool is_float(const Type *t) { return t && t->kind == TY_FLOAT; }
 
 bool is_atomic(const Type *t) { return t && t->kind == TY_ATOMIC; }
+
+int any_kind_of(const Type *t) {
+  if (!t) return -1;
+  switch (t->kind) {
+  case TY_BOOL: return ANY_BOOL;
+  case TY_INT: return t->is_signed ? ANY_INT : ANY_UINT;
+  case TY_FLOAT: return ANY_FLOAT;
+  case TY_STRING: return ANY_STRING;
+  case TY_PTR: case TY_RAWPTR: return ANY_POINTER;
+  default: return -1;
+  }
+}
 
 bool is_optional(const Type *t) {
   return t && !t->untyped && (t->kind == TY_OPT || t->is_optional);

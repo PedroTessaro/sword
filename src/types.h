@@ -47,6 +47,9 @@ struct Type {
   // An interface is a { data, vtable } pair: a struct for layout purposes,
   // with the method signatures kept alongside for checking.
   bool is_interface = false;
+  // `any`: what a variadic argument is boxed into. It carries the value and
+  // enough of a tag to say what the value is.
+  bool is_any = false;
   Type *elem = nullptr;
   int64_t count = 0; // TY_ARRAY length
   std::string name;  // TY_STRUCT
@@ -106,6 +109,7 @@ struct TypeTable {
   Type *usize_ty;
   Type *string_ty;
   Type *error_ty;
+  Type *any_ty;
   Type *untyped_nil;
   Type *untyped_int;
   Type *untyped_float;
@@ -132,6 +136,14 @@ bool is_numeric(const Type *t);
 bool is_integer(const Type *t);
 bool is_float(const Type *t);
 bool is_atomic(const Type *t);
+
+// The tags an `any` can carry. std/fmt mirrors these; they are part of the
+// language rather than of that package.
+enum AnyKind {
+  ANY_NONE = 0, ANY_BOOL = 1, ANY_INT = 2, ANY_UINT = 3,
+  ANY_FLOAT = 4, ANY_STRING = 5, ANY_POINTER = 6,
+};
+int any_kind_of(const Type *t); // -1 when the type cannot be boxed
 
 // `?T`: either a pointer using null as its tag, or a { has, value } pair.
 bool is_optional(const Type *t);
