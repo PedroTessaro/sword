@@ -1,6 +1,9 @@
+.*.swp
 *.d
 *.ll
 *.o
+*.swp
+*~
 a.out
 docs/design.md
 editors/vscode/node_modules/
