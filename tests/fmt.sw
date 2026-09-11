@@ -1,0 +1,55 @@
+// expect: 42
+// expect-output: fmt works
+
+import "std/bytes"
+import "std/fmt"
+import "std/io"
+import "std/mem"
+import "std/strings"
+
+func main() !int {
+    mut room := [16384]u8{}
+    mut arena := mem.NewArena(room[..])
+    mut b := try bytes.New(&arena, 64)
+
+    try fmt.I64(&b, -42)
+    try b.WriteByte(32)
+    try fmt.I64(&b, 7)
+    try b.WriteByte(32)
+    try fmt.Bool(&b, true)
+    try b.WriteByte(32)
+    try fmt.Hex(&b, 48879, 4)
+    if !strings.Equal(b.Str(), "-42 7 true beef") {
+        return 1
+    }
+
+    b.Reset()
+    try fmt.F64(&b, 3.14159, 3)
+    try b.WriteByte(32)
+    try fmt.F64(&b, -0.5, 2)
+    try b.WriteByte(32)
+    try fmt.F64(&b, 10.0, 1)
+    try b.WriteByte(32)
+    try fmt.F64(&b, 2.005, 3)
+    if !strings.Equal(b.Str(), "3.142 -0.50 10.0 2.005") {
+        try io.Print(b.Str())
+        try io.Print("\n")
+        return 2
+    }
+
+    b.Reset()
+    try fmt.Quote(&b, "a\"b\nc")
+    if !strings.Equal(b.Str(), "\"a\\\"b\\nc\"") {
+        return 3
+    }
+
+    b.Reset()
+    try fmt.Pad(&b, "id", 5)
+    try b.WriteByte(124)
+    if !strings.Equal(b.Str(), "id   |") {
+        return 4
+    }
+
+    try io.Print("fmt works\n")
+    return 42
+}
