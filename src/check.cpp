@@ -138,8 +138,19 @@ struct Checker {
     case ND_TYPE_RAWPTR: return types.rawptr(resolve(n->lhs));
     case ND_TYPE_SLICE: return types.slice(resolve(n->lhs));
     case ND_TYPE_OPT: return types.opt(resolve(n->lhs));
-    case ND_TYPE_ARRAY:
-      return types.array(resolve(n->lhs), (int64_t)n->ival);
+    case ND_TYPE_ARRAY: {
+      int64_t count = (int64_t)n->ival;
+      if (!n->name.empty()) {
+        Symbol *sym = lookup(n->name);
+        if (!sym || !sym->const_value ||
+            sym->const_value->kind != ND_INT_LIT) {
+          error(n->pos, "'%s' is not an integer constant", n->name.c_str());
+          return types.void_ty;
+        }
+        count = (int64_t)sym->const_value->ival;
+      }
+      return types.array(resolve(n->lhs), count);
+    }
     case ND_TYPE_INST: {
       Node *base = n->lhs;
       Package *owner = &pkg;
@@ -1001,7 +1012,14 @@ struct Checker {
     apply_type(n->kids[0], target);
     from = settle(n->kids[0]);
 
-    bool ok = (is_numeric(from) && is_numeric(target)) ||
+    // Writing out a conversion that would have happened anyway is always
+    // fine, and a slice of bytes and a string share a representation: going
+    // the other way is the programmer promising not to write through it.
+    bool same_bytes =
+        (from->kind == TY_SLICE && from->elem->bits == 8 &&
+         target->kind == TY_STRING);
+    bool ok = assignable(from, target) || same_bytes ||
+              (is_numeric(from) && is_numeric(target)) ||
               // Raw pointers are the unchecked side of the boundary, so they
               // reinterpret freely. `*T` converts out to one, never back in:
               // that would fabricate a non-null guarantee.
@@ -1427,8 +1445,10 @@ struct Checker {
     }
 
     Type *elem = resolve(spec->lhs);
+    // `[_]T` takes its length from the literal; anything else has it in the
+    // type, which may have come from a named constant.
     int64_t count = spec->ival == (uint64_t)-1 ? (int64_t)n->kids.size()
-                                               : (int64_t)spec->ival;
+                                               : resolve(spec)->count;
     // `[64]u8{}` is the zeroed buffer; anything else must be spelled out.
     if (n->kids.empty() && count > 0) return n->type = types.array(elem, count);
     if ((size_t)count != n->kids.size()) {
@@ -2188,8 +2208,10 @@ struct Checker {
 
   bool run() {
     push_scope();
-    if (!declare_structs()) return false;
+    // Constants come first: a struct field may be an array whose length is
+    // one of them.
     declare_constants();
+    if (!declare_structs()) return false;
 
     // Signatures first: within a package, declaration order does not matter.
     for (Node *fn : pkg.unit->kids) {

@@ -122,6 +122,15 @@ struct Parser {
         count = advance().ival;
         if (!expect(TK_RBRACK, "after an array length")) return nullptr;
         k = ND_TYPE_ARRAY;
+      } else if (kind() == TK_IDENT) {
+        // A named constant, resolved when the type is.
+        Node *n = make(ND_TYPE_ARRAY, pos);
+        n->ival = 0;
+        n->name_pos = peek().pos;
+        n->name = advance().text;
+        if (!expect(TK_RBRACK, "after an array length")) return nullptr;
+        n->lhs = type_expr();
+        return n->lhs ? n : nullptr;
       } else {
         fail("expected an array length, ']' or '*', found %s",
              tok_name(kind()));
