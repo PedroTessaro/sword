@@ -1,0 +1,1542 @@
+#include "lower.h"
+
+#include <functional>
+#include <set>
+
+namespace {
+
+// Two rules shape this pass:
+//
+//  * Locals become allocas with loads and stores rather than SSA values with
+//    phi nodes. LLVM's mem2reg promotes them, which removes the trickiest part
+//    of a compiler in exchange for needing -O1 or above.
+//  * Aggregates live in memory. An expression of aggregate type evaluates to
+//    the address of its data, and assigning one copies bytes.
+struct Lowerer {
+  TypeTable &types;
+  IrModule &mod;
+  Mode mode;
+  IrFunc *fn = nullptr;
+  int cur = 0;
+  int sret = -1;   // hidden out pointer when the function returns an aggregate
+  Type *ret = nullptr;
+  std::vector<IrInst> entry_allocas;
+
+  struct Deferred {
+    Node *stmt;
+    bool on_error_only;
+  };
+  // One list per open block. Leaving a block runs its list backwards; leaving
+  // through an error runs the errdefer entries as well.
+  std::vector<std::vector<Deferred>> scopes;
+
+  struct Loop {
+    int continue_bb;
+    int break_bb;
+    size_t depth; // how far to unwind defers when jumping out
+  };
+  std::vector<Loop> loops;
+
+  // Open `scope` blobs, innermost last: a spawn joins the one it sits in.
+  std::vector<int> scope_blobs;
+
+  // Task bodies, emitted once every ordinary function is done so that
+  // appending to the module cannot disturb the one being lowered.
+  struct Thunk {
+    std::string name;
+    std::string callee;
+    Type *args;
+    Type *box; // the callee's !void type, or null when it cannot fail
+  };
+  std::vector<Thunk> thunks;
+
+  // The body of a `parallel for` runs on other workers, so the locals it
+  // touches are reached through a block of pointers the loop hands over.
+  struct Chunk {
+    std::string name;
+    Node *loop;
+    Type *env;
+    std::vector<Symbol *> captured;
+  };
+  std::vector<Chunk> chunks;
+  int task_serial = 0;
+
+  Lowerer(TypeTable &t, IrModule &m, Mode mo) : types(t), mod(m), mode(mo) {}
+
+  int new_value(Type *type) {
+    fn->value_type.push_back(type);
+    return (int)fn->value_type.size() - 1;
+  }
+
+  int new_block() {
+    IrBlock bb;
+    bb.id = (int)fn->blocks.size();
+    fn->blocks.push_back(bb);
+    return bb.id;
+  }
+
+  bool terminated() const {
+    const auto &insts = fn->blocks[cur].insts;
+    if (insts.empty()) return false;
+    switch (insts.back().op) {
+    case IR_BR: case IR_CONDBR: case IR_RET: case IR_UNREACHABLE:
+      return true;
+    default:
+      return false;
+    }
+  }
+
+  void emit(IrInst in) {
+    if (terminated()) return; // code after a terminator is unreachable
+    fn->blocks[cur].insts.push_back(std::move(in));
+  }
+
+  void branch(int target) {
+    IrInst in{};
+    in.op = IR_BR;
+    in.target = target;
+    emit(in);
+  }
+
+  void cond_branch(int cond, int on_true, int on_false) {
+    IrInst in{};
+    in.op = IR_CONDBR;
+    in.a = cond;
+    in.target = on_true;
+    in.target2 = on_false;
+    emit(in);
+  }
+
+  // mem2reg only promotes allocas in the entry block, so they are collected
+  // here and spliced in once the body is done.
+  int alloca_slot(Type *type) {
+    IrInst in{};
+    in.op = IR_ALLOCA;
+    in.dst = new_value(types.ptr(type));
+    in.type = type;
+    entry_allocas.push_back(in);
+    return in.dst;
+  }
+
+  void store(int value, int slot, Type *type) {
+    IrInst in{};
+    in.op = IR_STORE;
+    in.a = value;
+    in.b = slot;
+    in.type = type;
+    emit(in);
+  }
+
+  int load(int slot, Type *type) {
+    IrInst in{};
+    in.op = IR_LOAD;
+    in.dst = new_value(type);
+    in.a = slot;
+    in.type = type;
+    emit(in);
+    return in.dst;
+  }
+
+  void copy(int dst, int src, Type *type) {
+    IrInst in{};
+    in.op = IR_MEMCPY;
+    in.a = dst;
+    in.b = src;
+    in.imm = size_of(type);
+    in.type = type;
+    emit(in);
+  }
+
+  int constant(int64_t value, Type *type) {
+    IrInst in{};
+    in.op = IR_CONST;
+    in.dst = new_value(type);
+    in.imm = value;
+    in.type = type;
+    emit(in);
+    return in.dst;
+  }
+
+  int binop(IrOp op, int a, int b, Type *type) {
+    IrInst in{};
+    in.op = op;
+    in.dst = new_value(type);
+    in.a = a;
+    in.b = b;
+    in.type = type;
+    emit(in);
+    return in.dst;
+  }
+
+  int gep_field(int base, Type *type, int index) {
+    IrInst in{};
+    in.op = IR_GEP_FIELD;
+    in.dst = new_value(types.ptr(type->fields[index].type));
+    in.a = base;
+    in.imm = index;
+    in.type = type;
+    emit(in);
+    return in.dst;
+  }
+
+  int gep_named(int base, Type *type, const char *name) {
+    return gep_field(base, type, find_field(type, name)->index);
+  }
+
+  int gep_index(int base, int index, Type *elem) {
+    IrInst in{};
+    in.op = IR_GEP_INDEX;
+    in.dst = new_value(types.ptr(elem));
+    in.a = base;
+    in.b = index;
+    in.type = elem;
+    emit(in);
+    return in.dst;
+  }
+
+  static IrOp ir_binop(TokKind op) {
+    switch (op) {
+    case TK_PLUS: case TK_PLUS_WRAP: return IR_ADD;
+    case TK_MINUS: case TK_MINUS_WRAP: return IR_SUB;
+    case TK_STAR: case TK_STAR_WRAP: return IR_MUL;
+    case TK_SLASH: return IR_DIV;
+    case TK_PERCENT: return IR_MOD;
+    case TK_AMP: return IR_AND;
+    case TK_PIPE: return IR_OR;
+    case TK_CARET: return IR_XOR;
+    case TK_SHL: return IR_SHL;
+    case TK_SHR: return IR_SHR;
+    case TK_EQ: return IR_EQ;
+    case TK_NE: return IR_NE;
+    case TK_LT: return IR_LT;
+    case TK_LE: return IR_LE;
+    case TK_GT: return IR_GT;
+    case TK_GE: return IR_GE;
+    default: return IR_ADD;
+    }
+  }
+
+  static TokKind assign_arith(TokKind op) {
+    switch (op) {
+    case TK_ADD_ASSIGN: return TK_PLUS;
+    case TK_SUB_ASSIGN: return TK_MINUS;
+    case TK_MUL_ASSIGN: return TK_STAR;
+    case TK_DIV_ASSIGN: return TK_SLASH;
+    case TK_MOD_ASSIGN: return TK_PERCENT;
+    case TK_ADD_WRAP_ASSIGN: return TK_PLUS_WRAP;
+    case TK_SUB_WRAP_ASSIGN: return TK_MINUS_WRAP;
+    default: return TK_STAR_WRAP;
+    }
+  }
+
+  static bool wraps(TokKind op) {
+    return op == TK_PLUS_WRAP || op == TK_MINUS_WRAP || op == TK_STAR_WRAP;
+  }
+
+  // --- tasks --------------------------------------------------------------
+
+  // Must match SWORD_SCOPE_SIZE in rt/sword_rt.h.
+  static const int64_t kScopeSize = 64;
+
+  int call_runtime(const char *name, std::vector<int> args, Type *ret) {
+    IrInst in{};
+    in.op = IR_CALL;
+    in.callee = name;
+    in.type = ret;
+    in.args = std::move(args);
+    if (ret->kind != TY_VOID) in.dst = new_value(ret);
+    emit(in);
+    return in.dst;
+  }
+
+  int func_address(const std::string &name) {
+    IrInst in{};
+    in.op = IR_FUNCADDR;
+    in.dst = new_value(types.rawptr(types.u8_ty));
+    in.callee = name;
+    in.type = types.rawptr(types.u8_ty);
+    emit(in);
+    return in.dst;
+  }
+
+  void scope_stmt(Node *n) {
+    int blob = alloca_slot(types.array(types.u8_ty, kScopeSize));
+    call_runtime("sword_scope_begin", {blob}, types.void_ty);
+
+    scope_blobs.push_back(blob);
+    stmt(n->body);
+    scope_blobs.pop_back();
+
+    // Leaving the block is the join, and the checker guarantees this is the
+    // only way out.
+    int code = call_runtime("sword_scope_end", {blob}, types.error_ty);
+    if (n->form != 1) return;
+
+    int ok = binop(IR_EQ, code, constant(0, types.error_ty), types.bool_ty);
+    int fail_bb = new_block();
+    int next_bb = new_block();
+    cond_branch(ok, next_bb, fail_bb);
+
+    cur = fail_bb;
+    finish_with_error(code);
+    cur = next_bb;
+  }
+
+  void spawn_stmt(Node *n) {
+    Node *call = n->lhs;
+    Type *sig = call->sym->type;
+    std::string id = std::to_string(task_serial++);
+
+    // The arguments are copied into one block the runtime owns, so the task
+    // does not depend on the caller's frame staying put.
+    Type *args = types.declare_struct("sword.args." + id);
+    args->is_extern = true; // declaration order, so the thunk agrees
+    std::vector<Field> fields;
+    for (size_t i = 0; i < call->kids.size(); i++)
+      fields.push_back(Field{"a" + std::to_string(i), sig->params[i], 0, 0});
+    types.layout_struct(args, std::move(fields));
+    mod.structs.push_back(args);
+
+    int slot = alloca_slot(args);
+    for (size_t i = 0; i < call->kids.size(); i++)
+      assign_into(gep_field(slot, args, (int)i), call->kids[i],
+                  sig->params[i]);
+
+    std::string thunk = "sword.task." + id;
+    thunks.push_back(
+        {thunk, call->name,
+         args, sig->ret->is_error_union ? sig->ret : nullptr});
+
+    call_runtime("sword_scope_spawn",
+                 {scope_blobs.back(), func_address(thunk), slot,
+                  constant(size_of(args), types.usize_ty)},
+                 types.void_ty);
+  }
+
+  void emit_thunk(const Thunk &t, IrFunc &out) {
+    fn = &out;
+    cur = 0;
+    sret = -1;
+    ret = types.error_ty;
+    entry_allocas.clear();
+    loops.clear();
+    scopes.clear();
+    scope_blobs.clear();
+
+    out.name = t.name;
+    out.ret = types.error_ty;
+    out.params.push_back(types.rawptr(types.u8_ty));
+
+    int argp = new_value(types.rawptr(types.u8_ty));
+    new_block();
+
+    std::vector<int> call_args;
+    int box = -1;
+    if (t.box) {
+      box = alloca_slot(t.box);
+      call_args.push_back(box);
+    }
+    for (size_t i = 0; i < t.args->fields.size(); i++) {
+      Type *field = t.args->fields[i].type;
+      int at = gep_field(argp, t.args, (int)i);
+      call_args.push_back(is_aggregate(field) ? at : load(at, field));
+    }
+
+    IrInst in{};
+    in.op = IR_CALL;
+    in.callee = t.callee;
+    in.type = types.void_ty;
+    in.args = std::move(call_args);
+    emit(in);
+
+    int code = t.box ? load(gep_named(box, t.box, "code"), types.error_ty)
+                     : constant(0, types.error_ty);
+    emit_ret(code, types.error_ty);
+
+    auto &entry = out.blocks[0].insts;
+    entry.insert(entry.begin(), entry_allocas.begin(), entry_allocas.end());
+  }
+
+  // --- captures -----------------------------------------------------------
+
+  void walk(Node *n, const std::function<void(Node *)> &visit) {
+    if (!n) return;
+    visit(n);
+    for (Node *kid : n->kids) walk(kid, visit);
+    walk(n->lhs, visit);
+    walk(n->rhs, visit);
+    walk(n->cond, visit);
+    walk(n->body, visit);
+    walk(n->els, visit);
+  }
+
+  // Anything declared inside the body belongs to the worker running it; the
+  // rest has to come from the parent's frame.
+  void captures_of(Node *loop, std::vector<Symbol *> &out) {
+    std::set<Symbol *> local;
+    local.insert(loop->sym);
+    walk(loop->body, [&](Node *n) {
+      if (n->kind == ND_VAR || n->kind == ND_CATCH ||
+          (n->kind == ND_FOR && n->is_range) ||
+          (n->kind == ND_IF && !n->name.empty()))
+        if (n->sym) local.insert(n->sym);
+    });
+
+    std::set<Symbol *> seen;
+    walk(loop->body, [&](Node *n) {
+      if (n->kind != ND_IDENT || !n->sym) return;
+      if (n->sym->is_func || local.count(n->sym)) return;
+      if (seen.insert(n->sym).second) out.push_back(n->sym);
+    });
+
+    if (loop->reduce_sym && !seen.count(loop->reduce_sym))
+      out.push_back(loop->reduce_sym);
+  }
+
+  void parallel_for(Node *n) {
+    std::string id = std::to_string(task_serial++);
+    std::vector<Symbol *> captured;
+    captures_of(n, captured);
+
+    Type *env = types.declare_struct("sword.env." + id);
+    env->is_extern = true;
+    std::vector<Field> fields;
+    for (size_t i = 0; i < captured.size(); i++)
+      fields.push_back(
+          Field{"c" + std::to_string(i), types.ptr(captured[i]->type), 0, 0});
+    types.layout_struct(env, std::move(fields));
+    mod.structs.push_back(env);
+
+    int block = alloca_slot(env);
+    for (size_t i = 0; i < captured.size(); i++)
+      store(captured[i]->slot, gep_field(block, env, (int)i),
+            types.ptr(captured[i]->type));
+
+    std::string name = "sword.chunk." + id;
+    chunks.push_back({name, n, env, captured});
+
+    int lo = to_word(expr(n->lhs));
+    int hi = to_word(expr(n->rhs));
+    call_runtime("sword_parallel_for",
+                 {lo, hi, func_address(name), block}, types.error_ty);
+  }
+
+  void emit_chunk(const Chunk &c, IrFunc &out) {
+    Node *loop = c.loop;
+    fn = &out;
+    cur = 0;
+    sret = -1;
+    ret = types.error_ty;
+    entry_allocas.clear();
+    loops.clear();
+    scopes.clear();
+    scope_blobs.clear();
+
+    out.name = c.name;
+    out.ret = types.error_ty;
+    out.params = {types.rawptr(types.u8_ty), types.usize_ty, types.usize_ty};
+
+    int envp = new_value(types.rawptr(types.u8_ty));
+    int lo = new_value(types.usize_ty);
+    int hi = new_value(types.usize_ty);
+    new_block();
+    scopes.emplace_back();
+
+    std::vector<int> saved;
+    for (size_t i = 0; i < c.captured.size(); i++) {
+      Symbol *sym = c.captured[i];
+      saved.push_back(sym->slot);
+      sym->slot = load(gep_field(envp, c.env, (int)i), types.ptr(sym->type));
+    }
+
+    // Each worker sums into its own copy and folds it in once at the end, so
+    // there is no contention per iteration.
+    int shared = -1;
+    int accumulator = -1;
+    if (loop->reduce_sym) {
+      Type *type = loop->reduce_sym->type;
+      shared = loop->reduce_sym->slot;
+      accumulator = alloca_slot(type);
+      store(constant(0, type), accumulator, type);
+      loop->reduce_sym->slot = accumulator;
+    }
+
+    Type *index = loop->type;
+    int slot = alloca_slot(index);
+    int outer = loop->sym->slot;
+    loop->sym->slot = slot;
+    store(narrow(lo, index), slot, index);
+    int limit = narrow(hi, index);
+
+    int cond_bb = new_block();
+    int body_bb = new_block();
+    int step_bb = new_block();
+    int exit_bb = new_block();
+
+    branch(cond_bb);
+    cur = cond_bb;
+    cond_branch(binop(IR_LT, load(slot, index), limit, types.bool_ty), body_bb,
+                exit_bb);
+
+    loops.push_back({step_bb, exit_bb, scopes.size()});
+    cur = body_bb;
+    stmt(loop->body);
+    branch(step_bb);
+    loops.pop_back();
+
+    cur = step_bb;
+    store(binop(IR_ADD, load(slot, index), constant(1, index), index), slot,
+          index);
+    branch(cond_bb);
+
+    cur = exit_bb;
+    if (accumulator >= 0) {
+      Type *type = loop->reduce_sym->type;
+      IrInst add{};
+      add.op = IR_ATOMIC_ADD;
+      add.a = shared;
+      add.b = load(accumulator, type);
+      add.type = type;
+      emit(add);
+      loop->reduce_sym->slot = shared;
+    }
+    emit_ret(constant(0, types.error_ty), types.error_ty);
+
+    loop->sym->slot = outer;
+    for (size_t i = 0; i < c.captured.size(); i++)
+      c.captured[i]->slot = saved[i];
+
+    auto &entry = out.blocks[0].insts;
+    entry.insert(entry.begin(), entry_allocas.begin(), entry_allocas.end());
+  }
+
+  // --- deferred statements ------------------------------------------------
+
+  // Runs the deferred statements of every scope from the innermost down to
+  // `down_to`, innermost first and in reverse declaration order.
+  void emit_defers(size_t down_to, bool error_path) {
+    for (size_t i = scopes.size(); i > down_to; i--) {
+      const auto &list = scopes[i - 1];
+      for (size_t j = list.size(); j > 0; j--) {
+        if (terminated()) return;
+        const Deferred &entry = list[j - 1];
+        if (!entry.on_error_only || error_path) stmt(entry.stmt);
+      }
+    }
+  }
+
+  // --- safety checks -----------------------------------------------------
+
+  // Splits the current block: when `ok` is false, report and abort.
+  void guard(int ok, const std::string &message) {
+    int fail_bb = new_block();
+    int next_bb = new_block();
+    cond_branch(ok, next_bb, fail_bb);
+
+    cur = fail_bb;
+    int id = mod.intern(message);
+    IrInst data{};
+    data.op = IR_STR_DATA;
+    data.dst = new_value(types.rawptr(types.u8_ty));
+    data.imm = id;
+    emit(data);
+
+    IrInst call{};
+    call.op = IR_CALL;
+    call.callee = "sword_panic";
+    call.type = types.void_ty;
+    call.args = {data.dst, constant((int64_t)message.size(), types.usize_ty)};
+    emit(call);
+
+    IrInst stop{};
+    stop.op = IR_UNREACHABLE;
+    emit(stop);
+
+    cur = next_bb;
+  }
+
+  int checked_arith(IrOp op, int a, int b, Type *type, Pos pos) {
+    int value = binop(op, a, b, type);
+    if (!mode_checks(mode)) return value;
+    if (op != IR_ADD && op != IR_SUB && op != IR_MUL) return value;
+
+    IrInst test{};
+    test.op = IR_OVF;
+    test.dst = new_value(types.bool_ty);
+    test.a = a;
+    test.b = b;
+    test.imm = op;
+    test.type = type;
+    emit(test);
+
+    IrInst ok{};
+    ok.op = IR_NOT;
+    ok.dst = new_value(types.bool_ty);
+    ok.a = test.dst;
+    ok.type = types.bool_ty;
+    emit(ok);
+
+    guard(ok.dst, "panic: integer overflow at line " +
+                      std::to_string(pos.line) + "\n");
+    return value;
+  }
+
+  // Indices and slice bounds must reach the width a slice length uses before
+  // they can be compared against it or fed to a GEP.
+  // The runtime carries loop bounds as words; the induction variable may be
+  // narrower.
+  int narrow(int value, Type *type) {
+    if (fn->value_type[value]->bits == type->bits) return value;
+    IrInst in{};
+    in.op = IR_CAST;
+    in.dst = new_value(type);
+    in.a = value;
+    in.type = type;
+    emit(in);
+    return in.dst;
+  }
+
+  int to_word(int value) {
+    Type *type = fn->value_type[value];
+    if (type->bits == 64) return value;
+    IrInst in{};
+    in.op = IR_CAST;
+    in.dst = new_value(types.usize_ty);
+    in.a = value;
+    in.type = types.usize_ty;
+    emit(in);
+    return in.dst;
+  }
+
+  void bounds_check(int index, int len, Pos pos) {
+    if (!mode_checks(mode)) return;
+    // Unsigned comparison catches negative indices too: they wrap to huge.
+    int ok = binop(IR_LT, index, len, types.bool_ty);
+    guard(ok, "panic: index out of bounds at line " +
+                  std::to_string(pos.line) + "\n");
+  }
+
+  // --- places ------------------------------------------------------------
+
+  // Address of the element data behind an indexable value.
+  int data_pointer(Node *base, int *len_out) {
+    Type *type = base->type;
+    int value = expr(base);
+    if (type->kind == TY_PTR) {
+      type = type->elem;
+      // `value` already is the address of the pointee.
+    }
+
+    switch (type->kind) {
+    case TY_ARRAY:
+      if (len_out) *len_out = constant(type->count, types.usize_ty);
+      return value;
+    case TY_SLICE: case TY_STRING: {
+      if (len_out)
+        *len_out = load(gep_slice_len(value), types.usize_ty);
+      return load(gep_slice_ptr(value), types.rawptr(types.u8_ty));
+    }
+    case TY_RAWPTR:
+      if (len_out) *len_out = -1;
+      return value;
+    default:
+      if (len_out) *len_out = -1;
+      return value;
+    }
+  }
+
+  // A slice is { ptr, len }; both fields are reached the same way.
+  int gep_slice_ptr(int base) {
+    IrInst in{};
+    in.op = IR_GEP_FIELD;
+    in.dst = new_value(types.ptr(types.rawptr(types.u8_ty)));
+    in.a = base;
+    in.imm = 0;
+    in.type = types.string_ty; // marks the { ptr, len } shape for the backend
+    emit(in);
+    return in.dst;
+  }
+
+  int gep_slice_len(int base) {
+    IrInst in{};
+    in.op = IR_GEP_FIELD;
+    in.dst = new_value(types.ptr(types.usize_ty));
+    in.a = base;
+    in.imm = 1;
+    in.type = types.string_ty;
+    emit(in);
+    return in.dst;
+  }
+
+  int addr(Node *n) {
+    switch (n->kind) {
+    case ND_IDENT:
+      return n->sym->slot;
+
+    case ND_UNARY: // *p
+      return expr(n->lhs);
+
+    case ND_FIELD: {
+      Type *base = n->lhs->type;
+      if (base->kind == TY_PTR) base = base->elem;
+      int value = expr(n->lhs);
+      if (base->kind == TY_SLICE || base->kind == TY_STRING)
+        return n->name == "len" ? gep_slice_len(value) : gep_slice_ptr(value);
+      const Field *field = find_field(base, n->name);
+      return gep_field(value, base, field->index);
+    }
+
+    case ND_INDEX: {
+      int len = -1;
+      Type *base = n->lhs->type;
+      bool checked = base->kind != TY_RAWPTR;
+      int data = data_pointer(n->lhs, checked ? &len : nullptr);
+      int index = to_word(expr(n->rhs));
+      if (checked && len >= 0) bounds_check(index, len, n->pos);
+      return gep_index(data, index, n->type);
+    }
+
+    default:
+      return expr(n);
+    }
+  }
+
+  // --- expressions -------------------------------------------------------
+
+  // `&&` and `||` must not evaluate their right side unless they have to, so
+  // they lower to control flow with a slot holding the result.
+  int short_circuit(Node *n) {
+    int slot = alloca_slot(types.bool_ty);
+    int lhs = expr(n->lhs);
+    store(lhs, slot, types.bool_ty);
+
+    int rhs_bb = new_block();
+    int join = new_block();
+    if (n->op == TK_ANDAND) cond_branch(lhs, rhs_bb, join);
+    else cond_branch(lhs, join, rhs_bb);
+
+    cur = rhs_bb;
+    store(expr(n->rhs), slot, types.bool_ty);
+    branch(join);
+
+    cur = join;
+    return load(slot, types.bool_ty);
+  }
+
+  int string_literal(Node *n) {
+    IrInst in{};
+    in.op = IR_STR_VALUE;
+    in.dst = new_value(types.ptr(types.string_ty));
+    in.imm = mod.intern(n->text);
+    in.type = types.string_ty;
+    emit(in);
+    return in.dst;
+  }
+
+  int struct_literal(Node *n) {
+    int slot = alloca_slot(n->type);
+    for (Node *init : n->kids) {
+      const Field *field = find_field(n->type, init->name);
+      int at = gep_field(slot, n->type, field->index);
+      assign_into(at, init->rhs, field->type);
+    }
+    return slot;
+  }
+
+  void zero(int dst, Type *type) {
+    IrInst in{};
+    in.op = IR_ZERO;
+    in.a = dst;
+    in.imm = size_of(type);
+    in.type = type;
+    emit(in);
+  }
+
+  int array_literal(Node *n) {
+    int slot = alloca_slot(n->type);
+    Type *elem = n->type->elem;
+    if (n->kids.empty()) {
+      zero(slot, n->type);
+      return slot;
+    }
+    for (size_t i = 0; i < n->kids.size(); i++) {
+      int at = gep_index(slot, constant((int64_t)i, types.usize_ty), elem);
+      assign_into(at, n->kids[i], elem);
+    }
+    return slot;
+  }
+
+  int slice_expr(Node *n) {
+    int len = -1;
+    int data = data_pointer(n->lhs, &len);
+    Type *elem = n->type->kind == TY_STRING ? types.u8_ty : n->type->elem;
+
+    int low = n->cond ? to_word(expr(n->cond)) : constant(0, types.usize_ty);
+    int high = n->rhs ? to_word(expr(n->rhs)) : len;
+
+    if (mode_checks(mode) && len >= 0) {
+      int ok = binop(IR_LE, low, high, types.bool_ty);
+      guard(ok, "panic: slice bounds out of order at line " +
+                    std::to_string(n->pos.line) + "\n");
+      ok = binop(IR_LE, high, len, types.bool_ty);
+      guard(ok, "panic: slice bounds out of range at line " +
+                    std::to_string(n->pos.line) + "\n");
+    }
+
+    int slot = alloca_slot(n->type);
+    store(gep_index(data, low, elem), gep_slice_ptr(slot),
+          types.rawptr(types.u8_ty));
+    store(binop(IR_SUB, high, low, types.usize_ty), gep_slice_len(slot),
+          types.usize_ty);
+    return slot;
+  }
+
+  // --- optionals ---------------------------------------------------------
+
+  // `?*T` is the pointer itself; anything else carries a flag beside the
+  // value. These two helpers hide which one is in play.
+  int opt_present(int value, Type *type) {
+    if (type->kind == TY_OPT)
+      return binop(IR_NE, value, constant(0, type), types.bool_ty);
+    return load(gep_named(value, type, "has"), types.bool_ty);
+  }
+
+  int opt_value(int value, Type *type) {
+    if (type->kind == TY_OPT) return value; // same bits, narrower type
+    Type *payload = const_cast<Type *>(opt_payload(type));
+    int at = gep_named(value, type, "value");
+    return is_aggregate(payload) ? at : load(at, payload);
+  }
+
+  int nil_value(Type *type) {
+    if (type->kind == TY_OPT) return constant(0, type);
+    int slot = alloca_slot(type);
+    store(constant(0, types.bool_ty), gep_named(slot, type, "has"),
+          types.bool_ty);
+    return slot;
+  }
+
+  int lower_orelse(Node *n) {
+    Type *box_type = n->lhs->type;
+    Type *value = n->type;
+    int box = expr(n->lhs);
+    int has = opt_present(box, box_type);
+
+    if (n->body) {
+      int fail_bb = new_block();
+      int next_bb = new_block();
+      cond_branch(has, next_bb, fail_bb);
+
+      cur = fail_bb;
+      stmt(n->body);
+      branch(next_bb);
+
+      cur = next_bb;
+      if (n->form == 1 || value->kind == TY_VOID) return -1;
+      return opt_value(box, box_type);
+    }
+
+    int ok_bb = new_block();
+    int fail_bb = new_block();
+    int join = new_block();
+    int slot = value->kind == TY_VOID ? -1 : alloca_slot(value);
+    cond_branch(has, ok_bb, fail_bb);
+
+    cur = ok_bb;
+    if (slot >= 0) {
+      int at = opt_value(box, box_type);
+      if (is_aggregate(value)) copy(slot, at, value);
+      else store(at, slot, value);
+    }
+    branch(join);
+
+    cur = fail_bb;
+    if (slot >= 0) assign_into(slot, n->rhs, value);
+    else expr(n->rhs);
+    branch(join);
+
+    cur = join;
+    if (slot < 0) return -1;
+    return is_aggregate(value) ? slot : load(slot, value);
+  }
+
+  // Reads the payload out of an `!T` box. Void payloads have nothing to read.
+  int payload_of(int box, Type *box_type, Type *value) {
+    if (value->kind == TY_VOID) return -1;
+    int at = gep_named(box, box_type, "value");
+    return is_aggregate(value) ? at : load(at, value);
+  }
+
+  void finish_with_error(int code) {
+    emit_defers(0, true);
+    store(code, gep_named(sret, ret, "code"), types.error_ty);
+    IrInst in{};
+    in.op = IR_RET;
+    emit(in);
+  }
+
+  int lower_try(Node *n) {
+    Type *box_type = n->lhs->type;
+    int box = expr(n->lhs);
+    int code = load(gep_named(box, box_type, "code"), types.error_ty);
+    int ok = binop(IR_EQ, code, constant(0, types.error_ty), types.bool_ty);
+
+    int fail_bb = new_block();
+    int next_bb = new_block();
+    cond_branch(ok, next_bb, fail_bb);
+
+    cur = fail_bb;
+    finish_with_error(code);
+
+    cur = next_bb;
+    return payload_of(box, box_type, n->type);
+  }
+
+  int lower_catch(Node *n) {
+    Type *box_type = n->lhs->type;
+    Type *value = n->type;
+    int box = expr(n->lhs);
+    int code = load(gep_named(box, box_type, "code"), types.error_ty);
+    int ok = binop(IR_EQ, code, constant(0, types.error_ty), types.bool_ty);
+
+    if (n->body) {
+      // The handler block is required to leave, so reaching next_bb means the
+      // value is there.
+      int fail_bb = new_block();
+      int next_bb = new_block();
+      cond_branch(ok, next_bb, fail_bb);
+
+      cur = fail_bb;
+      if (n->sym) {
+        n->sym->slot = alloca_slot(types.error_ty);
+        store(code, n->sym->slot, types.error_ty);
+      }
+      stmt(n->body);
+      branch(next_bb);
+
+      cur = next_bb;
+      // In statement position the handler may fall through, and then there is
+      // no payload to speak of.
+      if (n->form == 1) return -1;
+      return payload_of(box, box_type, value);
+    }
+
+    int ok_bb = new_block();
+    int fail_bb = new_block();
+    int join = new_block();
+    int slot = value->kind == TY_VOID ? -1 : alloca_slot(value);
+    cond_branch(ok, ok_bb, fail_bb);
+
+    cur = ok_bb;
+    if (slot >= 0) {
+      int at = gep_named(box, box_type, "value");
+      if (is_aggregate(value)) copy(slot, at, value);
+      else store(load(at, value), slot, value);
+    }
+    branch(join);
+
+    cur = fail_bb;
+    if (slot >= 0) assign_into(slot, n->rhs, value);
+    else expr(n->rhs);
+    branch(join);
+
+    cur = join;
+    if (slot < 0) return -1;
+    return is_aggregate(value) ? slot : load(slot, value);
+  }
+
+  // An interface value is { data, vtable }; dispatch loads the slot at the
+  // index the checker resolved and calls through it, with `data` as receiver.
+  void dispatch(Node *n, IrInst &in) {
+    Node *base = n->lhs->lhs;
+    Type *iface = base->type->kind == TY_PTR ? base->type->elem : base->type;
+    Type *opaque = types.rawptr(types.u8_ty);
+
+    int value = base->type->kind == TY_PTR ? expr(base) : addr(base);
+    int data = load(gep_named(value, iface, "data"), opaque);
+    int table = load(gep_named(value, iface, "vtable"), opaque);
+    int slot = gep_index(table, constant((int64_t)n->ival, types.usize_ty),
+                         opaque);
+
+    in.callee.clear();
+    in.a = load(slot, opaque);
+    in.args.push_back(data);
+  }
+
+  // A value being handed to an interface parameter needs the { data, vtable }
+  // pair built somewhere first.
+  int materialize(Node *value) {
+    if (!value->bind_to) return expr(value);
+    int slot = alloca_slot(value->bind_to);
+    assign_into(slot, value, value->bind_to);
+    return slot;
+  }
+
+  int call(Node *n) {
+    IrInst in{};
+    in.op = IR_CALL;
+    in.callee = n->name.empty() ? n->lhs->name : n->name;
+    in.type = n->type;
+
+    int result = -1;
+    if (is_aggregate(n->type)) {
+      result = alloca_slot(n->type);
+      in.args.push_back(result); // hidden out pointer, ahead of the real args
+      in.type = types.void_ty;
+    }
+    // Both a `T` and a `*T` receiver are passed as the address of the value:
+    // an aggregate parameter is already a pointer the callee copies from.
+    if (n->form == 1) {
+      Node *base = n->lhs->lhs;
+      in.args.push_back(base->type->kind == TY_PTR ? expr(base) : addr(base));
+    } else if (n->form == 2) {
+      dispatch(n, in);
+    }
+    for (Node *arg : n->kids) in.args.push_back(materialize(arg));
+    if (result < 0 && n->type->kind != TY_VOID) in.dst = new_value(n->type);
+    emit(in);
+    return result >= 0 ? result : in.dst;
+  }
+
+  int expr(Node *n) {
+    switch (n->kind) {
+    case ND_INT_LIT:
+      return constant((int64_t)n->ival, n->type);
+
+    case ND_BOOL_LIT:
+      return constant((int64_t)n->ival, types.bool_ty);
+
+    case ND_STRING_LIT:
+      return string_literal(n);
+
+    case ND_ARRAY_LIT:
+      return array_literal(n);
+
+    case ND_STRUCT_LIT:
+      return struct_literal(n);
+
+    case ND_SLICE_EXPR:
+      return slice_expr(n);
+
+    case ND_IDENT:
+      return is_aggregate(n->type) ? n->sym->slot : load(n->sym->slot, n->type);
+
+    case ND_FIELD: case ND_INDEX: {
+      // `a.len` on an array is known at compile time, with nothing to load.
+      if (n->kind == ND_FIELD && n->lhs->type->kind == TY_ARRAY)
+        return constant(n->lhs->type->count, types.usize_ty);
+      int at = addr(n);
+      return is_aggregate(n->type) ? at : load(at, n->type);
+    }
+
+    case ND_BINARY:
+      if (n->op == TK_ANDAND || n->op == TK_OROR) return short_circuit(n);
+      if (n->type->kind == TY_RAWPTR) {
+        int base = expr(n->lhs);
+        int offset = to_word(expr(n->rhs));
+        if (n->op == TK_MINUS)
+          offset = binop(IR_SUB, constant(0, types.usize_ty), offset,
+                         types.usize_ty);
+        return gep_index(base, offset, n->type->elem);
+      }
+      if (wraps(n->op) || !is_integer(n->type))
+        return binop(ir_binop(n->op), expr(n->lhs), expr(n->rhs), n->type);
+      return checked_arith(ir_binop(n->op), expr(n->lhs), expr(n->rhs),
+                           n->type, n->pos);
+
+    case ND_UNARY: {
+      if (n->op == TK_AMP) return addr(n->lhs);
+      if (n->op == TK_STAR) {
+        int p = expr(n->lhs);
+        return is_aggregate(n->type) ? p : load(p, n->type);
+      }
+      IrInst in{};
+      in.op = n->op == TK_BANG ? IR_NOT : IR_NEG;
+      in.dst = new_value(n->type);
+      in.a = expr(n->lhs);
+      in.type = n->type;
+      emit(in);
+      return in.dst;
+    }
+
+    case ND_CALL:
+      return call(n);
+
+    case ND_ERROR_LIT:
+      return constant((int64_t)n->ival, types.error_ty);
+
+    case ND_NIL_LIT:
+      return nil_value(n->type);
+
+    case ND_TRY:
+      return lower_try(n);
+
+    case ND_ORELSE:
+      return lower_orelse(n);
+
+    case ND_CATCH:
+      return lower_catch(n);
+
+    case ND_CONVERT: {
+      int value = expr(n->kids[0]);
+      Type *from = fn->value_type[value];
+      if (from->bits == n->type->bits) return value; // same width, same bits
+      IrInst in{};
+      in.op = IR_CAST;
+      in.dst = new_value(n->type);
+      in.a = value;
+      in.type = n->type;
+      emit(in);
+      return in.dst;
+    }
+
+    default:
+      return -1;
+    }
+  }
+
+  // Writes the value of `value` into the address `at`, copying when the type
+  // is an aggregate and wrapping when an optional is being given a payload.
+  void assign_into(int at, Node *value, Type *type) {
+    if (value->vtable >= 0) {
+      // The node still has its own pointer type; the vtable the checker picked
+      // is what turns the pair into an interface value.
+      Type *opaque = types.rawptr(types.u8_ty);
+      store(expr(value), gep_named(at, type, "data"), opaque);
+
+      IrInst table{};
+      table.op = IR_VTABLE;
+      table.dst = new_value(opaque);
+      table.imm = value->vtable;
+      table.type = opaque;
+      emit(table);
+      store(table.dst, gep_named(at, type, "vtable"), opaque);
+      return;
+    }
+    if (type->is_optional && !type_eq(value->type, type)) {
+      Type *payload = const_cast<Type *>(opt_payload(type));
+      store(constant(1, types.bool_ty), gep_named(at, type, "has"),
+            types.bool_ty);
+      int inner = gep_named(at, type, "value");
+      int v = expr(value);
+      if (is_aggregate(payload)) copy(inner, v, payload);
+      else store(v, inner, payload);
+      return;
+    }
+    int v = expr(value);
+    if (is_aggregate(type)) copy(at, v, type);
+    else store(v, at, type);
+  }
+
+  // --- statements --------------------------------------------------------
+
+  void if_stmt(Node *n) {
+    if (!n->name.empty()) {
+      Type *box_type = n->cond->type;
+      int box = expr(n->cond);
+      int has = opt_present(box, box_type);
+
+      int then_bb = new_block();
+      int else_bb = n->els ? new_block() : -1;
+      int join = new_block();
+      cond_branch(has, then_bb, else_bb >= 0 ? else_bb : join);
+
+      cur = then_bb;
+      n->sym->slot = alloca_slot(n->sym->type);
+      int inner = opt_value(box, box_type);
+      if (is_aggregate(n->sym->type)) copy(n->sym->slot, inner, n->sym->type);
+      else store(inner, n->sym->slot, n->sym->type);
+      stmt(n->body);
+      branch(join);
+
+      if (else_bb >= 0) {
+        cur = else_bb;
+        stmt(n->els);
+        branch(join);
+      }
+      cur = join;
+      return;
+    }
+
+    int cond = expr(n->cond);
+    int then_bb = new_block();
+    int else_bb = n->els ? new_block() : -1;
+    int join = new_block();
+
+    cond_branch(cond, then_bb, else_bb >= 0 ? else_bb : join);
+
+    cur = then_bb;
+    stmt(n->body);
+    branch(join);
+
+    if (else_bb >= 0) {
+      cur = else_bb;
+      stmt(n->els);
+      branch(join);
+    }
+    cur = join;
+  }
+
+  void range_loop(Node *n) {
+    Type *type = n->type;
+    int slot = alloca_slot(type);
+    n->sym->slot = slot;
+
+    store(expr(n->lhs), slot, type);
+    int limit = expr(n->rhs);
+
+    int cond_bb = new_block();
+    int body_bb = new_block();
+    int step_bb = new_block();
+    int exit_bb = new_block();
+
+    branch(cond_bb);
+    cur = cond_bb;
+    cond_branch(binop(IR_LT, load(slot, type), limit, types.bool_ty), body_bb,
+                exit_bb);
+
+    loops.push_back({step_bb, exit_bb, scopes.size()});
+    cur = body_bb;
+    stmt(n->body);
+    branch(step_bb);
+    loops.pop_back();
+
+    cur = step_bb;
+    store(binop(IR_ADD, load(slot, type), constant(1, type), type), slot, type);
+    branch(cond_bb);
+
+    cur = exit_bb;
+  }
+
+  // Walks a slice in fixed-size pieces, the last one short. Each iteration
+  // rebuilds the piece in the same slot, which is fine because a task copies
+  // the header it is given.
+  void partition_loop(Node *n) {
+    Type *slice = n->type;
+    Type *elem = slice->elem;
+    Type *word = types.usize_ty;
+
+    int len = -1;
+    int data = data_pointer(n->lhs, &len);
+    int size = to_word(expr(n->rhs));
+
+    // Checked once per loop, not per iteration: a zero-sized piece would
+    // never advance the offset.
+    guard(binop(IR_NE, size, constant(0, word), types.bool_ty),
+          "panic: chunks(0) would never advance, at line " +
+              std::to_string(n->pos.line) + "\n");
+
+    int offset = alloca_slot(word);
+    store(constant(0, word), offset, word);
+
+    int part = alloca_slot(slice);
+    n->sym->slot = part;
+    if (n->index_sym) n->index_sym->slot = offset;
+
+    int cond_bb = new_block();
+    int body_bb = new_block();
+    int step_bb = new_block();
+    int exit_bb = new_block();
+
+    branch(cond_bb);
+    cur = cond_bb;
+    cond_branch(binop(IR_LT, load(offset, word), len, types.bool_ty), body_bb,
+                exit_bb);
+
+    cur = body_bb;
+    int start = load(offset, word);
+    int stop = binop(IR_ADD, start, size, word);
+    // The final piece stops at the end of the slice rather than past it.
+    int over = binop(IR_GT, stop, len, types.bool_ty);
+    int clamp = alloca_slot(word);
+    store(stop, clamp, word);
+    int clamp_bb = new_block();
+    int ready_bb = new_block();
+    cond_branch(over, clamp_bb, ready_bb);
+    cur = clamp_bb;
+    store(len, clamp, word);
+    branch(ready_bb);
+    cur = ready_bb;
+    stop = load(clamp, word);
+
+    store(gep_index(data, start, elem), gep_slice_ptr(part),
+          types.rawptr(types.u8_ty));
+    store(binop(IR_SUB, stop, start, word), gep_slice_len(part), word);
+
+    loops.push_back({step_bb, exit_bb, scopes.size()});
+    stmt(n->body);
+    branch(step_bb);
+    loops.pop_back();
+
+    cur = step_bb;
+    store(binop(IR_ADD, load(offset, word), size, word), offset, word);
+    branch(cond_bb);
+
+    cur = exit_bb;
+  }
+
+  void cond_loop(Node *n) {
+    int cond_bb = new_block();
+    int body_bb = new_block();
+    int exit_bb = new_block();
+
+    branch(cond_bb);
+    cur = cond_bb;
+    if (n->cond) cond_branch(expr(n->cond), body_bb, exit_bb);
+    else branch(body_bb);
+
+    loops.push_back({cond_bb, exit_bb, scopes.size()});
+    cur = body_bb;
+    stmt(n->body);
+    branch(cond_bb);
+    loops.pop_back();
+
+    cur = exit_bb;
+  }
+
+  void assign_stmt(Node *n) {
+    Type *type = n->lhs->type;
+    int at = addr(n->lhs);
+
+    if (n->op == TK_ASSIGN) {
+      assign_into(at, n->rhs, type);
+      return;
+    }
+    TokKind arith = assign_arith(n->op);
+    int value = expr(n->rhs);
+    int current = load(at, type);
+    int result = is_integer(type) && !wraps(arith)
+                     ? checked_arith(ir_binop(arith), current, value, type,
+                                     n->pos)
+                     : binop(ir_binop(arith), current, value, type);
+    store(result, at, type);
+  }
+
+  void emit_ret(int value, Type *type) {
+    IrInst in{};
+    in.op = IR_RET;
+    if (value >= 0) {
+      in.a = value;
+      in.type = type;
+    }
+    emit(in);
+  }
+
+  // The return value is computed before any deferred statement runs, so a
+  // `defer` that frees scratch memory cannot clobber what is being returned.
+  void return_stmt(Node *n) {
+    if (!ret->is_error_union) {
+      int value = n->lhs ? expr(n->lhs) : -1;
+      if (sret >= 0 && value >= 0) {
+        copy(sret, value, n->lhs->type);
+        value = -1;
+      }
+      emit_defers(0, false);
+      emit_ret(value, n->lhs ? n->lhs->type : nullptr);
+      return;
+    }
+
+    switch (n->form) {
+    case 4: // bare return from a fallible function: success
+      emit_defers(0, false);
+      emit_ret(-1, nullptr);
+      break;
+
+    case 1: { // a plain value, wrapped as success
+      assign_into(gep_named(sret, ret, "value"), n->lhs,
+                  const_cast<Type *>(ret->elem));
+      emit_defers(0, false);
+      emit_ret(-1, nullptr);
+      break;
+    }
+
+    case 2: // an error code
+      finish_with_error(expr(n->lhs));
+      break;
+
+    default: { // forwarding someone else's !T: which path it is decides at run time
+      int box = expr(n->lhs);
+      copy(sret, box, ret);
+      int code = load(gep_named(sret, ret, "code"), types.error_ty);
+      int failed = binop(IR_NE, code, constant(0, types.error_ty),
+                         types.bool_ty);
+
+      int err_bb = new_block();
+      int ok_bb = new_block();
+      cond_branch(failed, err_bb, ok_bb);
+
+      cur = err_bb;
+      emit_defers(0, true);
+      emit_ret(-1, nullptr);
+
+      cur = ok_bb;
+      emit_defers(0, false);
+      emit_ret(-1, nullptr);
+      break;
+    }
+    }
+  }
+
+  void stmt(Node *n) {
+    switch (n->kind) {
+    case ND_BLOCK:
+      scopes.emplace_back();
+      for (Node *st : n->kids) stmt(st);
+      emit_defers(scopes.size() - 1, false);
+      scopes.pop_back();
+      break;
+
+    case ND_DEFER:
+      scopes.back().push_back({n->body, n->is_errdefer});
+      break;
+
+    case ND_VAR:
+      n->sym->slot = alloca_slot(n->type);
+      assign_into(n->sym->slot, n->rhs, n->type);
+      break;
+
+    case ND_ASSIGN:
+      assign_stmt(n);
+      break;
+
+    case ND_RETURN:
+      return_stmt(n);
+      break;
+
+    case ND_IF:
+      if_stmt(n);
+      break;
+
+    case ND_FOR:
+      if (n->is_parallel) parallel_for(n);
+      else if (n->is_range) range_loop(n);
+      else if (!n->name.empty()) partition_loop(n);
+      else cond_loop(n);
+      break;
+
+    case ND_BREAK:
+      emit_defers(loops.back().depth, false);
+      branch(loops.back().break_bb);
+      break;
+
+    case ND_CONTINUE:
+      emit_defers(loops.back().depth, false);
+      branch(loops.back().continue_bb);
+      break;
+
+    case ND_SCOPE:
+      scope_stmt(n);
+      break;
+
+    case ND_SPAWN:
+      spawn_stmt(n);
+      break;
+
+    case ND_EXPR_STMT:
+      expr(n->lhs);
+      break;
+
+    default:
+      break;
+    }
+  }
+
+  void func(Node *decl, IrFunc &out) {
+    fn = &out;
+    cur = 0;
+    sret = -1;
+    entry_allocas.clear();
+    loops.clear();
+    scopes.clear();
+
+    out.name = decl->name;
+    out.ret = ret = decl->sym->type->ret;
+    out.is_extern = decl->is_extern;
+    out.ret_by_pointer = is_aggregate(out.ret);
+    for (Node *p : decl->kids) out.params.push_back(p->type);
+    if (decl->is_extern) return;
+
+    // Parameters occupy the first value ids; the backend names them the same.
+    if (out.ret_by_pointer) sret = new_value(types.ptr(out.ret));
+    int first_param = (int)fn->value_type.size();
+    // Aggregates are passed as the address of the caller's value.
+    for (Node *p : decl->kids)
+      new_value(is_aggregate(p->type) ? types.ptr(p->type) : p->type);
+    new_block();
+
+    for (size_t i = 0; i < decl->kids.size(); i++) {
+      Node *p = decl->kids[i];
+      p->sym->slot = alloca_slot(p->type);
+      // Aggregates arrive as a pointer and are copied: parameters are values.
+      if (is_aggregate(p->type)) copy(p->sym->slot, first_param + (int)i, p->type);
+      else store(first_param + (int)i, p->sym->slot, p->type);
+    }
+
+    // Start a fallible function off as success, so falling off the end of an
+    // `!void` and every `return value` path are already correct.
+    if (ret->is_error_union)
+      store(constant(0, types.error_ty), gep_named(sret, ret, "code"),
+            types.error_ty);
+
+    stmt(decl->body);
+
+    auto &entry = out.blocks[0].insts;
+    entry.insert(entry.begin(), entry_allocas.begin(), entry_allocas.end());
+
+    // Every block needs a terminator. A block left open either falls off the
+    // end of a void function or was made unreachable by a return.
+    for (IrBlock &bb : out.blocks) {
+      bool open = bb.insts.empty();
+      if (!open) {
+        switch (bb.insts.back().op) {
+        case IR_BR: case IR_CONDBR: case IR_RET: case IR_UNREACHABLE: break;
+        default: open = true; break;
+        }
+      }
+      if (!open) continue;
+
+      IrInst in{};
+      in.op = out.ret->kind == TY_VOID || out.ret_by_pointer ? IR_RET
+                                                             : IR_UNREACHABLE;
+      bb.insts.push_back(in);
+    }
+  }
+};
+
+} // namespace
+
+void lower(Program &prog, TypeTable &types, Mode mode, IrModule &mod) {
+  Lowerer lowerer(types, mod, mode);
+
+  for (Package *pkg : prog.order)
+    for (Node *decl : pkg->unit->kids)
+      if (decl->kind == ND_STRUCT_DECL || decl->kind == ND_INTERFACE_DECL)
+        mod.structs.push_back(decl->type);
+  for (const auto &vt : types.vtables()) mod.vtables.push_back(vt.entries);
+  for (Type *t : types.error_unions_made()) mod.structs.push_back(t);
+  for (Type *t : types.optionals_made()) mod.structs.push_back(t);
+
+  // Dependencies come first, so a package is always lowered after everything
+  // it refers to.
+  for (Package *pkg : prog.order) {
+    for (Node *decl : pkg->unit->kids) {
+      // A generic itself is never compiled; only its instantiations are.
+      if (decl->kind != ND_FUNC || !decl->tparams.empty()) continue;
+      mod.funcs.emplace_back();
+      lowerer.func(decl, mod.funcs.back());
+    }
+    for (Node *decl : pkg->instances) {
+      mod.funcs.emplace_back();
+      lowerer.func(decl, mod.funcs.back());
+    }
+  }
+
+  for (const auto &thunk : lowerer.thunks) {
+    mod.funcs.emplace_back();
+    lowerer.emit_thunk(thunk, mod.funcs.back());
+  }
+  for (const auto &chunk : lowerer.chunks) {
+    mod.funcs.emplace_back();
+    lowerer.emit_chunk(chunk, mod.funcs.back());
+  }
+}
