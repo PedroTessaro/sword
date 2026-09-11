@@ -87,10 +87,11 @@ slices, strings, pointers, optionals, error unions, `defer`, packages, and the
 whole concurrency story with a work-stealing scheduler behind it.
 
 The standard library covers memory (`std/mem`), byte buffers (`std/bytes`),
-byte-level string handling (`std/strings`), TCP (`std/net`), and HTTP/1.1 with
+byte-level strings (`std/strings`), generic containers (`std/collections`),
+formatting (`std/fmt`), JSON (`std/json`), TCP (`std/net`), and HTTP/1.1 with
 keep-alive, server and client (`std/http`).
 
-Not there yet: `atomic[T]` and `shared[T]`, channels, and function values.
+Not there yet: `shared[T]`, channels, and function values.
 
 ## License
 

@@ -278,14 +278,23 @@ mut total i64 = 0
 parallel for i in 0..n reduce(+: total) {
     total += xs[i]
 }
+
+mut biggest i64 = 0
+parallel for i in 0..n reduce(max: biggest) {
+    if xs[i] > biggest {
+        biggest = xs[i]
+    }
+}
 ```
 
-Each worker gets a private copy of `total`, and they are folded together once
-at the end — so there is no contention per iteration. Without the `reduce`
-clause, writing `total` in the body is an error, and the message tells you to
-add it.
+Each worker gets a private copy, started at the operator's identity, and they
+are folded together once at the end — so there is no contention per iteration.
+Without the `reduce` clause, writing the variable in the body is an error, and
+the message tells you to add it.
 
-Only `+` on integers exists so far.
+The body does the per-element combining; the clause only says how the workers'
+copies are joined. `+`, `&`, `|`, `min` and `max` are available, and `+` also
+applies to floats.
 
 ### How much faster
 
@@ -321,11 +330,43 @@ Task arguments up to 96 bytes ride inside the task itself, and finished tasks
 go back on a per-worker free list, so spawning in a loop does not touch the
 allocator.
 
+## Shared counters
+
+`reduce` covers accumulating over a loop. For anything else — a hit counter, a
+flag, a sequence number — there is `atomic[T]`:
+
+```sword
+mut hits := atomic[u64](0)
+
+scope {
+    for part in rows.chunks(64) {
+        spawn count(part, &hits)
+    }
+}
+total := hits.Load()
+```
+
+An atomic is the one exemption the race checker makes: several tasks may write
+one at the same time. Everything reached through it goes through `Load`,
+`Store`, `Add`, `Sub`, `And`, `Or`, `Swap` and `CompareSwap`, each a single
+instruction with sequentially consistent ordering. There is no way to reach the
+raw value, which is what makes the exemption safe to grant.
+
+A plain integer gets no such treatment:
+
+```sword
+mut counter u64 = 0
+scope {
+    spawn bump(&counter)
+    spawn bump(&counter)   // error: two tasks writing 'counter'
+}
+```
+
 ## What is not here yet
 
-**`atomic[T]` and `shared[T]`.** There is no escape hatch for genuinely shared
-mutable state — a counter, a table. Today that is a compile error, and
-`reduce` covers the accumulator case. These are the next thing to land.
+**`shared[T]`.** An atomic covers scalars. There is still no mutex-protected
+wrapper for a whole structure — a map, a queue, a cache — so sharing one of
+those for writing remains a compile error.
 
 **Channels.** The syntax is reserved and the design is settled, but nothing is
 implemented.

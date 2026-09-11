@@ -20,6 +20,7 @@ For looking things up. [The tour](tour.md) is the place to learn from.
 | `[N]T` | array, a value |
 | `[*]T` | raw pointer, no length, for FFI |
 | `struct` `interface` | |
+| `atomic[T]` | an integer or bool many tasks may write at once |
 
 `?*T` and `?[*]T` cost one word. Over anything else, `?T` is the value with a
 flag beside it.
@@ -100,12 +101,46 @@ By precedence, tightest first:
 
 Prefix: `-` `!` `&` (address of) `*` (dereference) `try`.
 
-Assignment: `=` `+=` `-=` `*=` `/=` `%=` and the wrapping forms below.
+Assignment: `=` `+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=` and the
+wrapping forms below.
 
 `+%` `-%` `*%` and `+%=` `-%=` `*%=` wrap on overflow and are never checked, in
 any build mode.
 
 `[*]T` supports `p + n` and `p - n`. `*T` and `[]T` do not.
+
+## Atomics
+
+`atomic[T]` over an integer or a bool. It is the one thing several tasks may
+write at the same time; the race checker lets it through and everything else
+through only for reading.
+
+```sword
+mut hits := atomic[u64](0)
+
+hits.Load()                  // T
+hits.Store(v)
+hits.Swap(v)                 // T, the previous value
+hits.Add(v)                  // T, integers only
+hits.Sub(v)
+hits.And(v)
+hits.Or(v)
+hits.CompareSwap(old, new)   // bool: whether it matched
+```
+
+Every one of these is a single machine instruction, with sequentially
+consistent ordering.
+
+## Reductions
+
+```sword
+parallel for i in a..b reduce(op: acc) { ... }
+```
+
+`op` is `+`, `&`, `|`, `min` or `max`; only `+` applies to a float. The body
+combines one element into the worker's private copy — `acc += xs[i]` for a sum,
+`if xs[i] > acc { acc = xs[i] }` for a maximum — and the clause says how the
+copies are folded together at the end.
 
 ## Errors
 
@@ -255,6 +290,93 @@ func ToLower(c u8) u8
 func ParseU64(s string) !u64
 ```
 
+### `std/collections`
+
+```sword
+func NewList[T](mut a mem.Allocator, capacity u64) !List[T]
+func (l *List[T]) Len() u64
+func (l *List[T]) Cap() u64
+func (l *List[T]) Slice() []T          // invalid after the next Push
+func (l *List[T]) At(i u64) T
+func (mut l *List[T]) Set(i u64, v T)
+func (mut l *List[T]) Push(v T) !void
+func (mut l *List[T]) Pop() ?T
+func (mut l *List[T]) Reset()
+func (mut l *List[T]) Free()
+```
+
+A hash map with string keys, open addressing and linear probing:
+
+```sword
+func NewMap[V](mut a mem.Allocator, capacity u64) !Map[V]
+func Hash(key string) u64
+func (m *Map[V]) Len() u64
+func (m *Map[V]) Get(key string) ?V
+func (m *Map[V]) Has(key string) bool
+func (mut m *Map[V]) Set(key string, value V) !void
+func (mut m *Map[V]) Delete(key string) bool
+func (mut m *Map[V]) Free()
+
+// Iteration is by slot: walk 0..Slots() and ask each one.
+func (m *Map[V]) Slots() u64
+func (m *Map[V]) KeyAt(i u64) ?string
+func (m *Map[V]) ValueAt(i u64) V
+```
+
+Keys are strings. A key type parameter would need hashing and equality as
+constraints, and there is nowhere to hang those yet.
+
+### `std/fmt`
+
+There is no `Sprintf`: Sword has no variadic functions. Formatting is a
+sequence of writes into a buffer, which costs a line or two more and never has
+a format string that disagrees with its arguments.
+
+```sword
+func U64(mut b *bytes.Buffer, v u64) !void
+func I64(mut b *bytes.Buffer, v i64) !void
+func Bool(mut b *bytes.Buffer, v bool) !void
+func Hex(mut b *bytes.Buffer, v u64, width u64) !void
+func F64(mut b *bytes.Buffer, v f64, decimals u64) !void
+func Pad(mut b *bytes.Buffer, s string, width u64) !void
+func Quote(mut b *bytes.Buffer, s string) !void      // JSON string, escaped
+```
+
+### `std/json`
+
+A parsed document is one flat list of nodes; children are reached by index
+rather than by pointer, so the whole tree is a single allocation.
+
+```sword
+func Parse(input []u8, mut a mem.Allocator) !Document
+
+func (d *Document) Root() u64
+func (d *Document) Kind(at u64) u8         // Null Bool Number Str Array Object
+func (d *Document) Text(at u64) string
+func (d *Document) Number(at u64) f64
+func (d *Document) Truth(at u64) bool
+func (d *Document) Len(at u64) u64         // array or object size
+func (d *Document) At(at u64, i u64) ?u64
+func (d *Document) Get(at u64, key string) ?u64
+func (d *Document) KeyAt(at u64) string
+func (d *Document) GetText(at u64, key string) string
+func (d *Document) GetNumber(at u64, key string, fallback f64) f64
+```
+
+Writing is a streaming writer that puts the commas in for you:
+
+```sword
+mut w := json.NewWriter(&buffer)
+try w.BeginObject()
+try w.Key("name")
+try w.Str("sword")
+try w.Key("tags")
+try w.BeginArray()
+try w.Str("fast")
+try w.EndArray()
+try w.EndObject()
+```
+
 ### `std/net`
 
 TCP over the loopback interface. Port 0 asks the operating system to choose.
@@ -266,6 +388,7 @@ func (l *Listener) Accept() !Conn
 func (l *Listener) Close()                   // wakes a blocked Accept
 
 func Dial(host string, port i32) !Conn
+func (c *Conn) SetTimeout(millis i64) !void  // 0 waits forever
 func (c *Conn) Read(mut into []u8) !u64      // 0 means the peer is done
 func (c *Conn) Write(from []u8) !void
 func (c *Conn) WriteString(s string) !void
@@ -301,7 +424,9 @@ func (mut r *Response) WriteString(s string) !void
 ```
 
 Header lookup is case-insensitive. A request carries at most 32 headers and
-16 KiB of head; beyond that the connection is rejected.
+16 KiB of head; beyond that the connection is rejected. An accepted connection
+gets a 15-second timeout, so a client that connects and says nothing releases
+its accept loop rather than holding it.
 
 The client returns a response whose body lives in the allocator you pass in:
 
@@ -345,4 +470,5 @@ A `.sw` file compiles alone. A directory compiles as one package.
 
 ## Reserved but not implemented
 
-`chan` and `shared`. The words are taken; the features are not there.
+`chan` and `shared`. The words are taken; the features are not there. There are
+also no function values, so a callback is an interface with one method.
