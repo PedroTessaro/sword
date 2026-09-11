@@ -1,6 +1,7 @@
 package http
 
 import "std/bytes"
+import "std/fmt"
 import "std/mem"
 import "std/net"
 import "std/strings"
@@ -52,6 +53,11 @@ func (mut r *Response) Write(p []u8) !void {
 
 func (mut r *Response) WriteString(s string) !void {
     try r.body.WriteString(s)
+}
+
+// Formats straight into the body; `{}` takes the next argument.
+func (mut r *Response) Printf(format string, args ...any) !void {
+    try fmt.Format(&r.body, format, args...)
 }
 
 func (mut r *Response) Text(status u64, s string) !void {
