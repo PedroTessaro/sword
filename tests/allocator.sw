@@ -1,0 +1,75 @@
+// expect: 90
+// The same `fill` runs against a stack arena and against malloc, chosen at
+// run time through the interface.
+
+extern func malloc(n u64) ?[*]u8
+extern func free(p [*]u8)
+
+interface Allocator {
+    alloc(n u64, align u64) ?[*]u8
+    release(p [*]u8, n u64)
+}
+
+// Bumps a pointer through a buffer it does not own. Freeing an individual
+// block is a no-op; the whole arena is reset at once.
+struct Arena {
+    buf    [*]u8
+    cap    u64
+    offset u64
+}
+
+func (mut a *Arena) alloc(n u64, align u64) ?[*]u8 {
+    start := (a.offset + align - 1) / align * align
+    if start + n > a.cap {
+        return nil
+    }
+    a.offset = start + n
+    return a.buf + start
+}
+
+func (mut a *Arena) release(p [*]u8, n u64) {}
+
+func (mut a *Arena) reset() {
+    a.offset = 0
+}
+
+// Hands every request straight to the C allocator and tracks what is live.
+struct System {
+    live u64
+}
+
+func (mut s *System) alloc(n u64, align u64) ?[*]u8 {
+    p := malloc(n) orelse return nil
+    s.live += n
+    return p
+}
+
+func (mut s *System) release(p [*]u8, n u64) {
+    free(p)
+    s.live -= n
+}
+
+// Works against whichever allocator it is handed.
+func fill(mut a Allocator, n u64) !u64 {
+    mut buf := a.alloc(n, 1) orelse return error.OutOfMemory
+    mut sum u64 = 0
+    for i in 0..n {
+        buf[i] = u8(i)
+        sum += u64(buf[i])
+    }
+    a.release(buf, n)
+    return sum
+}
+
+func main() int {
+    mut backing := [64]u8{}
+    mut arena := Arena{buf: [*]u8(&backing[0]), cap: 64, offset: 0}
+    mut system := System{live: 0}
+
+    a := fill(&arena, 10) catch return 90
+    b := fill(&system, 10) catch return 91
+    if system.live != 0 {
+        return 92
+    }
+    return int(a) + int(b)
+}

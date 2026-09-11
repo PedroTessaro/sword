@@ -23,7 +23,10 @@ $(RT): $(RTOBJ)
 
 -include $(OBJ:.o=.d) $(RTOBJ:.o=.d)
 
+test: $(BIN) $(RT)
+	@./tests/run.sh
+
 clean:
 	rm -f $(OBJ) $(OBJ:.o=.d) $(RTOBJ) $(RTOBJ:.o=.d) $(BIN) $(RT)
 
-.PHONY: all clean
+.PHONY: all test clean

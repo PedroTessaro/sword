@@ -1,0 +1,46 @@
+// expect: 34
+// expect-output: hello interfaces
+
+extern func write(fd i32, buf [*]u8, n u64) i64
+
+interface Writer {
+    put(s string) !u64
+}
+
+struct Fd {
+    handle i32
+    total  u64
+}
+
+struct Counter {
+    total u64
+}
+
+func (mut f *Fd) put(s string) !u64 {
+    n := write(f.handle, s.ptr, s.len)
+    if n < 0 {
+        return error.WriteFailed
+    }
+    f.total += u64(n)
+    return f.total
+}
+
+func (mut c *Counter) put(s string) !u64 {
+    c.total += s.len
+    return c.total
+}
+
+// One body, two concrete types, resolved through the vtable.
+func greet(mut w Writer) !u64 {
+    try w.put("hello ")
+    return try w.put("interfaces\n")
+}
+
+func main() int {
+    mut fd := Fd{handle: 1, total: 0}
+    mut counter := Counter{total: 0}
+
+    a := greet(&fd) catch return 90
+    b := greet(&counter) catch return 91
+    return int(a) + int(b)
+}
