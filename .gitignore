@@ -1,0 +1,10 @@
+*.d
+*.ll
+*.o
+a.out
+docs/design.md
+editors/vscode/node_modules/
+libsword_rt.a
+shield
+swordls
+tests/*.out
