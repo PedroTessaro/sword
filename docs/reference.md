@@ -9,7 +9,7 @@ For looking things up. [The tour](tour.md) is the place to learn from.
 | `i8 i16 i32 i64` | signed integers |
 | `u8 u16 u32 u64` | unsigned integers |
 | `int` `uint` | word-sized, 64 bits |
-| `f32 f64` | floating point — declarable, not yet usable in expressions |
+| `f32 f64` | floating point |
 | `bool` `void` | |
 | `string` | immutable byte slice, two words |
 | `error` | an error code, 16 bits |
@@ -31,16 +31,24 @@ x := expr              // immutable, type inferred
 mut x := expr          // mutable
 x T = expr             // immutable, type written
 mut x T = expr         // mutable, type written
+
+const Name = expr      // package level; folded at compile time
 ```
+
+A constant's initialiser has to be literals, operators and other constants.
+Declaration order does not matter, and a cycle is an error. A constant that is
+an integer may be used as an array length.
 
 ```sword
 func name(a T, mut b U) R { ... }
+func name(a, b T) R { ... }        // one type covers the names before it
 func name[T, U: Constraint](a T) R { ... }
 func (r *T) Method() R { ... }
 func (mut r *T) Method() R { ... }
 extern func c_name(a T) R          // C ABI, name unchanged
 
 struct Name { field T ... }
+struct Name[T] { field T ... }     // generic; a type only once instantiated
 extern struct Name { ... }         // declared field order, for C
 interface Name { Method(a T) R ... }
 
@@ -132,8 +140,9 @@ optional orelse return error.Name
 
 ## Conversions
 
-`T(x)` between numeric types, and between raw pointers. `*T` converts to
-`[*]T`, never the other way — that would fabricate a non-null guarantee.
+`T(x)` between numeric types, between raw pointers, and between `string` and
+`[]u8` in either direction. `*T` converts to `[*]T`, never the other way — that
+would fabricate a non-null guarantee.
 
 `p[a..b]` on a `[*]T`, with both bounds written, produces a `[]T`. It is the
 crossing from unchecked memory to checked.
@@ -152,6 +161,7 @@ crossing from unchecked memory to checked.
 ```sword
 func F[T](x T) T
 func F[T: Constraint](x *T) R
+func (v *Box[T]) Method() T        // methods on a generic struct
 F(value)               // type argument inferred
 F[i32](value)          // written out
 sizeof[T]()            // compile-time constant
@@ -208,6 +218,100 @@ func (mut s *System) Release(p [*]u8, n u64)
 func (s *System) Live() u64
 ```
 
+An allocator is not safe to share between tasks, and the race checker says so:
+handing the same one to two `spawn`s is a compile error. Give each task its own.
+
+### `std/bytes`
+
+A buffer that grows, holding the allocator it was built with:
+
+```sword
+func New(mut a mem.Allocator, capacity u64) !Buffer
+func (b *Buffer) Len() u64
+func (b *Buffer) Bytes() []u8
+func (b *Buffer) Str() string
+func (mut b *Buffer) Reset()
+func (mut b *Buffer) Free()
+func (mut b *Buffer) WriteByte(c u8) !void
+func (mut b *Buffer) Write(from []u8) !void
+func (mut b *Buffer) WriteString(s string) !void
+func (mut b *Buffer) WriteU64(v u64) !void
+```
+
+### `std/strings`
+
+Byte-oriented, which is what a protocol parser wants. `IndexByte` and `Index`
+return the length of the haystack when there is no match.
+
+```sword
+func Equal(a string, b string) bool
+func EqualFold(a string, b string) bool      // case-insensitive
+func HasPrefix(s string, prefix string) bool
+func IndexByte(s string, c u8) u64
+func Index(s string, needle string) u64
+func Contains(s string, needle string) bool
+func TrimSpace(s string) string
+func ToLower(c u8) u8
+func ParseU64(s string) !u64
+```
+
+### `std/net`
+
+TCP over the loopback interface. Port 0 asks the operating system to choose.
+
+```sword
+func Listen(port i32) !Listener
+func (l *Listener) Port() i32
+func (l *Listener) Accept() !Conn
+func (l *Listener) Close()                   // wakes a blocked Accept
+
+func Dial(host string, port i32) !Conn
+func (c *Conn) Read(mut into []u8) !u64      // 0 means the peer is done
+func (c *Conn) Write(from []u8) !void
+func (c *Conn) WriteString(s string) !void
+func (c *Conn) Close()
+```
+
+### `std/http`
+
+HTTP/1.1 with keep-alive. No TLS and no chunked transfer encoding.
+
+```sword
+interface Handler {
+    Serve(req *Request, mut res *Response) !void
+}
+
+func Listen(port i32) !Server
+func (s *Server) Port() i32
+func (s *Server) Serve(h Handler) !void
+func (s *Server) ServeWith(h Handler, workers int) !void
+func (s *Server) Close()                     // stops a running server
+```
+
+A `Request` carries `Method`, `Path`, `Proto`, `Headers` and `Body`. The
+strings point into the connection's read buffer, so they are valid for as long
+as the handler runs.
+
+```sword
+func (mut r *Response) Text(status u64, s string) !void
+func (mut r *Response) JSON(status u64, s string) !void
+func (mut r *Response) SetHeader(name string, value string) !void
+func (mut r *Response) Write(p []u8) !void
+func (mut r *Response) WriteString(s string) !void
+```
+
+Header lookup is case-insensitive. A request carries at most 32 headers and
+16 KiB of head; beyond that the connection is rejected.
+
+The client returns a response whose body lives in the allocator you pass in:
+
+```sword
+func Get(host string, port i32, path string,
+         mut a mem.Allocator) !ClientResponse
+func Post(host string, port i32, path string, contentType string, body []u8,
+          mut a mem.Allocator) !ClientResponse
+```
+
 ## Command line
 
 ```
@@ -241,4 +345,4 @@ A `.sw` file compiles alone. A directory compiles as one package.
 
 ## Reserved but not implemented
 
-`const`, `chan`, `shared`. The words are taken; the features are not there.
+`chan` and `shared`. The words are taken; the features are not there.

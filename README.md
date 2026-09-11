@@ -58,6 +58,7 @@ setup and what the build needs.
   you can run, and they build on each other from hello world to parallel code.
 - **[Concurrency](docs/concurrency.md)** — how tasks, partitions and the race
   checker fit together, and why they are shaped the way they are.
+- **[HTTP](docs/http.md)** — writing a server and a client with `std/http`.
 - **[Reference](docs/reference.md)** — types, operators, keywords, standard
   library. For looking things up once you know the language.
 
@@ -80,13 +81,16 @@ synchronisation at all, which is what the race checker leans on.
 ## Status
 
 Sword compiles to native code through LLVM and the language is usable, but it
-is young. Working today: functions, methods, interfaces with dynamic dispatch,
-generics with constraints, structs, slices, strings, pointers, optionals, error
-unions, `defer`, packages, and the whole concurrency story with a work-stealing
-scheduler behind it.
+is young. Working today: functions, methods, interfaces with dynamic dispatch, generics
+over both functions and structs, floating point, top-level constants, structs,
+slices, strings, pointers, optionals, error unions, `defer`, packages, and the
+whole concurrency story with a work-stealing scheduler behind it.
 
-Not there yet: `atomic[T]` and `shared[T]`, channels, floating point in
-expressions, top-level constants, function values, and generic structs.
+The standard library covers memory (`std/mem`), byte buffers (`std/bytes`),
+byte-level string handling (`std/strings`), TCP (`std/net`), and HTTP/1.1 with
+keep-alive, server and client (`std/http`).
+
+Not there yet: `atomic[T]` and `shared[T]`, channels, and function values.
 
 ## License
 
