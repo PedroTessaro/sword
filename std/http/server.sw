@@ -9,6 +9,9 @@ import "std/strings"
 // shared between tasks — which the race checker would reject anyway.
 const ArenaSize = 262144
 const DefaultWorkers = 4
+// A client that connects and then says nothing would otherwise hold an accept
+// loop for good; four such clients would be the whole server.
+const DefaultTimeout = 15000
 
 struct Request {
     Method, Path, Proto string
@@ -215,6 +218,7 @@ func acceptLoop(s *Server, h Handler) !void {
     mut arena := mem.NewArena(backing[..])
     for {
         mut c := s.listener.Accept() catch return
+        c.SetTimeout(DefaultTimeout) catch {}
         handleConn(&c, h, &arena) catch {}
         c.Close()
         arena.Reset()

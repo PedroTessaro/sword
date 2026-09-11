@@ -226,9 +226,13 @@ struct Lexer {
     case '.': kind = match('.') ? TK_DOTDOT : TK_DOT; break;
     case '=': kind = match('=') ? TK_EQ : TK_ASSIGN; break;
     case '!': kind = match('=') ? TK_NE : TK_BANG; break;
-    case '&': kind = match('&') ? TK_ANDAND : TK_AMP; break;
-    case '|': kind = match('|') ? TK_OROR : TK_PIPE; break;
-    case '^': kind = TK_CARET; break;
+    case '&':
+      kind = match('&') ? TK_ANDAND : match('=') ? TK_AND_ASSIGN : TK_AMP;
+      break;
+    case '|':
+      kind = match('|') ? TK_OROR : match('=') ? TK_OR_ASSIGN : TK_PIPE;
+      break;
+    case '^': kind = match('=') ? TK_XOR_ASSIGN : TK_CARET; break;
     case '%': kind = match('=') ? TK_MOD_ASSIGN : TK_PERCENT; break;
     case '+':
       kind = match('=')   ? TK_ADD_ASSIGN
@@ -251,10 +255,16 @@ struct Lexer {
       break;
     case '/': kind = match('=') ? TK_DIV_ASSIGN : TK_SLASH; break;
     case '<':
-      kind = match('=') ? TK_LE : match('<') ? TK_SHL : TK_LT;
+      kind = match('=')   ? TK_LE
+             : !match('<') ? TK_LT
+             : match('=')  ? TK_SHL_ASSIGN
+                           : TK_SHL;
       break;
     case '>':
-      kind = match('=') ? TK_GE : match('>') ? TK_SHR : TK_GT;
+      kind = match('=')   ? TK_GE
+             : !match('>') ? TK_GT
+             : match('=')  ? TK_SHR_ASSIGN
+                           : TK_SHR;
       break;
     default:
       error(start, "unexpected character '%c'", c);
@@ -357,6 +367,11 @@ const char *tok_name(TokKind kind) {
   case TK_ADD_WRAP_ASSIGN: return "+%=";
   case TK_SUB_WRAP_ASSIGN: return "-%=";
   case TK_MUL_WRAP_ASSIGN: return "*%=";
+  case TK_AND_ASSIGN: return "&=";
+  case TK_OR_ASSIGN: return "|=";
+  case TK_XOR_ASSIGN: return "^=";
+  case TK_SHL_ASSIGN: return "<<=";
+  case TK_SHR_ASSIGN: return ">>=";
   case TK_PLUS: return "+";
   case TK_MINUS: return "-";
   case TK_STAR: return "*";

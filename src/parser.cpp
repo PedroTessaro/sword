@@ -24,6 +24,8 @@ bool is_assign_op(TokKind op) {
   case TK_ASSIGN: case TK_ADD_ASSIGN: case TK_SUB_ASSIGN:
   case TK_MUL_ASSIGN: case TK_DIV_ASSIGN: case TK_MOD_ASSIGN:
   case TK_ADD_WRAP_ASSIGN: case TK_SUB_WRAP_ASSIGN: case TK_MUL_WRAP_ASSIGN:
+  case TK_AND_ASSIGN: case TK_OR_ASSIGN: case TK_XOR_ASSIGN:
+  case TK_SHL_ASSIGN: case TK_SHR_ASSIGN:
     return true;
   default: return false;
   }
@@ -537,6 +539,9 @@ struct Parser {
     // `reduce(+: total)` names a variable each worker accumulates privately.
     if (match(TK_REDUCE)) {
       if (!expect(TK_LPAREN, "after 'reduce'")) return nullptr;
+      // `min` and `max` are names rather than operators, so the spelling is
+      // kept either way and the checker sorts it out.
+      if (kind() == TK_IDENT) n->name2 = peek().text;
       n->op = advance().kind;
       if (!expect(TK_COLON, "after the reduction operator")) return nullptr;
       if (kind() != TK_IDENT) {

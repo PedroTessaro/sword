@@ -235,6 +235,11 @@ struct Lowerer {
     case TK_MOD_ASSIGN: return TK_PERCENT;
     case TK_ADD_WRAP_ASSIGN: return TK_PLUS_WRAP;
     case TK_SUB_WRAP_ASSIGN: return TK_MINUS_WRAP;
+    case TK_AND_ASSIGN: return TK_AMP;
+    case TK_OR_ASSIGN: return TK_PIPE;
+    case TK_XOR_ASSIGN: return TK_CARET;
+    case TK_SHL_ASSIGN: return TK_SHL;
+    case TK_SHR_ASSIGN: return TK_SHR;
     default: return TK_STAR_WRAP;
     }
   }
@@ -478,7 +483,9 @@ struct Lowerer {
       Type *type = loop->reduce_sym->type;
       shared = loop->reduce_sym->slot;
       accumulator = alloca_slot(type);
-      store(constant(0, type), accumulator, type);
+      int identity = is_float(type) ? float_constant(loop->fval, type)
+                                    : constant((int64_t)loop->ival, type);
+      store(identity, accumulator, type);
       loop->reduce_sym->slot = accumulator;
     }
 
@@ -513,12 +520,13 @@ struct Lowerer {
     cur = exit_bb;
     if (accumulator >= 0) {
       Type *type = loop->reduce_sym->type;
-      IrInst add{};
-      add.op = IR_ATOMIC_ADD;
-      add.a = shared;
-      add.b = load(accumulator, type);
-      add.type = type;
-      emit(add);
+      IrInst fold{};
+      fold.op = IR_ATOMIC_RMW;
+      fold.imm = loop->reduce_kind;
+      fold.a = shared;
+      fold.b = load(accumulator, type);
+      fold.type = type;
+      emit(fold);
       loop->reduce_sym->slot = shared;
     }
     emit_ret(constant(0, types.error_ty), types.error_ty);
@@ -993,7 +1001,60 @@ struct Lowerer {
     return slot;
   }
 
+  // Each of these is one instruction. The receiver is always an address:
+  // `hits.Add(1)` on a value, or `p.Add(1)` through a pointer to one.
+  int atomic_call(Node *n) {
+    Node *base = n->lhs->lhs;
+    Type *slot = base->type->kind == TY_PTR ? base->type->elem : base->type;
+    Type *inner = slot->elem;
+    int at = base->type->kind == TY_PTR ? expr(base) : addr(base);
+    const std::string &name = n->lhs->name;
+
+    if (name == "Load") {
+      IrInst in{};
+      in.op = IR_ATOMIC_LOAD;
+      in.dst = new_value(inner);
+      in.a = at;
+      in.type = inner;
+      emit(in);
+      return in.dst;
+    }
+
+    if (name == "Store") {
+      IrInst in{};
+      in.op = IR_ATOMIC_STORE;
+      in.a = expr(n->kids[0]);
+      in.b = at;
+      in.type = inner;
+      emit(in);
+      return -1;
+    }
+
+    if (name == "CompareSwap") {
+      IrInst in{};
+      in.op = IR_ATOMIC_CAS;
+      in.dst = new_value(types.bool_ty);
+      in.a = at;
+      in.b = expr(n->kids[0]);
+      in.args.push_back(expr(n->kids[1]));
+      in.type = inner;
+      emit(in);
+      return in.dst;
+    }
+
+    IrInst in{};
+    in.op = IR_ATOMIC_RMW;
+    in.dst = new_value(inner);
+    in.imm = (int64_t)n->ival;
+    in.a = at;
+    in.b = expr(n->kids[0]);
+    in.type = inner;
+    emit(in);
+    return in.dst;
+  }
+
   int call(Node *n) {
+    if (n->form == 3) return atomic_call(n);
     IrInst in{};
     in.op = IR_CALL;
     in.callee = n->name.empty() ? n->lhs->name : n->name;
@@ -1108,6 +1169,9 @@ struct Lowerer {
       // something within one kind: i64 and f64 are both 64 bits.
       Type *source = n->kids[0]->type;
       if (is_slice_shaped(source) && is_slice_shaped(n->type))
+        return expr(n->kids[0]);
+      // An atomic is its payload, seen through a narrower door.
+      if (source->kind == TY_ATOMIC || n->type->kind == TY_ATOMIC)
         return expr(n->kids[0]);
 
       int value = expr(n->kids[0]);

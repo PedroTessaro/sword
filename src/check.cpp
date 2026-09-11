@@ -1,5 +1,6 @@
 #include "check.h"
 
+#include "ir.h"
 #include "package.h"
 
 #include <cctype>
@@ -34,6 +35,7 @@ struct Checker {
     // A spawn inside a loop happens once per iteration, so its accesses have
     // to be compared against themselves.
     bool repeated = false;
+    bool is_atomic = false;
     Pos at;
   };
   std::vector<std::vector<Access>> scope_uses;
@@ -153,6 +155,20 @@ struct Checker {
     }
     case ND_TYPE_INST: {
       Node *base = n->lhs;
+      if (base->text.empty() && base->name == "atomic" &&
+          !pkg.generic_types.count("atomic")) {
+        if (n->kids.size() != 1) {
+          error(n->pos, "atomic[T] takes one type argument");
+          return types.void_ty;
+        }
+        Type *inner = resolve(n->kids[0]);
+        if (inner->kind != TY_INT && inner->kind != TY_BOOL) {
+          error(n->pos, "atomic[%s] is not supported; use an integer or bool",
+                type_str(inner).c_str());
+          return types.void_ty;
+        }
+        return types.atomic(inner);
+      }
       Package *owner = &pkg;
       Node *decl = nullptr;
       if (!base->text.empty()) {
@@ -491,6 +507,11 @@ struct Checker {
     use.at = value->pos;
     Symbol *root = share_root(value);
     if (!root) return use;
+    // Reaching an atomic is safe however many tasks do it.
+    const Type *reached = root->type;
+    while (reached && (reached->kind == TY_PTR || reached->kind == TY_RAWPTR))
+      reached = reached->elem;
+    use.is_atomic = ::is_atomic(reached);
     if (root->chunk_of) {
       use.chunk = root;
       use.root = root->chunk_of;
@@ -502,6 +523,7 @@ struct Checker {
 
   static bool clashes(const Access &a, const Access &b) {
     if (!a.root || a.root != b.root) return false;
+    if (a.is_atomic || b.is_atomic) return false;
     if (!a.writes && !b.writes) return false;
     // Two pieces of the same partition never overlap.
     if (a.chunk && a.chunk == b.chunk) return false;
@@ -1018,7 +1040,13 @@ struct Checker {
     bool same_bytes =
         (from->kind == TY_SLICE && from->elem->bits == 8 &&
          target->kind == TY_STRING);
-    bool ok = assignable(from, target) || same_bytes ||
+    bool into_atomic = target->kind == TY_ATOMIC &&
+                       assignable(from, target->elem);
+    bool from_atomic = from->kind == TY_ATOMIC &&
+                       assignable(from->elem, target);
+    if (into_atomic) apply_type(n->kids[0], target->elem);
+    bool ok = assignable(from, target) || same_bytes || into_atomic ||
+              from_atomic ||
               (is_numeric(from) && is_numeric(target)) ||
               // Raw pointers are the unchecked side of the boundary, so they
               // reinterpret freely. `*T` converts out to one, never back in:
@@ -1072,11 +1100,71 @@ struct Checker {
     return true;
   }
 
+  // The whole API of an atomic. Keeping it small is deliberate: every one of
+  // these is a single machine instruction.
+  Type *check_atomic_call(Node *n, Type *owner) {
+    Node *field = n->lhs;
+    Type *inner = owner->elem;
+    const std::string &name = field->name;
+
+    int wanted = 1;
+    Type *result = inner;
+    int kind = -1;
+    if (name == "Load") {
+      wanted = 0;
+    } else if (name == "Store") {
+      result = types.void_ty;
+    } else if (name == "Swap") {
+      kind = RMW_SWAP;
+    } else if (name == "Add") {
+      kind = RMW_ADD;
+    } else if (name == "Sub") {
+      kind = RMW_SUB;
+    } else if (name == "And") {
+      kind = RMW_AND;
+    } else if (name == "Or") {
+      kind = RMW_OR;
+    } else if (name == "CompareSwap") {
+      wanted = 2;
+      result = types.bool_ty;
+    } else {
+      error(field->pos, "%s has no operation '%s'", type_str(owner).c_str(),
+            name.c_str());
+      return nullptr;
+    }
+
+    if (kind >= 0 && inner->kind != TY_INT) {
+      error(field->pos, "'%s' needs an integer atomic, got %s", name.c_str(),
+            type_str(owner).c_str());
+      return nullptr;
+    }
+    if ((int)n->kids.size() != wanted) {
+      error(n->pos, "'%s' takes %d argument%s, got %zu", name.c_str(), wanted,
+            wanted == 1 ? "" : "s", n->kids.size());
+      return nullptr;
+    }
+    for (Node *arg : n->kids) {
+      if (!check_expr(arg)) return nullptr;
+      if (!convert(arg, inner)) {
+        error(arg->pos, "'%s' expects %s", name.c_str(),
+              type_str(inner).c_str());
+        return nullptr;
+      }
+    }
+
+    n->form = 3; // atomic operation
+    n->ival = (uint64_t)(kind >= 0 ? kind : 0);
+    n->name = name;
+    return n->type = result;
+  }
+
   Type *check_method_call(Node *n) {
     Node *field = n->lhs;
     Type *base = check_expr(field->lhs);
     if (!base) return nullptr;
     Type *owner = base->kind == TY_PTR ? base->elem : base;
+
+    if (owner->kind == TY_ATOMIC) return check_atomic_call(n, owner);
 
     if (owner->is_interface) {
       for (size_t i = 0; i < owner->methods.size(); i++) {
@@ -1213,6 +1301,31 @@ struct Checker {
     std::string shown;
     if (callee->kind == ND_IDENT) {
       shown = callee->name;
+      if (callee->name == "atomic" && !lookup("atomic") &&
+          !pkg.generic_types.count("atomic")) {
+        if (arg_exprs.size() != 1) {
+          error(n->pos, "atomic[T] takes one type argument");
+          return nullptr;
+        }
+        Node spec = *index;
+        spec.kind = ND_TYPE_INST;
+        Node base = *callee;
+        base.kind = ND_TYPE_NAME;
+        spec.lhs = &base;
+        spec.kids.clear();
+        std::vector<Node *> args;
+        for (Node *e : arg_exprs) {
+          Node *as_type = ast.make(ND_TYPE_NAME, e->pos);
+          as_type->name = e->kind == ND_IDENT ? e->name : "";
+          if (e->kind == ND_FIELD && e->lhs->kind == ND_IDENT) {
+            as_type->text = e->lhs->name;
+            as_type->name = e->name;
+          }
+          args.push_back(as_type);
+        }
+        spec.kids = args;
+        return check_convert(n, resolve(&spec));
+      }
       sym = lookup(callee->name);
       if (!sym) {
         std::vector<Type *> args;
@@ -1672,7 +1785,15 @@ struct Checker {
     }
     if (!require_mutable(n->lhs, "assign to")) return;
 
-    if (n->op != TK_ASSIGN && !is_numeric(target)) {
+    bool bitwise = n->op == TK_AND_ASSIGN || n->op == TK_OR_ASSIGN ||
+                   n->op == TK_XOR_ASSIGN || n->op == TK_SHL_ASSIGN ||
+                   n->op == TK_SHR_ASSIGN;
+    if (bitwise && !is_integer(target)) {
+      error(n->pos, "'%s' needs an integer target, got %s", tok_name(n->op),
+            type_str(target).c_str());
+      return;
+    }
+    if (n->op != TK_ASSIGN && !bitwise && !is_numeric(target)) {
       error(n->pos, "'%s' needs a numeric target, got %s",
             tok_name(n->op), type_str(target).c_str());
       return;
@@ -1850,18 +1971,64 @@ struct Checker {
       note(sym->pos, "declare it with 'mut' to allow mutation");
       return false;
     }
-    if (!is_integer(sym->type)) {
-      error(n->pos, "a reduction needs an integer, got %s",
-            type_str(sym->type).c_str());
+    Type *type = sym->type;
+    if (!is_integer(type) && !is_float(type)) {
+      error(n->pos, "a reduction needs a number, got %s",
+            type_str(type).c_str());
       return false;
     }
-    if (n->op != TK_PLUS) {
-      error(n->pos, "only '+' reductions exist so far, got '%s'",
-            tok_name(n->op));
-      return false;
-    }
+    if (!reduction_kind(n, type)) return false;
     n->reduce_sym = sym;
     return true;
+  }
+
+  // Each worker starts from the operator's identity, so combining the private
+  // copies at the end gives the same answer whatever order they finish in.
+  bool reduction_kind(Node *n, Type *type) {
+    bool floating = is_float(type);
+    std::string named = n->name2;
+
+    if (n->op == TK_PLUS) {
+      n->reduce_kind = floating ? RMW_FADD : RMW_ADD;
+      n->ival = 0;
+      n->fval = 0;
+      return true;
+    }
+    if (floating) {
+      error(n->pos, "only '+' reduces a float, got '%s'",
+            named.empty() ? tok_name(n->op) : named.c_str());
+      return false;
+    }
+    if (n->op == TK_PIPE) {
+      n->reduce_kind = RMW_OR;
+      n->ival = 0;
+      return true;
+    }
+    if (n->op == TK_AMP) {
+      n->reduce_kind = RMW_AND;
+      n->ival = (uint64_t)-1; // every bit set is the identity for and
+      return true;
+    }
+    if (named == "min" || named == "max") {
+      bool lowest = named == "max";
+      n->reduce_kind = lowest ? RMW_MAX : RMW_MIN;
+      n->ival = extreme(type, lowest);
+      return true;
+    }
+    error(n->pos, "'%s' is not a reduction; use +, &, |, min or max",
+          named.empty() ? tok_name(n->op) : named.c_str());
+    return false;
+  }
+
+  // The smallest value of the type when `lowest`, the largest otherwise.
+  static uint64_t extreme(const Type *type, bool lowest) {
+    int bits = type->bits;
+    if (!type->is_signed) return lowest ? 0 : (bits == 64 ? (uint64_t)-1
+                                                          : ((uint64_t)1 << bits) - 1);
+    uint64_t top = (uint64_t)1 << (bits - 1);
+    // Negating the signed minimum is undefined, so the two's complement is
+    // built in unsigned arithmetic, where wrapping is defined.
+    return lowest ? (uint64_t)0 - top : top - 1;
   }
 
   void check_stmt(Node *n) {

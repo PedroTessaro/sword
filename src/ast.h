@@ -87,6 +87,7 @@ struct Node {
   bool is_errdefer = false;
   bool is_parallel = false; // ND_FOR spread across workers
   int form = 0;    // return/call: which shape the checker settled on
+  int reduce_kind = 0;    // which atomic fold a parallel loop uses
   int vtable = -1;        // set when this value is wrapped in an interface
   Type *bind_to = nullptr; // the interface it is being wrapped into
 

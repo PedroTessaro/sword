@@ -178,6 +178,15 @@ Type *TypeTable::opt(Type *elem) {
   return opts[elem] = type;
 }
 
+Type *TypeTable::atomic(Type *elem) {
+  auto found = atomics.find(elem);
+  if (found != atomics.end()) return found->second;
+  Type t;
+  t.kind = TY_ATOMIC;
+  t.elem = elem;
+  return atomics[elem] = add(t);
+}
+
 Type *TypeTable::func(std::vector<Type *> params, Type *ret) {
   Type t;
   t.kind = TY_FUNC;
@@ -256,6 +265,7 @@ std::string type_str(const Type *t) {
   case TY_ARRAY:
     return "[" + std::to_string(t->count) + "]" + type_str(t->elem);
   case TY_OPT: return t->untyped ? "nil" : "?" + type_str(t->elem);
+  case TY_ATOMIC: return "atomic[" + type_str(t->elem) + "]";
   case TY_STRUCT:
     if (t->is_error_union) return "!" + type_str(t->elem);
     if (t->is_optional) return "?" + type_str(t->elem);
@@ -283,7 +293,7 @@ bool type_eq(const Type *a, const Type *b) {
     return a->bits == b->bits && a->is_signed == b->is_signed &&
            a->name == b->name;
   case TY_FLOAT: return a->bits == b->bits;
-  case TY_PTR: case TY_RAWPTR: case TY_SLICE: case TY_OPT:
+  case TY_PTR: case TY_RAWPTR: case TY_SLICE: case TY_OPT: case TY_ATOMIC:
     return type_eq(a->elem, b->elem);
   case TY_ARRAY:
     return a->count == b->count && type_eq(a->elem, b->elem);
@@ -319,6 +329,8 @@ bool is_integer(const Type *t) { return t && t->kind == TY_INT; }
 
 bool is_float(const Type *t) { return t && t->kind == TY_FLOAT; }
 
+bool is_atomic(const Type *t) { return t && t->kind == TY_ATOMIC; }
+
 bool is_optional(const Type *t) {
   return t && !t->untyped && (t->kind == TY_OPT || t->is_optional);
 }
@@ -343,6 +355,7 @@ int64_t size_of(const Type *t) {
   case TY_INT: case TY_FLOAT: return t->bits / 8;
   case TY_PTR: case TY_RAWPTR: case TY_FUNC: return kWord;
   case TY_OPT: return size_of(t->elem); // ?*T reuses the null pointer as tag
+  case TY_ATOMIC: return size_of(t->elem);
   case TY_SLICE: case TY_STRING: return 2 * kWord;
   case TY_ARRAY: return t->count * size_of(t->elem);
   case TY_STRUCT: {

@@ -10,6 +10,7 @@ extern func sword_net_accept(fd i32) i32
 extern func sword_net_dial(host [*]u8, host_len i64, port i32) i32
 extern func sword_net_read(fd i32, buf [*]u8, len i64) i64
 extern func sword_net_write(fd i32, buf [*]u8, len i64) i64
+extern func sword_net_timeout(fd i32, millis i64) i32
 extern func sword_net_close(fd i32) i32
 extern func sword_net_stop(fd i32) i32
 
@@ -60,9 +61,20 @@ func Dial(host string, port i32) !Conn {
     return Conn{fd: fd}
 }
 
+// A connection that goes quiet should not hold a worker forever. Zero waits
+// indefinitely, which is the default a socket comes with.
+func (c *Conn) SetTimeout(millis i64) !void {
+    if sword_net_timeout(c.fd, millis) < 0 {
+        return error.TimeoutNotSet
+    }
+}
+
 // How many bytes landed in `into`; zero means the peer is done sending.
 func (c *Conn) Read(mut into []u8) !u64 {
     n := sword_net_read(c.fd, into.ptr, i64(into.len))
+    if n == -2 {
+        return error.Timeout
+    }
     if n < 0 {
         return error.ReadFailed
     }
@@ -74,6 +86,9 @@ func (c *Conn) Write(from []u8) !void {
         return
     }
     n := sword_net_write(c.fd, from.ptr, i64(from.len))
+    if n == -2 {
+        return error.Timeout
+    }
     if n < 0 {
         return error.WriteFailed
     }

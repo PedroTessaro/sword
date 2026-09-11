@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 extern "C" {
@@ -89,10 +90,24 @@ int32_t sword_net_dial(const char *host, int64_t host_len, int32_t port) {
   return fd;
 }
 
+int32_t sword_net_timeout(int32_t fd, int64_t millis) {
+  timeval tv;
+  tv.tv_sec = (time_t)(millis / 1000);
+  tv.tv_usec = (suseconds_t)((millis % 1000) * 1000);
+  if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) return -1;
+  if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) return -1;
+  return 0;
+}
+
+// -2 rather than -1 for a timeout, so a caller can tell "nothing arrived in
+// time" from "this connection is broken".
 int64_t sword_net_read(int32_t fd, void *buf, int64_t len) {
   while (true) {
     ssize_t n = read(fd, buf, (size_t)len);
-    if (n >= 0 || errno != EINTR) return n;
+    if (n >= 0) return n;
+    if (errno == EINTR) continue;
+    if (errno == EAGAIN || errno == EWOULDBLOCK) return -2;
+    return -1;
   }
 }
 
@@ -103,6 +118,7 @@ int64_t sword_net_write(int32_t fd, const void *buf, int64_t len) {
     ssize_t n = write(fd, (const char *)buf + sent, (size_t)(len - sent));
     if (n < 0) {
       if (errno == EINTR) continue;
+      if (errno == EAGAIN || errno == EWOULDBLOCK) return -2;
       return -1;
     }
     if (n == 0) return -1;

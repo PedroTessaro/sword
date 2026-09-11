@@ -18,6 +18,8 @@ enum TypeKind {
   TY_STRING, // immutable []u8 with its own identity
   TY_ARRAY,  // [N]T, by value
   TY_OPT,    // ?T
+  TY_ATOMIC, // atomic[T]: T's representation, reached only through its
+             // own operations, which is what lets it cross between tasks
   TY_STRUCT,
   TY_FUNC,
 };
@@ -63,6 +65,7 @@ struct TypeTable {
   Type *slice(Type *elem);
   Type *array(Type *elem, int64_t count);
   Type *opt(Type *elem);
+  Type *atomic(Type *elem);
   Type *func(std::vector<Type *> params, Type *ret);
 
   Type *declare_struct(const std::string &name);
@@ -112,6 +115,7 @@ private:
   std::deque<Type> pool;
   std::unordered_map<std::string, Type *> by_name;
   std::unordered_map<Type *, Type *> ptrs, rawptrs, slices, opts, error_unions;
+  std::unordered_map<Type *, Type *> atomics;
   std::map<std::pair<Type *, int64_t>, Type *> arrays;
   std::vector<std::string> error_list;
   std::vector<Type *> error_union_list;
@@ -127,6 +131,7 @@ bool assignable(const Type *from, const Type *to);
 bool is_numeric(const Type *t);
 bool is_integer(const Type *t);
 bool is_float(const Type *t);
+bool is_atomic(const Type *t);
 
 // `?T`: either a pointer using null as its tag, or a { has, value } pair.
 bool is_optional(const Type *t);

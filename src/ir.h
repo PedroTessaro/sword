@@ -19,7 +19,11 @@ enum IrOp {
   IR_AND, IR_OR, IR_XOR, IR_SHL, IR_SHR,
   IR_EQ, IR_NE, IR_LT, IR_LE, IR_GT, IR_GE,
   IR_NEG, IR_NOT, IR_CAST,
-  IR_ATOMIC_ADD, // a = destination, b = value
+  // imm picks which of these a read-modify-write performs.
+  IR_ATOMIC_RMW,   // a = destination, b = value, yields the previous value
+  IR_ATOMIC_LOAD,  // a = source
+  IR_ATOMIC_STORE, // a = value, b = destination
+  IR_ATOMIC_CAS,   // a = destination, b = expected, args[0] = desired
   IR_OVF, // imm = the arithmetic IrOp being tested; yields the overflow bit
 
   IR_GEP_FIELD, // a = base, imm = field index, type = the struct
@@ -34,6 +38,11 @@ enum IrOp {
   IR_CONDBR,
   IR_RET,
   IR_UNREACHABLE,
+};
+
+enum RmwKind {
+  RMW_ADD, RMW_SUB, RMW_AND, RMW_OR, RMW_XOR,
+  RMW_MIN, RMW_MAX, RMW_SWAP, RMW_FADD,
 };
 
 struct IrInst {

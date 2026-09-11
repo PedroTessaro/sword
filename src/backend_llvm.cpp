@@ -14,7 +14,7 @@ std::string ll_type(const Type *t) {
   case TY_INT: return "i" + std::to_string(t->bits);
   case TY_FLOAT: return t->bits == 32 ? "float" : "double";
   case TY_PTR: case TY_RAWPTR: case TY_FUNC: return "ptr";
-  case TY_OPT: return ll_type(t->elem);
+  case TY_OPT: case TY_ATOMIC: return ll_type(t->elem);
   case TY_SLICE: case TY_STRING: return "%slice";
   case TY_ARRAY:
     return "[" + std::to_string(t->count) + " x " + ll_type(t->elem) + "]";
@@ -204,12 +204,83 @@ struct Emitter {
       break;
     }
 
-    case IR_ATOMIC_ADD:
-      // The result is the previous value, which a reduction does not need.
-      fprintf(out, "  %%old%d = atomicrmw add ptr %s, %s %s monotonic\n",
-              in.a, val(in.a).c_str(), ll_type(in.type).c_str(),
-              val(in.b).c_str());
+    case IR_ATOMIC_RMW: {
+      static const char *names[] = {"add", "sub", "and", "or",  "xor",
+                                    "min", "max", "xchg", "fadd"};
+      const char *name = names[in.imm];
+      // Unsigned minimum and maximum are spelled differently.
+      if ((in.imm == RMW_MIN || in.imm == RMW_MAX) && !in.type->is_signed)
+        name = in.imm == RMW_MIN ? "umin" : "umax";
+      if (in.type->kind == TY_BOOL) {
+        fprintf(out, "  %%wide%d = zext i1 %s to i8\n", in.dst,
+                val(in.b).c_str());
+        fprintf(out, "  %%raw%d = atomicrmw %s ptr %s, i8 %%wide%d seq_cst\n",
+                in.dst, name, val(in.a).c_str(), in.dst);
+        fprintf(out, "  %s = trunc i8 %%raw%d to i1\n", val(in.dst).c_str(),
+                in.dst);
+        break;
+      }
+      if (in.dst >= 0)
+        fprintf(out, "  %s = atomicrmw %s ptr %s, %s %s seq_cst\n",
+                val(in.dst).c_str(), name, val(in.a).c_str(),
+                ll_type(in.type).c_str(), val(in.b).c_str());
+      else
+        fprintf(out, "  %%drop%d = atomicrmw %s ptr %s, %s %s seq_cst\n", in.a,
+                name, val(in.a).c_str(), ll_type(in.type).c_str(),
+                val(in.b).c_str());
       break;
+    }
+
+    case IR_ATOMIC_LOAD:
+      // LLVM will not touch an i1 atomically, so a bool travels as a byte.
+      if (in.type->kind == TY_BOOL) {
+        fprintf(out, "  %%wide%d = load atomic i8, ptr %s seq_cst, align 1\n",
+                in.dst, val(in.a).c_str());
+        fprintf(out, "  %s = trunc i8 %%wide%d to i1\n", val(in.dst).c_str(),
+                in.dst);
+      } else {
+        fprintf(out, "  %s = load atomic %s, ptr %s seq_cst, align %d\n",
+                val(in.dst).c_str(), ll_type(in.type).c_str(),
+                val(in.a).c_str(), align_for(in.type));
+      }
+      break;
+
+    case IR_ATOMIC_STORE:
+      if (in.type->kind == TY_BOOL) {
+        fprintf(out, "  %%wide%d = zext i1 %s to i8\n", in.a,
+                val(in.a).c_str());
+        fprintf(out, "  store atomic i8 %%wide%d, ptr %s seq_cst, align 1\n",
+                in.a, val(in.b).c_str());
+      } else {
+        fprintf(out, "  store atomic %s %s, ptr %s seq_cst, align %d\n",
+                ll_type(in.type).c_str(), val(in.a).c_str(),
+                val(in.b).c_str(), align_for(in.type));
+      }
+      break;
+
+    case IR_ATOMIC_CAS: {
+      if (in.type->kind == TY_BOOL) {
+        fprintf(out, "  %%exp%d = zext i1 %s to i8\n", in.dst,
+                val(in.b).c_str());
+        fprintf(out, "  %%des%d = zext i1 %s to i8\n", in.dst,
+                val(in.args[0]).c_str());
+        fprintf(out,
+                "  %%cas%d = cmpxchg ptr %s, i8 %%exp%d, i8 %%des%d seq_cst "
+                "seq_cst\n",
+                in.dst, val(in.a).c_str(), in.dst, in.dst);
+        fprintf(out, "  %s = extractvalue { i8, i1 } %%cas%d, 1\n",
+                val(in.dst).c_str(), in.dst);
+        break;
+      }
+      std::string pair = "{ " + ll_type(in.type) + ", i1 }";
+      fprintf(out, "  %%cas%d = cmpxchg ptr %s, %s %s, %s %s seq_cst seq_cst\n",
+              in.dst, val(in.a).c_str(), ll_type(in.type).c_str(),
+              val(in.b).c_str(), ll_type(in.type).c_str(),
+              val(in.args[0]).c_str());
+      fprintf(out, "  %s = extractvalue %s %%cas%d, 1\n", val(in.dst).c_str(),
+              pair.c_str(), in.dst);
+      break;
+    }
 
     case IR_NEG:
       if (in.type->kind == TY_FLOAT)
