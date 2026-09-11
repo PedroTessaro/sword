@@ -10,8 +10,9 @@ extern "C" {
 typedef uint16_t (*sword_task_fn)(void *args);
 typedef uint16_t (*sword_chunk_fn)(void *env, int64_t lo, int64_t hi);
 
-// Opaque to generated code, which only ever allocates this many bytes on its
-// own frame and passes the address along.
+// Opaque to generated code, which only ever reserves this much word-aligned
+// space on its own frame and passes the address along. The alignment matters:
+// there are atomics in here.
 enum { SWORD_SCOPE_SIZE = 64 };
 
 void sword_scope_begin(void *scope);

@@ -239,6 +239,10 @@ struct Lowerer {
     }
   }
 
+  static bool is_slice_shaped(const Type *t) {
+    return t->kind == TY_SLICE || t->kind == TY_STRING;
+  }
+
   static bool is_address(const Type *t) {
     return t->kind == TY_PTR || t->kind == TY_RAWPTR || t->kind == TY_FUNC ||
            (t->kind == TY_OPT && t->elem->kind != TY_VOID);
@@ -250,8 +254,10 @@ struct Lowerer {
 
   // --- tasks --------------------------------------------------------------
 
-  // Must match SWORD_SCOPE_SIZE in rt/sword_rt.h.
-  static const int64_t kScopeSize = 64;
+  // Must match SWORD_SCOPE_SIZE in rt/sword_rt.h. Counted in words rather
+  // than bytes so the slot is word-aligned: the runtime builds atomics in it,
+  // and an unaligned atomic is a bus error on ARM.
+  static const int64_t kScopeWords = 8;
 
   int call_runtime(const char *name, std::vector<int> args, Type *ret) {
     IrInst in{};
@@ -275,7 +281,7 @@ struct Lowerer {
   }
 
   void scope_stmt(Node *n) {
-    int blob = alloca_slot(types.array(types.u8_ty, kScopeSize));
+    int blob = alloca_slot(types.array(types.usize_ty, kScopeWords));
     call_runtime("sword_scope_begin", {blob}, types.void_ty);
 
     scope_blobs.push_back(blob);
@@ -1096,10 +1102,16 @@ struct Lowerer {
       return lower_catch(n);
 
     case ND_CONVERT: {
+      // An aggregate is already an address by the time it is a value, so a
+      // conversion between two of the same shape has nothing to do. Pointers
+      // likewise all look the same to the machine. A width match only means
+      // something within one kind: i64 and f64 are both 64 bits.
+      Type *source = n->kids[0]->type;
+      if (is_slice_shaped(source) && is_slice_shaped(n->type))
+        return expr(n->kids[0]);
+
       int value = expr(n->kids[0]);
       Type *from = fn->value_type[value];
-      // Pointers all look the same to the machine, and a width match only
-      // means anything within one kind: i64 and f64 are both 64 bits.
       if (is_address(from) && is_address(n->type)) return value;
       if (from->kind == n->type->kind && from->bits == n->type->bits)
         return value;

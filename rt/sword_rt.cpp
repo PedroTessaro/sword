@@ -21,6 +21,10 @@ struct Scope {
 };
 
 static_assert(sizeof(Scope) <= SWORD_SCOPE_SIZE, "scope blob too small");
+// Generated code hands us a word-aligned slot; anything stricter would
+// need the compiler to know about it.
+static_assert(alignof(Scope) <= 8, "scope needs more alignment than the"
+                                   " caller's slot provides");
 
 struct Task {
   sword_task_fn fn;
@@ -238,7 +242,7 @@ uint16_t sword_parallel_for(int64_t lo, int64_t hi, sword_chunk_fn fn,
     int64_t lo, hi;
   };
 
-  unsigned char blob[SWORD_SCOPE_SIZE];
+  alignas(8) unsigned char blob[SWORD_SCOPE_SIZE];
   sword_scope_begin(blob);
   for (int64_t at = lo; at < hi; at += chunk) {
     Range r{fn, env, at, at + chunk > hi ? hi : at + chunk};
