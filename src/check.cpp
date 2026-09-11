@@ -140,6 +140,35 @@ struct Checker {
     case ND_TYPE_OPT: return types.opt(resolve(n->lhs));
     case ND_TYPE_ARRAY:
       return types.array(resolve(n->lhs), (int64_t)n->ival);
+    case ND_TYPE_INST: {
+      Node *base = n->lhs;
+      Package *owner = &pkg;
+      Node *decl = nullptr;
+      if (!base->text.empty()) {
+        owner = imported(base->text);
+        if (!owner) {
+          error(base->pos, "'%s' is not an imported package",
+                base->text.c_str());
+          return types.void_ty;
+        }
+        auto found = owner->generic_types.find(base->name);
+        if (found != owner->generic_types.end() && exported(base->name))
+          decl = found->second;
+      } else {
+        auto found = pkg.generic_types.find(base->name);
+        if (found != pkg.generic_types.end()) decl = found->second;
+      }
+      if (!decl) {
+        error(n->pos, "'%s' is not a generic type", base->name.c_str());
+        return types.void_ty;
+      }
+
+      std::vector<Type *> args;
+      for (Node *arg : n->kids) args.push_back(resolve(arg));
+      Type *made = instantiate_struct(decl, owner, args, n->pos);
+      return made ? made : types.void_ty;
+    }
+
     case ND_TYPE_ERR: {
       Type *value = resolve(n->lhs);
       if (value->is_error_union) {
@@ -164,9 +193,10 @@ struct Checker {
   }
 
   Type *settle(Node *n) {
-    if (n && n->type && n->type->untyped && n->type->kind == TY_INT)
-      apply_type(n, types.int_ty);
-    return n ? n->type : types.void_ty;
+    if (!n || !n->type || !n->type->untyped) return n ? n->type : types.void_ty;
+    if (n->type->kind == TY_INT) apply_type(n, types.int_ty);
+    else if (n->type->kind == TY_FLOAT) apply_type(n, types.named("f64"));
+    return n->type;
   }
 
   // --- places ------------------------------------------------------------
@@ -203,6 +233,203 @@ struct Checker {
             what, root->name.c_str());
     note(root->pos, "declare it with 'mut' to allow mutation");
     return false;
+  }
+
+  // --- constants ----------------------------------------------------------
+
+  // A constant has to be worked out at compile time, so its initialiser is
+  // folded down to a single literal. Anything that cannot be folded is not a
+  // constant, and says so.
+  Node *fold(Node *e) {
+    if (!e) return nullptr;
+    switch (e->kind) {
+    case ND_INT_LIT: case ND_FLOAT_LIT: case ND_BOOL_LIT: case ND_STRING_LIT:
+      check_expr(e);
+      return e;
+
+    case ND_IDENT: {
+      Symbol *sym = lookup(e->name);
+      if (!sym || !sym->const_value) {
+        error(e->pos, "'%s' is not a constant", e->name.c_str());
+        return nullptr;
+      }
+      Node *value = sym->const_value;
+      e->kind = value->kind;
+      e->ival = value->ival;
+      e->fval = value->fval;
+      e->text = value->text;
+      e->type = value->type;
+      return e;
+    }
+
+    case ND_UNARY: {
+      Node *inner = fold(e->lhs);
+      if (!inner) return nullptr;
+      if (e->op == TK_MINUS && inner->kind == ND_INT_LIT) {
+        e->kind = ND_INT_LIT;
+        e->ival = (uint64_t)(-(int64_t)inner->ival);
+      } else if (e->op == TK_MINUS && inner->kind == ND_FLOAT_LIT) {
+        e->kind = ND_FLOAT_LIT;
+        e->fval = -inner->fval;
+      } else if (e->op == TK_BANG && inner->kind == ND_BOOL_LIT) {
+        e->kind = ND_BOOL_LIT;
+        e->ival = inner->ival ? 0 : 1;
+      } else {
+        error(e->pos, "'%s' is not allowed in a constant", tok_name(e->op));
+        return nullptr;
+      }
+      e->type = inner->type;
+      return e;
+    }
+
+    case ND_BINARY: {
+      Node *a = fold(e->lhs);
+      Node *b = fold(e->rhs);
+      if (!a || !b) return nullptr;
+      return fold_binary(e, a, b);
+    }
+
+    default:
+      error(e->pos, "this is not something a constant can be built from");
+      return nullptr;
+    }
+  }
+
+  Node *fold_binary(Node *e, Node *a, Node *b) {
+    bool floating = a->kind == ND_FLOAT_LIT || b->kind == ND_FLOAT_LIT;
+    if (a->kind == ND_BOOL_LIT && b->kind == ND_BOOL_LIT) {
+      bool left = a->ival != 0, right = b->ival != 0;
+      bool result;
+      switch (e->op) {
+      case TK_ANDAND: result = left && right; break;
+      case TK_OROR: result = left || right; break;
+      case TK_EQ: result = left == right; break;
+      case TK_NE: result = left != right; break;
+      default:
+        error(e->pos, "'%s' is not allowed between bools", tok_name(e->op));
+        return nullptr;
+      }
+      e->kind = ND_BOOL_LIT;
+      e->ival = result ? 1 : 0;
+      e->type = types.bool_ty;
+      return e;
+    }
+
+    bool numeric = (a->kind == ND_INT_LIT || a->kind == ND_FLOAT_LIT) &&
+                   (b->kind == ND_INT_LIT || b->kind == ND_FLOAT_LIT);
+    if (!numeric) {
+      error(e->pos, "'%s' is not allowed in a constant", tok_name(e->op));
+      return nullptr;
+    }
+
+    double left = a->kind == ND_FLOAT_LIT ? a->fval : (double)(int64_t)a->ival;
+    double right = b->kind == ND_FLOAT_LIT ? b->fval : (double)(int64_t)b->ival;
+    int64_t li = (int64_t)a->ival, ri = (int64_t)b->ival;
+
+    switch (e->op) {
+    case TK_EQ: case TK_NE: case TK_LT: case TK_LE: case TK_GT: case TK_GE: {
+      bool result = e->op == TK_EQ   ? left == right
+                    : e->op == TK_NE ? left != right
+                    : e->op == TK_LT ? left < right
+                    : e->op == TK_LE ? left <= right
+                    : e->op == TK_GT ? left > right
+                                     : left >= right;
+      e->kind = ND_BOOL_LIT;
+      e->ival = result ? 1 : 0;
+      e->type = types.bool_ty;
+      return e;
+    }
+    default:
+      break;
+    }
+
+    if ((e->op == TK_SLASH || e->op == TK_PERCENT) && !floating && ri == 0) {
+      error(e->pos, "this constant divides by zero");
+      return nullptr;
+    }
+
+    if (floating) {
+      double result;
+      switch (e->op) {
+      case TK_PLUS: result = left + right; break;
+      case TK_MINUS: result = left - right; break;
+      case TK_STAR: result = left * right; break;
+      case TK_SLASH: result = left / right; break;
+      default:
+        error(e->pos, "'%s' is not allowed between floats", tok_name(e->op));
+        return nullptr;
+      }
+      e->kind = ND_FLOAT_LIT;
+      e->fval = result;
+      e->type = types.untyped_float;
+      return e;
+    }
+
+    int64_t result;
+    switch (e->op) {
+    case TK_PLUS: result = li + ri; break;
+    case TK_MINUS: result = li - ri; break;
+    case TK_STAR: result = li * ri; break;
+    case TK_SLASH: result = li / ri; break;
+    case TK_PERCENT: result = li % ri; break;
+    case TK_AMP: result = li & ri; break;
+    case TK_PIPE: result = li | ri; break;
+    case TK_CARET: result = li ^ ri; break;
+    case TK_SHL: result = li << ri; break;
+    case TK_SHR: result = li >> ri; break;
+    default:
+      error(e->pos, "'%s' is not allowed in a constant", tok_name(e->op));
+      return nullptr;
+    }
+    e->kind = ND_INT_LIT;
+    e->ival = (uint64_t)result;
+    e->type = types.untyped_int;
+    return e;
+  }
+
+  // Declaration order does not matter, so a constant that refers to one
+  // declared later is resolved on demand, with a marker to catch cycles.
+  void declare_constants() {
+    std::unordered_map<std::string, Node *> pending;
+    for (Node *decl : pkg.unit->kids)
+      if (decl->kind == ND_CONST_DECL) pending[decl->name] = decl;
+
+    for (Node *decl : pkg.unit->kids) {
+      if (decl->kind != ND_CONST_DECL || decl->sym) continue;
+      resolve_constant(decl, pending);
+    }
+  }
+
+  void resolve_constant(Node *decl,
+                        std::unordered_map<std::string, Node *> &pending) {
+    if (decl->sym) return;
+    if (decl->is_extern) { // borrowed as the "being resolved" marker
+      error(decl->pos, "constant '%s' is defined in terms of itself",
+            decl->name.c_str());
+      return;
+    }
+    decl->is_extern = true;
+
+    // Anything this one mentions has to exist first.
+    std::function<void(Node *)> ahead = [&](Node *e) {
+      if (!e) return;
+      if (e->kind == ND_IDENT) {
+        auto found = pending.find(e->name);
+        if (found != pending.end()) resolve_constant(found->second, pending);
+      }
+      ahead(e->lhs);
+      ahead(e->rhs);
+    };
+    ahead(decl->rhs);
+
+    decl->is_extern = false;
+    Node *value = fold(decl->rhs);
+    if (!value) return;
+
+    Symbol *sym = declare(decl->name, value->type, false, decl->pos);
+    sym->const_value = value;
+    decl->sym = sym;
+    pkg.globals[decl->name] = sym;
   }
 
   // --- sharing ------------------------------------------------------------
@@ -543,6 +770,78 @@ struct Checker {
     return sym;
   }
 
+  // A generic struct becomes a real type only when it is given arguments. The
+  // type is registered before its fields are resolved, so a field that points
+  // back at it does not recurse forever.
+  Type *instantiate_struct(Node *decl, Package *owner,
+                           const std::vector<Type *> &args, Pos at) {
+    if (args.size() != decl->tparams.size()) {
+      error(at, "'%s' takes %zu type argument%s, got %zu", decl->name.c_str(),
+            decl->tparams.size(), decl->tparams.size() == 1 ? "" : "s",
+            args.size());
+      return nullptr;
+    }
+
+    std::string key = owner->prefix + decl->name;
+    for (Type *a : args) key += "$" + mangle(a);
+    auto found = prog.struct_instances.find(key);
+    if (found != prog.struct_instances.end()) return found->second;
+
+    std::vector<std::pair<std::string, Type *>> bind;
+    for (size_t i = 0; i < args.size(); i++)
+      bind.push_back({decl->tparams[i]->name, args[i]});
+
+    Type *type = types.declare_struct(key);
+    type->is_extern = decl->is_extern;
+    prog.struct_instances[key] = type;
+    types.note_instance(type);
+
+    Checker sub(prog, *owner, types);
+    sub.bindings = bind;
+
+    std::vector<Field> fields;
+    for (Node *f : decl->kids)
+      fields.push_back(Field{f->name, sub.resolve(f->type_expr), 0, 0});
+    types.layout_struct(type, std::move(fields));
+
+    instantiate_methods(decl, owner, key, type, bind);
+    return type;
+  }
+
+  void instantiate_methods(Node *decl, Package *owner, const std::string &key,
+                           Type *type,
+                           std::vector<std::pair<std::string, Type *>> bind) {
+    auto templates = owner->generic_methods.find(decl->name);
+    if (templates == owner->generic_methods.end()) return;
+
+    for (Node *method : templates->second) {
+      Node *copy = ast.clone(method);
+      std::string plain = copy->name;
+      copy->name = key + "." + plain;
+      copy->kids.insert(copy->kids.begin(), copy->lhs);
+
+      Checker sub(prog, *owner, types);
+      sub.bindings = bind;
+      std::vector<Type *> params;
+      for (Node *p : copy->kids) {
+        p->type = sub.resolve(p->type_expr);
+        params.push_back(p->type);
+      }
+      Type *ret = copy->type_expr ? sub.resolve(copy->type_expr)
+                                  : types.void_ty;
+
+      Symbol *sym = ast.make_symbol(copy->name, types.func(params, ret), false,
+                                    method->pos);
+      sym->is_func = true;
+      sym->decl = copy;
+      copy->sym = sym;
+
+      prog.methods[type->name][plain] = sym;
+      owner->instances.push_back(copy);
+      prog.pending.push_back(Program::Instance{owner, copy, bind});
+    }
+  }
+
   // `sizeof[T]()` and `alignof[T]()` are the two things a generic allocator
   // cannot compute for itself.
   bool builtin_size(Node *n, const std::string &name,
@@ -663,11 +962,18 @@ struct Checker {
         return nullptr;
       }
       return n->type = types.bool_ty;
-    case TK_PERCENT: case TK_SHL: case TK_SHR:
+    case TK_SHL: case TK_SHR:
     case TK_AMP: case TK_PIPE: case TK_CARET:
       if (!is_integer(lhs)) {
         error(n->pos, "'%s' needs integer operands, got %s",
               tok_name(n->op), type_str(lhs).c_str());
+        return nullptr;
+      }
+      return n->type = lhs;
+    case TK_PERCENT:
+      if (!is_numeric(lhs)) {
+        error(n->pos, "'%%' needs numeric operands, got %s",
+              type_str(lhs).c_str());
         return nullptr;
       }
       return n->type = lhs;
@@ -760,8 +1066,8 @@ struct Checker {
         if (m.name != field->name) continue;
         n->form = 2; // dynamic: the function pointer comes from the vtable
         n->ival = i;
-        Symbol probe{field->name, m.type,   false, false,   false,
-                     nullptr,     field->pos, -1,    nullptr};
+        Symbol probe{field->name, m.type, false,      false, false,
+                     nullptr,     nullptr, field->pos, -1,    nullptr};
         if (!check_args(n, &probe, 0)) return nullptr;
         return n->type = m.type->ret;
       }
@@ -1059,8 +1365,20 @@ struct Checker {
                                              : types.slice(elem);
   }
 
+  // Which generic struct a receiver names, if any: `*List[T]` and `List[T]`
+  // both count.
+  const std::string *generic_receiver(Node *type_expr) {
+    Node *inner = type_expr;
+    while (inner && inner->kind == ND_TYPE_PTR) inner = inner->lhs;
+    if (!inner || inner->kind != ND_TYPE_INST) return nullptr;
+    Node *base = inner->lhs;
+    if (!base->text.empty()) return nullptr; // declared elsewhere, not here
+    auto found = pkg.generic_types.find(base->name);
+    return found == pkg.generic_types.end() ? nullptr : &found->first;
+  }
+
   Type *check_struct_lit(Node *n) {
-    Type *type = lookup_type(n->name);
+    Type *type = n->type_expr ? resolve(n->type_expr) : lookup_type(n->name);
     if (!type || type->kind != TY_STRUCT || type->is_interface) {
       error(n->pos, "'%s' is not a struct type", n->name.c_str());
       return nullptr;
@@ -1280,6 +1598,7 @@ struct Checker {
     case ND_TRY: return check_try(n);
     case ND_CATCH: return check_catch(n);
     case ND_INT_LIT: return n->type = types.untyped_int;
+    case ND_FLOAT_LIT: return n->type = types.untyped_float;
     case ND_BOOL_LIT: return n->type = types.bool_ty;
     case ND_STRING_LIT: return n->type = types.string_ty;
     case ND_ARRAY_LIT: return check_array_lit(n);
@@ -1289,6 +1608,14 @@ struct Checker {
       if (!sym) {
         error(n->pos, "undefined identifier '%s'", n->name.c_str());
         return nullptr;
+      }
+      if (sym->const_value) {
+        Node *value = sym->const_value;
+        n->kind = value->kind;
+        n->ival = value->ival;
+        n->fval = value->fval;
+        n->text = value->text;
+        return n->type = value->type;
       }
       n->sym = sym;
       return n->type = sym->type;
@@ -1791,6 +2118,13 @@ struct Checker {
         error(decl->pos, "'%s' is already a type", decl->name.c_str());
         return false;
       }
+      // A generic struct is a template, not a type: it has no layout until
+      // somebody names its arguments.
+      if (is_struct && !decl->tparams.empty()) {
+        pkg.generic_types[decl->name] = decl;
+        continue;
+      }
+
       // The registered name is qualified, so two packages may each have a
       // `Node` without colliding in the type table or in the object file.
       if (is_struct) {
@@ -1855,6 +2189,7 @@ struct Checker {
   bool run() {
     push_scope();
     if (!declare_structs()) return false;
+    declare_constants();
 
     // Signatures first: within a package, declaration order does not matter.
     for (Node *fn : pkg.unit->kids) {
@@ -1863,6 +2198,15 @@ struct Checker {
       // A method becomes an ordinary function whose first parameter is the
       // receiver, named Type.method. Everything downstream then treats it as
       // any other function.
+      // A method on a generic struct waits with it: its receiver type does
+      // not exist until the struct is instantiated.
+      if (fn->lhs) {
+        if (const std::string *on = generic_receiver(fn->lhs->type_expr)) {
+          pkg.generic_methods[*on].push_back(fn);
+          continue;
+        }
+      }
+
       std::string method_of;
       if (fn->lhs) {
         Type *recv = resolve(fn->lhs->type_expr);

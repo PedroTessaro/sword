@@ -21,9 +21,15 @@ struct Package {
   // Filled in by the checker. A name is exported when it starts uppercase.
   std::unordered_map<std::string, Symbol *> globals;
   std::unordered_map<std::string, Type *> type_names;
-  // Monomorphized copies of this package's generic functions, kept apart from
-  // `unit` so instantiating one while checking it is safe.
+  // Monomorphized copies of this package's generic functions and struct
+  // methods, kept apart from `unit` so instantiating one while checking it is
+  // safe.
   std::vector<Node *> instances;
+
+  // Templates: a generic struct is not a type until it is given arguments,
+  // and its methods are not functions until then either.
+  std::unordered_map<std::string, Node *> generic_types;
+  std::unordered_map<std::string, std::vector<Node *>> generic_methods;
 };
 
 struct Program {
@@ -45,6 +51,7 @@ struct Program {
   };
   std::vector<Instance> pending;
   std::unordered_map<std::string, Symbol *> instances;
+  std::unordered_map<std::string, Type *> struct_instances;
 
   Package *main() { return order.empty() ? nullptr : order.back(); }
 };

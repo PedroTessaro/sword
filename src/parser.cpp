@@ -143,7 +143,17 @@ struct Parser {
         n->name_pos = peek().pos;
         n->name = advance().text;
       }
-      return n;
+      if (kind() != TK_LBRACK) return n;
+
+      Node *inst = make(ND_TYPE_INST, pos);
+      inst->lhs = n;
+      advance();
+      do {
+        Node *arg = type_expr();
+        if (!arg) return nullptr;
+        inst->kids.push_back(arg);
+      } while (match(TK_COMMA));
+      return expect(TK_RBRACK, "after type arguments") ? inst : nullptr;
     }
     fail("expected a type, found %s", tok_name(kind()));
     return nullptr;
@@ -244,6 +254,11 @@ struct Parser {
       n->ival = advance().ival;
       return n;
     }
+    case TK_FLOAT: {
+      Node *n = make(ND_FLOAT_LIT, pos);
+      n->fval = advance().fval;
+      return n;
+    }
     case TK_STRING: {
       Node *n = make(ND_STRING_LIT, pos);
       n->text = advance().text;
@@ -262,6 +277,23 @@ struct Parser {
     case TK_IDENT: {
       std::string name = advance().text;
       if (kind() == TK_LBRACE && !no_struct_lit) return struct_lit(name, pos);
+
+      if (kind() == TK_LBRACK && !no_struct_lit) {
+        size_t saved_i = i;
+        bool saved_failed = failed;
+        quiet++;
+        i--; // back onto the name, so type_expr sees the whole thing
+        Node *type = type_expr();
+        quiet--;
+        if (type && type->kind == ND_TYPE_INST && kind() == TK_LBRACE) {
+          Node *lit = struct_lit(name, pos);
+          if (lit) lit->type_expr = type;
+          return lit;
+        }
+        i = saved_i;
+        failed = saved_failed;
+      }
+
       Node *n = make(ND_IDENT, pos);
       n->name_pos = pos;
       n->name = name;
@@ -633,21 +665,39 @@ struct Parser {
 
   // --- declarations ------------------------------------------------------
 
+  // `func f(a, b u64)` gives both names the type written after the last one,
+  // the way Go does. `mut` stays attached to the name it precedes.
+  bool named_group(std::vector<Node *> &out, NodeKind kind_of,
+                   const char *what) {
+    std::vector<Node *> waiting;
+    while (true) {
+      Node *p = make(kind_of, peek().pos);
+      p->is_mut = match(TK_MUT);
+      if (kind() != TK_IDENT) {
+        fail("expected %s", what);
+        return false;
+      }
+      p->name_pos = peek().pos;
+      p->name = advance().text;
+      waiting.push_back(p);
+
+      if (match(TK_COMMA)) continue;
+
+      Node *type = type_expr();
+      if (!type) return false;
+      for (size_t i = 0; i < waiting.size(); i++) {
+        waiting[i]->type_expr = i == 0 ? type : ast.clone(type);
+        out.push_back(waiting[i]);
+      }
+      return true;
+    }
+  }
+
   bool params_of(Node *fn) {
     if (!expect(TK_LPAREN, "after a function name")) return false;
     if (kind() != TK_RPAREN) {
       do {
-        Node *p = make(ND_PARAM, peek().pos);
-        p->is_mut = match(TK_MUT);
-        if (kind() != TK_IDENT) {
-          fail("expected a parameter name");
-          return false;
-        }
-        p->name_pos = peek().pos;
-        p->name = advance().text;
-        p->type_expr = type_expr();
-        if (!p->type_expr) return false;
-        fn->kids.push_back(p);
+        if (!named_group(fn->kids, ND_PARAM, "a parameter name")) return false;
       } while (match(TK_COMMA));
     }
     if (!expect(TK_RPAREN, "after parameters")) return false;
@@ -724,20 +774,29 @@ struct Parser {
     }
     n->name_pos = peek().pos;
     n->name = advance().text;
+    if (kind() == TK_LBRACK) {
+      advance();
+      do {
+        Node *tp = make(ND_PARAM, peek().pos);
+        if (kind() != TK_IDENT) {
+          fail("expected a type parameter name");
+          return nullptr;
+        }
+        tp->name_pos = peek().pos;
+        tp->name = advance().text;
+        if (match(TK_COLON)) {
+          tp->type_expr = type_expr();
+          if (!tp->type_expr) return nullptr;
+        }
+        n->tparams.push_back(tp);
+      } while (match(TK_COMMA));
+      if (!expect(TK_RBRACK, "after type parameters")) return nullptr;
+    }
     if (!expect(TK_LBRACE, "to open a struct body")) return nullptr;
 
     skip_terms();
     while (kind() != TK_RBRACE && kind() != TK_EOF) {
-      Node *f = make(ND_FIELD_DECL, peek().pos);
-      if (kind() != TK_IDENT) {
-        fail("expected a field name");
-        return nullptr;
-      }
-      f->name_pos = peek().pos;
-      f->name = advance().text;
-      f->type_expr = type_expr();
-      if (!f->type_expr) return nullptr;
-      n->kids.push_back(f);
+      if (!named_group(n->kids, ND_FIELD_DECL, "a field name")) return nullptr;
       skip_terms();
     }
     return expect(TK_RBRACE, "to close a struct body") ? n : nullptr;
@@ -795,11 +854,24 @@ struct Parser {
       return n;
     }
 
+    if (kind() == TK_CONST) {
+      Node *n = make(ND_CONST_DECL, advance().pos);
+      if (kind() != TK_IDENT) {
+        fail("expected a constant name");
+        return nullptr;
+      }
+      n->name_pos = peek().pos;
+      n->name = advance().text;
+      if (!expect(TK_ASSIGN, "after a constant name")) return nullptr;
+      n->rhs = expr();
+      return n->rhs ? n : nullptr;
+    }
+
     bool is_extern = match(TK_EXTERN);
     if (kind() == TK_FUNC) return func_decl(is_extern);
     if (kind() == TK_STRUCT) return struct_decl(is_extern);
     if (kind() == TK_INTERFACE && !is_extern) return interface_decl();
-    fail("expected 'func', 'struct' or 'interface', found %s",
+    fail("expected 'func', 'struct', 'interface' or 'const', found %s",
          tok_name(kind()));
     return nullptr;
   }

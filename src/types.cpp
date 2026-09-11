@@ -66,6 +66,12 @@ TypeTable::TypeTable() {
   t.is_signed = true;
   t.untyped = true;
   untyped_int = add(t);
+
+  t = Type{};
+  t.kind = TY_FLOAT;
+  t.bits = 64;
+  t.untyped = true;
+  untyped_float = add(t);
 }
 
 Type *TypeTable::error_union(Type *value) {
@@ -241,7 +247,8 @@ std::string type_str(const Type *t) {
     if (!t->name.empty()) return t->name;
     return (t->is_signed ? "i" : "u") + std::to_string(t->bits);
   }
-  case TY_FLOAT: return "f" + std::to_string(t->bits);
+  case TY_FLOAT:
+    return t->untyped ? "untyped float" : "f" + std::to_string(t->bits);
   case TY_PTR: return "*" + type_str(t->elem);
   case TY_RAWPTR: return "[*]" + type_str(t->elem);
   case TY_SLICE: return "[]" + type_str(t->elem);
@@ -293,7 +300,11 @@ bool assignable(const Type *from, const Type *to) {
     if (from->kind == TY_OPT && from->untyped) return true;
     return assignable(from, opt_payload(to));
   }
-  if (from->untyped) return to->kind == TY_INT || to->kind == TY_FLOAT;
+  // An untyped integer fits a float, but not the other way round: that would
+  // silently drop a fraction.
+  if (from->untyped && from->kind == TY_INT)
+    return to->kind == TY_INT || to->kind == TY_FLOAT;
+  if (from->untyped && from->kind == TY_FLOAT) return to->kind == TY_FLOAT;
   // A string is a []u8 that promises not to change, so it converts one way.
   if (from->kind == TY_STRING && to->kind == TY_SLICE && to->elem->bits == 8)
     return true;
@@ -305,6 +316,8 @@ bool is_numeric(const Type *t) {
 }
 
 bool is_integer(const Type *t) { return t && t->kind == TY_INT; }
+
+bool is_float(const Type *t) { return t && t->kind == TY_FLOAT; }
 
 bool is_optional(const Type *t) {
   return t && !t->untyped && (t->kind == TY_OPT || t->is_optional);

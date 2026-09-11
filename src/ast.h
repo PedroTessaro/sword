@@ -18,6 +18,7 @@ enum NodeKind {
   ND_PARAM,
   ND_STRUCT_DECL,
   ND_INTERFACE_DECL,
+  ND_CONST_DECL,
   ND_FIELD_DECL,
 
   ND_BLOCK,
@@ -34,6 +35,7 @@ enum NodeKind {
   ND_SPAWN,
 
   ND_INT_LIT,
+  ND_FLOAT_LIT,
   ND_BOOL_LIT,
   ND_STRING_LIT,
   ND_NIL_LIT,
@@ -59,7 +61,8 @@ enum NodeKind {
   ND_TYPE_SLICE,
   ND_TYPE_ARRAY,
   ND_TYPE_OPT,
-  ND_TYPE_ERR, // !T
+  ND_TYPE_ERR,  // !T
+  ND_TYPE_INST, // Name[A, B]
 };
 
 // One struct for every node, chibicc style: fields are used selectively per
@@ -76,6 +79,7 @@ struct Node {
   std::string name2; // partition loop: the offset variable
   std::string text;  // string literal contents
   uint64_t ival = 0;
+  double fval = 0;
   TokKind op = TK_EOF;
   bool is_mut = false;
   bool is_range = false;
@@ -106,6 +110,9 @@ struct Symbol {
   bool is_mut = false;
   bool is_func = false;
   bool is_generic = false; // has type parameters; only instances are compiled
+  // A named constant folds to a literal at check time; uses are replaced by
+  // a copy of it, so nothing survives into the generated code.
+  Node *const_value = nullptr;
   // For a partition variable: the slice it was carved out of. Two pieces of
   // the same partition never overlap, which is what lets them cross into
   // different tasks.
@@ -138,6 +145,7 @@ struct Ast {
     copy->name2 = src->name2;
     copy->text = src->text;
     copy->ival = src->ival;
+    copy->fval = src->fval;
     copy->op = src->op;
     copy->is_mut = src->is_mut;
     copy->is_range = src->is_range;
@@ -156,8 +164,8 @@ struct Ast {
 
   Symbol *make_symbol(const std::string &name, Type *type, bool is_mut,
                       Pos pos) {
-    symbols.push_back(
-        Symbol{name, type, is_mut, false, false, nullptr, pos, -1});
+    symbols.push_back(Symbol{name, type, is_mut, false, false, nullptr,
+                             nullptr, pos, -1});
     return &symbols.back();
   }
 

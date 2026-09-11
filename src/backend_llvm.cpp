@@ -1,5 +1,6 @@
 #include "backend_llvm.h"
 
+#include <cstring>
 #include <set>
 #include <string>
 #include <vector>
@@ -61,6 +62,16 @@ struct Emitter {
 
   const char *arith(const IrInst &in) {
     bool sign = in.type->is_signed;
+    if (in.type->kind == TY_FLOAT) {
+      switch (in.op) {
+      case IR_ADD: return "fadd";
+      case IR_SUB: return "fsub";
+      case IR_MUL: return "fmul";
+      case IR_DIV: return "fdiv";
+      case IR_MOD: return "frem";
+      default: return nullptr;
+      }
+    }
     switch (in.op) {
     case IR_ADD: return "add";
     case IR_SUB: return "sub";
@@ -77,7 +88,19 @@ struct Emitter {
   }
 
   const char *predicate(const IrInst &in) {
-    bool sign = fn->value_type[in.a]->is_signed;
+    const Type *operand = fn->value_type[in.a];
+    if (operand->kind == TY_FLOAT) {
+      switch (in.op) {
+      case IR_EQ: return "oeq";
+      case IR_NE: return "one";
+      case IR_LT: return "olt";
+      case IR_LE: return "ole";
+      case IR_GT: return "ogt";
+      case IR_GE: return "oge";
+      default: return nullptr;
+      }
+    }
+    bool sign = operand->is_signed;
     switch (in.op) {
     case IR_EQ: return "eq";
     case IR_NE: return "ne";
@@ -152,11 +175,20 @@ struct Emitter {
 
     case IR_CAST: {
       const Type *from = fn->value_type[in.a];
-      const char *how = from->bits > in.type->bits ? "trunc"
-                        : from->is_signed          ? "sext"
-                                                   : "zext";
+      const Type *to = in.type;
+      const char *how;
+      if (from->kind == TY_FLOAT && to->kind == TY_FLOAT)
+        how = from->bits > to->bits ? "fptrunc" : "fpext";
+      else if (from->kind == TY_FLOAT)
+        how = to->is_signed ? "fptosi" : "fptoui";
+      else if (to->kind == TY_FLOAT)
+        how = from->is_signed ? "sitofp" : "uitofp";
+      else
+        how = from->bits > to->bits ? "trunc"
+              : from->is_signed     ? "sext"
+                                    : "zext";
       fprintf(out, "  %s = %s %s to %s\n", val(in.dst).c_str(), how,
-              typed(in.a).c_str(), ll_type(in.type).c_str());
+              typed(in.a).c_str(), ll_type(to).c_str());
       break;
     }
 
@@ -180,8 +212,12 @@ struct Emitter {
       break;
 
     case IR_NEG:
-      fprintf(out, "  %s = sub %s 0, %s\n", val(in.dst).c_str(),
-              ll_type(in.type).c_str(), val(in.a).c_str());
+      if (in.type->kind == TY_FLOAT)
+        fprintf(out, "  %s = fneg %s %s\n", val(in.dst).c_str(),
+                ll_type(in.type).c_str(), val(in.a).c_str());
+      else
+        fprintf(out, "  %s = sub %s 0, %s\n", val(in.dst).c_str(),
+                ll_type(in.type).c_str(), val(in.a).c_str());
       break;
 
     case IR_NOT:
@@ -190,7 +226,8 @@ struct Emitter {
       break;
 
     case IR_EQ: case IR_NE: case IR_LT: case IR_LE: case IR_GT: case IR_GE:
-      fprintf(out, "  %s = icmp %s %s %s, %s\n", val(in.dst).c_str(),
+      fprintf(out, "  %s = %s %s %s %s, %s\n", val(in.dst).c_str(),
+              fn->value_type[in.a]->kind == TY_FLOAT ? "fcmp" : "icmp",
               predicate(in), type_of(in.a).c_str(), val(in.a).c_str(),
               val(in.b).c_str());
       break;
@@ -277,10 +314,22 @@ struct Emitter {
     // inline wherever they are used.
     for (const IrBlock &bb : f.blocks) {
       for (const IrInst &in : bb.insts) {
-        if (in.op == IR_CONST)
-          operand[in.dst] = ll_type(in.type) == "ptr" && in.imm == 0
-                                ? "null"
-                                : std::to_string(in.imm);
+        if (in.op == IR_CONST) {
+          if (in.type->kind == TY_FLOAT) {
+            double value = in.type->bits == 32 ? (double)(float)in.fimm
+                                               : in.fimm;
+            uint64_t bits;
+            memcpy(&bits, &value, sizeof(bits));
+            char buf[32];
+            snprintf(buf, sizeof(buf), "0x%016llX",
+                     (unsigned long long)bits);
+            operand[in.dst] = buf;
+          } else {
+            operand[in.dst] = ll_type(in.type) == "ptr" && in.imm == 0
+                                  ? "null"
+                                  : std::to_string(in.imm);
+          }
+        }
         else if (in.op == IR_STR_VALUE)
           operand[in.dst] = "@strv." + std::to_string(in.imm);
         else if (in.op == IR_STR_DATA)

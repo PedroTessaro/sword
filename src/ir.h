@@ -42,6 +42,7 @@ struct IrInst {
   int a = -1;     // first operand / condition / stored value
   int b = -1;     // second operand / store destination
   int64_t imm = 0;
+  double fimm = 0; // IR_CONST of a floating point type
   Type *type = nullptr; // result type, or the type moved by load/store
   std::string callee; // empty for an indirect call, which uses `a` instead
   std::vector<int> args;

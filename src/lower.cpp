@@ -147,6 +147,16 @@ struct Lowerer {
     emit(in);
   }
 
+  int float_constant(double value, Type *type) {
+    IrInst in{};
+    in.op = IR_CONST;
+    in.dst = new_value(type);
+    in.fimm = value;
+    in.type = type;
+    emit(in);
+    return in.dst;
+  }
+
   int constant(int64_t value, Type *type) {
     IrInst in{};
     in.op = IR_CONST;
@@ -227,6 +237,11 @@ struct Lowerer {
     case TK_SUB_WRAP_ASSIGN: return TK_MINUS_WRAP;
     default: return TK_STAR_WRAP;
     }
+  }
+
+  static bool is_address(const Type *t) {
+    return t->kind == TY_PTR || t->kind == TY_RAWPTR || t->kind == TY_FUNC ||
+           (t->kind == TY_OPT && t->elem->kind != TY_VOID);
   }
 
   static bool wraps(TokKind op) {
@@ -1003,6 +1018,9 @@ struct Lowerer {
     case ND_INT_LIT:
       return constant((int64_t)n->ival, n->type);
 
+    case ND_FLOAT_LIT:
+      return float_constant(n->fval, n->type);
+
     case ND_BOOL_LIT:
       return constant((int64_t)n->ival, types.bool_ty);
 
@@ -1080,7 +1098,11 @@ struct Lowerer {
     case ND_CONVERT: {
       int value = expr(n->kids[0]);
       Type *from = fn->value_type[value];
-      if (from->bits == n->type->bits) return value; // same width, same bits
+      // Pointers all look the same to the machine, and a width match only
+      // means anything within one kind: i64 and f64 are both 64 bits.
+      if (is_address(from) && is_address(n->type)) return value;
+      if (from->kind == n->type->kind && from->bits == n->type->bits)
+        return value;
       IrInst in{};
       in.op = IR_CAST;
       in.dst = new_value(n->type);
@@ -1510,18 +1532,24 @@ void lower(Program &prog, TypeTable &types, Mode mode, IrModule &mod) {
 
   for (Package *pkg : prog.order)
     for (Node *decl : pkg->unit->kids)
-      if (decl->kind == ND_STRUCT_DECL || decl->kind == ND_INTERFACE_DECL)
+      // A generic struct has no type of its own; only its instantiations do,
+      // and those are collected from the type table below.
+      if ((decl->kind == ND_STRUCT_DECL || decl->kind == ND_INTERFACE_DECL) &&
+          decl->type)
         mod.structs.push_back(decl->type);
   for (const auto &vt : types.vtables()) mod.vtables.push_back(vt.entries);
   for (Type *t : types.error_unions_made()) mod.structs.push_back(t);
   for (Type *t : types.optionals_made()) mod.structs.push_back(t);
+  for (Type *t : types.instances_made()) mod.structs.push_back(t);
 
   // Dependencies come first, so a package is always lowered after everything
   // it refers to.
   for (Package *pkg : prog.order) {
     for (Node *decl : pkg->unit->kids) {
-      // A generic itself is never compiled; only its instantiations are.
+      // A generic is never compiled, only its instantiations are; and a
+      // declaration with no symbol is a template or a rejected one.
       if (decl->kind != ND_FUNC || !decl->tparams.empty()) continue;
+      if (!decl->sym) continue;
       mod.funcs.emplace_back();
       lowerer.func(decl, mod.funcs.back());
     }

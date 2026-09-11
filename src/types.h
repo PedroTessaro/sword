@@ -79,6 +79,9 @@ struct TypeTable {
   }
   // Optionals over a non-pointer payload are structs too, and need naming.
   const std::vector<Type *> &optionals_made() const { return optional_list; }
+  // Instantiated generic structs, which the backend has to name as well.
+  void note_instance(Type *type) { instance_list.push_back(type); }
+  const std::vector<Type *> &instances_made() const { return instance_list; }
 
   // Error names are global to the program, as in Zig: every name gets one code
   // and code 0 always means success. No interprocedural inference needed.
@@ -102,6 +105,7 @@ struct TypeTable {
   Type *error_ty;
   Type *untyped_nil;
   Type *untyped_int;
+  Type *untyped_float;
 
 private:
   Type *add(Type t);
@@ -112,6 +116,7 @@ private:
   std::vector<std::string> error_list;
   std::vector<Type *> error_union_list;
   std::vector<Type *> optional_list;
+  std::vector<Type *> instance_list;
   std::vector<VTable> vtable_list;
 };
 
@@ -121,6 +126,7 @@ bool assignable(const Type *from, const Type *to);
 
 bool is_numeric(const Type *t);
 bool is_integer(const Type *t);
+bool is_float(const Type *t);
 
 // `?T`: either a pointer using null as its tag, or a { has, value } pair.
 bool is_optional(const Type *t);
