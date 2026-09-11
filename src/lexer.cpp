@@ -223,7 +223,9 @@ struct Lexer {
     case '?': kind = TK_QUESTION; break;
     case '~': kind = TK_CARET; break;
     case ':': kind = match('=') ? TK_DEFINE : TK_COLON; break;
-    case '.': kind = match('.') ? TK_DOTDOT : TK_DOT; break;
+    case '.':
+      kind = !match('.') ? TK_DOT : match('.') ? TK_ELLIPSIS : TK_DOTDOT;
+      break;
     case '=': kind = match('=') ? TK_EQ : TK_ASSIGN; break;
     case '!': kind = match('=') ? TK_NE : TK_BANG; break;
     case '&':
@@ -355,6 +357,7 @@ const char *tok_name(TokKind kind) {
   case TK_COLON: return ":";
   case TK_DOT: return ".";
   case TK_DOTDOT: return "..";
+  case TK_ELLIPSIS: return "...";
   case TK_ARROW: return "->";
   case TK_QUESTION: return "?";
   case TK_DEFINE: return ":=";

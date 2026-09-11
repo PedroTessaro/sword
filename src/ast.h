@@ -86,8 +86,12 @@ struct Node {
   bool is_extern = false;
   bool is_errdefer = false;
   bool is_parallel = false; // ND_FOR spread across workers
+  // ND_PARAM: gathers the rest of the arguments. On a call or an argument:
+  // the gathered list is being passed straight through.
+  bool is_variadic = false;
   int form = 0;    // return/call: which shape the checker settled on
   int reduce_kind = 0;    // which atomic fold a parallel loop uses
+  int variadic_at = -1;   // ND_CALL: where the gathered arguments start
   int vtable = -1;        // set when this value is wrapped in an interface
   Type *bind_to = nullptr; // the interface it is being wrapped into
 
@@ -152,6 +156,8 @@ struct Ast {
     copy->is_range = src->is_range;
     copy->is_extern = src->is_extern;
     copy->is_errdefer = src->is_errdefer;
+    copy->is_parallel = src->is_parallel;
+    copy->is_variadic = src->is_variadic;
     copy->lhs = clone(src->lhs);
     copy->rhs = clone(src->rhs);
     copy->cond = clone(src->cond);

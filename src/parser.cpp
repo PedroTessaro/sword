@@ -370,6 +370,8 @@ struct Parser {
           do {
             Node *arg = expr();
             if (!arg) { no_struct_lit = saved; return nullptr; }
+            // `f(xs...)` hands over a list that is already gathered.
+            if (match(TK_ELLIPSIS)) arg->is_variadic = true;
             call->kids.push_back(arg);
           } while (match(TK_COMMA));
         }
@@ -697,8 +699,17 @@ struct Parser {
 
       if (match(TK_COMMA)) continue;
 
+      // `args ...T` gathers whatever is left of the argument list.
+      bool gathers = match(TK_ELLIPSIS);
       Node *type = type_expr();
       if (!type) return false;
+      if (gathers) {
+        if (waiting.size() != 1) {
+          fail("only one name can gather the rest of the arguments");
+          return false;
+        }
+        waiting[0]->is_variadic = true;
+      }
       for (size_t i = 0; i < waiting.size(); i++) {
         waiting[i]->type_expr = i == 0 ? type : ast.clone(type);
         out.push_back(waiting[i]);
