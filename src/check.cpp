@@ -1228,6 +1228,27 @@ struct Checker {
   }
 
   Type *type_from_expr(Node *e) {
+    // `Entry[V]` reads as an index expression here; as a type argument it is
+    // an instantiation, and it may nest.
+    if (e->kind == ND_INDEX) {
+      Node *inst = ast.make(ND_TYPE_INST, e->pos);
+      Node *base = ast.make(ND_TYPE_NAME, e->lhs->pos);
+      if (e->lhs->kind == ND_IDENT) {
+        base->name = e->lhs->name;
+      } else if (e->lhs->kind == ND_FIELD && e->lhs->lhs->kind == ND_IDENT) {
+        base->text = e->lhs->lhs->name;
+        base->name = e->lhs->name;
+      } else {
+        error(e->pos, "expected a type argument");
+        return nullptr;
+      }
+      inst->lhs = base;
+      inst->kids.push_back(as_type_expr(e->rhs));
+      for (Node *more : e->kids) inst->kids.push_back(as_type_expr(more));
+      for (Node *arg : inst->kids)
+        if (!arg) return nullptr;
+      return resolve(inst);
+    }
     if (e->kind == ND_IDENT) {
       Node probe = *e;
       probe.kind = ND_TYPE_NAME;
@@ -1240,6 +1261,34 @@ struct Checker {
       probe.text = e->lhs->name;
       probe.name = e->name;
       return lookup_type(&probe);
+    }
+    error(e->pos, "expected a type argument");
+    return nullptr;
+  }
+
+  // Rewrites an expression that was really a type into the type grammar.
+  Node *as_type_expr(Node *e) {
+    if (!e) return nullptr;
+    if (e->kind == ND_IDENT) {
+      Node *name = ast.make(ND_TYPE_NAME, e->pos);
+      name->name = e->name;
+      return name;
+    }
+    if (e->kind == ND_FIELD && e->lhs->kind == ND_IDENT) {
+      Node *name = ast.make(ND_TYPE_NAME, e->pos);
+      name->text = e->lhs->name;
+      name->name = e->name;
+      return name;
+    }
+    if (e->kind == ND_INDEX) {
+      Node *inst = ast.make(ND_TYPE_INST, e->pos);
+      inst->lhs = as_type_expr(e->lhs);
+      if (!inst->lhs) return nullptr;
+      inst->kids.push_back(as_type_expr(e->rhs));
+      for (Node *more : e->kids) inst->kids.push_back(as_type_expr(more));
+      for (Node *arg : inst->kids)
+        if (!arg) return nullptr;
+      return inst;
     }
     error(e->pos, "expected a type argument");
     return nullptr;
@@ -1399,6 +1448,24 @@ struct Checker {
       n->kind = ND_ERROR_LIT;
       n->ival = (uint64_t)types.error_code(n->name);
       return n->type = types.error_ty;
+    }
+
+    // `mem.MinCapacity` reads as a field access; the qualifier is a package.
+    if (n->lhs->kind == ND_IDENT && !lookup(n->lhs->name)) {
+      if (Package *other = imported(n->lhs->name)) {
+        Symbol *sym = find_in(other->globals, n->name, false);
+        if (sym && sym->const_value) {
+          Node *value = sym->const_value;
+          n->kind = value->kind;
+          n->ival = value->ival;
+          n->fval = value->fval;
+          n->text = value->text;
+          return n->type = value->type;
+        }
+        error(n->pos, "package '%s' has no exported constant '%s'",
+              other->name.c_str(), n->name.c_str());
+        return nullptr;
+      }
     }
 
     Type *base = check_expr(n->lhs);
