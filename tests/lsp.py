@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""Drives swordls over stdio and checks what comes back."""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SERVER = os.path.join(ROOT, "swordls")
+
+failures = []
+
+
+def check(name, ok, detail=""):
+    if ok:
+        return
+    failures.append(name)
+    print("FAIL %s%s" % (name, (": " + detail) if detail else ""))
+
+
+class Client:
+    def __init__(self):
+        self.proc = subprocess.Popen(
+            [SERVER], stdin=subprocess.PIPE, stdout=subprocess.PIPE, cwd=ROOT
+        )
+        self.next_id = 0
+
+    def send(self, method, params, want_reply=True):
+        body = {"jsonrpc": "2.0", "method": method, "params": params}
+        if want_reply:
+            self.next_id += 1
+            body["id"] = self.next_id
+        raw = json.dumps(body).encode()
+        self.proc.stdin.write(b"Content-Length: %d\r\n\r\n" % len(raw) + raw)
+        self.proc.stdin.flush()
+
+    def read(self):
+        length = 0
+        while True:
+            line = self.proc.stdout.readline()
+            if not line:
+                return None
+            if line in (b"\r\n", b"\n"):
+                break
+            if line.lower().startswith(b"content-length:"):
+                length = int(line.split(b":")[1])
+        return json.loads(self.proc.stdout.read(length))
+
+    def until(self, predicate, limit=8):
+        for _ in range(limit):
+            message = self.read()
+            if message is None:
+                return None
+            if predicate(message):
+                return message
+        return None
+
+    def close(self):
+        self.send("shutdown", {})
+        self.until(lambda m: "result" in m)
+        self.send("exit", {}, want_reply=False)
+        self.proc.stdin.close()
+        self.proc.wait(timeout=5)
+
+
+def write(tmp, name, text):
+    path = os.path.join(tmp, name)
+    with open(path, "w") as handle:
+        handle.write(text)
+    return path
+
+
+def main():
+    tmp = tempfile.mkdtemp()
+    good = write(tmp, "good.sw", "func main() int {\n    x := 21\n    return x * 2\n}\n")
+    bad = write(tmp, "bad.sw", "func main() int {\n    return nope\n}\n")
+
+    client = Client()
+    reply = client.send("initialize", {"processId": None, "rootUri": None}) or client.read()
+    caps = reply["result"]["capabilities"]
+    check("initialize advertises semantic tokens", "semanticTokensProvider" in caps)
+    legend = caps.get("semanticTokensProvider", {}).get("legend", {})
+    check("legend has token types", "keyword" in legend.get("tokenTypes", []))
+    check("legend has modifiers", "declaration" in legend.get("tokenModifiers", []))
+
+    # A file that does not check should come back with a diagnostic on the
+    # offending line.
+    client.send(
+        "textDocument/didOpen",
+        {"textDocument": {"uri": "file://" + bad, "languageId": "sword",
+                          "version": 1, "text": open(bad).read()}},
+        want_reply=False,
+    )
+    note = client.until(lambda m: m.get("method") == "textDocument/publishDiagnostics")
+    diags = note["params"]["diagnostics"] if note else []
+    check("error file reports a diagnostic", len(diags) == 1, str(diags))
+    if diags:
+        check("diagnostic points at line 2", diags[0]["range"]["start"]["line"] == 1)
+        check("diagnostic names the identifier", "nope" in diags[0]["message"],
+              diags[0]["message"])
+
+    client.send(
+        "textDocument/didOpen",
+        {"textDocument": {"uri": "file://" + good, "languageId": "sword",
+                          "version": 1, "text": open(good).read()}},
+        want_reply=False,
+    )
+    note = client.until(lambda m: m.get("method") == "textDocument/publishDiagnostics")
+    check("clean file reports nothing", note and not note["params"]["diagnostics"])
+
+    client.send("textDocument/semanticTokens/full",
+                {"textDocument": {"uri": "file://" + good}})
+    reply = client.until(lambda m: "result" in m and "data" in m.get("result", {}))
+    data = reply["result"]["data"] if reply else []
+    check("semantic tokens come back", len(data) >= 5 and len(data) % 5 == 0,
+          "len=%d" % len(data))
+
+    if data:
+        types = legend["tokenTypes"]
+        mods = legend["tokenModifiers"]
+        # First token of `func main() int {` is the keyword itself.
+        check("first token is a keyword", types[data[3]] == "keyword",
+              types[data[3]])
+        # Second is the function name, marked as a declaration.
+        check("function name is classified", types[data[8]] == "function",
+              types[data[8]])
+        check("function name is a declaration",
+              data[9] & (1 << mods.index("declaration")) != 0)
+        kinds = [types[data[i]] for i in range(3, len(data), 5)]
+        check("an immutable binding shows up as a variable", "variable" in kinds)
+        check("the builtin type is classified", "type" in kinds, str(kinds))
+
+    client.close()
+
+    if failures:
+        print("%d LSP check(s) failed" % len(failures))
+        return 1
+    print("LSP: all checks passed")
+    return 0
+
+
+sys.exit(main())
