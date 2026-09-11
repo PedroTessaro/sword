@@ -40,7 +40,8 @@ for src in "$root"/tests/*.sw; do
         continue
     fi
 
-    output=$("$tmp/prog" 2>/dev/null)
+    # A network test that hangs must not stall the whole run.
+    output=$(perl -e 'alarm 30; exec @ARGV' "$tmp/prog" 2>/dev/null)
     got=$?
     if [ "$got" != "$want_exit" ]; then
         echo "FAIL $name: exit $got, want $want_exit"

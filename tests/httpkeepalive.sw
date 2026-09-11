@@ -1,0 +1,76 @@
+// expect: 0
+// expect-output: keep-alive: two requests, one connection
+// HTTP/1.1 leaves the connection open, so a second request has to be served
+// on the same socket without reconnecting.
+
+import "std/http"
+import "std/io"
+import "std/mem"
+import "std/net"
+import "std/strings"
+
+struct Counter {
+    n u64
+}
+
+func (c *Counter) Serve(req *http.Request, mut res *http.Response) !void {
+    try res.Text(200, req.Path)
+}
+
+func serve(s *http.Server, h *Counter) !void {
+    s.ServeWith(h, 1) catch {}
+}
+
+func exchange(mut c *net.Conn, path string, mut buf []u8) !u64 {
+    try c.WriteString("GET ")
+    try c.WriteString(path)
+    try c.WriteString(" HTTP/1.1\r\nHost: x\r\n\r\n")
+    return try c.Read(buf)
+}
+
+func drive(port i32, s *http.Server, mut out []u64) !void {
+    mut buf := [4096]u8{}
+    mut c := try net.Dial("127.0.0.1", port)
+
+    first := try exchange(&c, "/one", buf[..])
+    if strings.Contains(string(buf[0..first]), "/one") {
+        out[0] = 1
+    }
+    if strings.Contains(string(buf[0..first]), "keep-alive") {
+        out[1] = 1
+    }
+
+    second := try exchange(&c, "/two", buf[..])
+    if strings.Contains(string(buf[0..second]), "/two") {
+        out[2] = 1
+    }
+
+    c.Close()
+    s.Close()
+}
+
+func runClient(port i32, s *http.Server, mut out []u64) !void {
+    drive(port, s, out) catch {}
+    s.Close()
+}
+
+func main() !int {
+    mut backing := [4096]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut results := mem.Alloc[u64](&arena, 3) orelse return error.OutOfMemory
+
+    mut s := try http.Listen(0)
+    port := s.Port()
+    mut h := Counter{n: 0}
+
+    scope {
+        spawn serve(&s, &h)
+        spawn runClient(port, &s, results)
+    }
+
+    if results[0] != 1 || results[1] != 1 || results[2] != 1 {
+        return 1
+    }
+    try io.Print("keep-alive: two requests, one connection\n")
+    return 0
+}

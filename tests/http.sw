@@ -1,0 +1,93 @@
+// expect: 0
+// expect-output: http: all checks passed
+// Server and client in one program: one task serves, another drives it and
+// then closes the listener, which is what lets the scope join.
+
+import "std/http"
+import "std/io"
+import "std/mem"
+import "std/strings"
+
+struct Router {
+    hits u64
+}
+
+func (r *Router) Serve(req *http.Request, mut res *http.Response) !void {
+    if strings.Equal(req.Path, "/health") {
+        try res.Text(200, "ok")
+        return
+    }
+    if strings.Equal(req.Path, "/echo") {
+        try res.SetHeader("X-Method", req.Method)
+        try res.Write(req.Body)
+        res.Status = 200
+        return
+    }
+    try res.Text(404, "not found")
+}
+
+func drive(port i32, mut a mem.Allocator, mut out []u64) !void {
+    health := try http.Get("127.0.0.1", port, "/health", a)
+    out[0] = health.Status
+    out[1] = health.Body.len
+
+    missing := try http.Get("127.0.0.1", port, "/missing", a)
+    out[2] = missing.Status
+
+    payload := "hello body"
+    echo := try http.Post("127.0.0.1", port, "/echo", "text/plain",
+                          []u8(payload), a)
+    out[3] = echo.Status
+    out[4] = echo.Body.len
+    if strings.Equal(string(echo.Body), payload) {
+        out[5] = 1
+    }
+    if strings.Equal(echo.Headers.Get("x-method"), "POST") {
+        out[6] = 1
+    }
+    if strings.Equal(health.Headers.Get("Content-Type"),
+                     "text/plain; charset=utf-8") {
+        out[7] = 1
+    }
+}
+
+func main() !int {
+    mut backing := [262144]u8{}
+    mut arena := mem.NewArena(backing[..])
+
+    mut srv := try http.Listen(0)
+    port := srv.Port()
+
+    mut results := mem.Alloc[u64](&arena, 8) orelse return error.OutOfMemory
+    mut router := Router{hits: 0}
+
+    scope {
+        spawn serveUntilDone(&srv, &router)
+        spawn runClient(port, &arena, results, &srv)
+    }
+
+    if results[0] != 200 || results[1] != 2 {
+        return 1
+    }
+    if results[2] != 404 {
+        return 2
+    }
+    if results[3] != 200 || results[4] != 10 {
+        return 3
+    }
+    if results[5] != 1 || results[6] != 1 || results[7] != 1 {
+        return 4
+    }
+    try io.Print("http: all checks passed\n")
+    return 0
+}
+
+func serveUntilDone(s *http.Server, h *Router) !void {
+    try s.ServeWith(h, 2)
+}
+
+func runClient(port i32, mut a mem.Allocator, mut out []u64,
+               s *http.Server) !void {
+    drive(port, a, out) catch {}
+    s.Close()
+}
