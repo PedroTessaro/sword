@@ -44,42 +44,47 @@ value would mean allocating.
 
 ## How it runs
 
-`Serve` opens a `scope` and spawns a fixed number of accept loops inside it.
-Each one blocks in `accept`, handles the connection it gets, and goes back for
-another:
+One task per connection. The accept loop is the body of the scope rather than a
+task in it, because only the body may spawn:
 
 ```sword
 scope {
-    for i in 0..workers {
-        spawn acceptLoop(s, h)
+    for {
+        c := s.listener.Accept() catch break
+        spawn serveConn(c, h, s)
     }
 }
 ```
 
-The kernel spreads incoming connections across the loops. A slow request
-occupies one of them, not the server.
+That shape is only affordable because a task waiting on a socket costs a stack
+and not a thread — the task is put down and the worker goes to whoever has data.
+See [Concurrency](concurrency.md#waiting).
 
-This shape is forced by one thing about Sword: a task cannot outlive its
-`scope`, so "one task per connection, started whenever a connection arrives"
-has nowhere to put the scope. A fixed pool of loops inside one long-lived scope
-answers that.
+Measured on ten cores, with keep-alive, which is what every real client does:
 
-`ServeWith(h, n)` picks the number of loops; `Serve` uses 32. That number is
-the number of connections the server can be in the middle of, and it can be far
-larger than the core count: a task waiting on a socket tells the scheduler, and
-the pool grows a thread to cover for it. [Concurrency](concurrency.md#blocking-io)
-has the details. Raising it costs a thread and an arena per loop, nothing else.
+| Connections at once | |
+|---|---|
+| 33 | 198 000 req/s |
+| 1 000 | 146 000 req/s, 12 threads, 34 MiB |
+| 4 000 | 84 000 req/s, 12 threads |
 
-**Each loop has its own arena.** That is not an optimisation, it is a
-requirement the compiler enforces: an allocator is mutable state, and handing
-the same one to two tasks is a compile error. Every loop builds a 64 KiB arena
-on its own stack and resets it after each connection, so nothing is shared and
-nothing leaks between requests.
+Three thousand idle keep-alive connections sit in 143 MiB on twelve threads —
+about 49 KiB each.
+
+**Each connection has its own arena**, 32 KiB on its own stack. That is not an
+optimisation, it is a requirement the compiler enforces: an allocator is mutable
+state, and handing the same one to two tasks is a compile error.
+
+`ServeWith(h, n)` caps how many connections are served at once; `Serve` allows
+1024. Past the cap the server stops accepting and the kernel's backlog holds the
+rest, which is what backpressure should look like from outside: a queue, not a
+collapse. `s.Live()` says how many are in flight.
 
 ## Stopping
 
-`Close` shuts the listener down, which wakes every blocked `accept`. The loops
-return, the scope joins, and `Serve` comes back:
+`Close` shuts the listener down, which ends the accept loop. The scope then
+waits for every connection still being served, so shutting down drains rather
+than cuts:
 
 ```sword
 scope {
@@ -90,6 +95,24 @@ scope {
 
 A plain `close` would not be enough — on BSD it does not wake a thread already
 inside `accept`, so `Close` shuts the socket down first.
+
+## Limits
+
+Two, and they do different jobs:
+
+```sword
+try c.SetTimeout(time.Seconds(15))                    // any one wait
+try c.SetDeadline(time.Now().Add(time.Seconds(30)))   // the whole exchange
+```
+
+The server sets both: fifteen seconds for a single wait, and thirty for one turn
+of the keep-alive loop — waiting for a request and serving it. A timeout alone
+cannot bound a client that dribbles a byte at a time, because no single wait ever
+runs out.
+
+A request is capped at 32 headers and 16 KiB of head. Past that the connection is
+dropped rather than grown, which keeps a hostile client from deciding how much
+memory the server uses.
 
 ## Routing
 
@@ -166,10 +189,6 @@ func (r *Router) Serve(req *http.Request, mut res *http.Response) !void {
 `req.Path`, `req.Method` and the header strings all point into the connection's
 read buffer. They are valid while the handler runs and not afterwards — copy
 anything you mean to keep.
-
-A request is capped at 32 headers and 16 KiB of head. Past that the connection
-is dropped rather than grown, which keeps a hostile client from deciding how
-much memory the server uses.
 
 ### The query string
 

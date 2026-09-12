@@ -330,50 +330,89 @@ run its tasks.
 
 Task arguments up to 96 bytes ride inside the task itself, and finished tasks
 go back on a per-worker free list, so spawning in a loop does not touch the
-allocator.
+allocator. Stacks come from the same kind of pile: mapping one costs far more
+than keeping it.
 
-## Blocking I/O
+A poller thread sits in kqueue or epoll and does nothing else. It owns no work;
+it moves tasks the kernel has declared ready back onto the run queues.
 
-A task cannot be suspended halfway through. So a task sitting in `read()` is a
-thread sitting in `read()` — there is no way to put the task aside and use the
-thread for something else.
+## Waiting
 
-Taken literally that would cap a server at one connection per core. Ten cores,
-ten conversations, and the eleventh client waits for one of them to finish.
+**A task has its own stack.** That is what lets it stop in the middle of
+something and be picked up later, and it is the whole reason a socket does not
+cost a thread.
 
-What happens instead is that every call that parks in the kernel says so first:
+When a task reads from a socket with nothing to say, the runtime puts the task
+down: it registers the descriptor with a poller — kqueue or epoll — switches
+back to the worker's own stack, and the worker goes to whoever does have data.
+When the kernel says the descriptor is ready, the task goes back on a run queue
+and whichever worker gets to it first resumes it, on the line after the read.
+
+Nothing in your program says any of this. `try c.Read(buf)` is the whole of it:
+
+```sword
+func handle(c net.Conn) !void {
+    mut buf := [1024]u8{}
+    n := try c.Read(buf[..])   // the task stops here; the thread does not
+    try c.Write(buf[0..n])
+}
+```
+
+A stack is reserved rather than committed, so what a waiting task actually costs
+is the few pages it has touched. Measured on a real server: a keep-alive
+connection sitting idle costs about 49 KiB, against roughly 80 KiB and a whole
+thread before. Three thousand of them run on twelve threads.
+
+An overflow hits a guard page and faults where it happened, rather than writing
+quietly through somebody else's stack.
+
+### What still holds a thread
+
+Not everything can be put down. Name resolution is one call in the C library
+with no way in or out of the middle, and so is sleeping in some cases. Those say
+so first:
 
 ```
 sword_blocking_enter();
-n = read(fd, buf, len);
+getaddrinfo(...);
 sword_blocking_exit();
 ```
 
-A parked thread stops counting as scheduler capacity. If that leaves tasks
-queued with nothing to run them, the pool hires one more thread, and the hired
-thread retires again after 200 ms of finding no work. So the pool breathes with
-the number of tasks currently waiting on something, and the limit moves from
-cores to threads — from ten to hundreds.
+A parked thread stops counting as scheduler capacity, so the pool hires a
+replacement while it is gone and retires it after 200 ms of finding no work. It
+is the fallback now rather than the main mechanism, but it is still what keeps
+one slow name lookup from stalling everything.
 
-This is the same trick the Go runtime uses on the way into a syscall. It is not
-as good as suspending the task: each waiting task still costs a thread and its
-stack. It is a great deal cheaper than the alternative, which is teaching every
-task to unwind and resume.
+Code that is not in a task at all — the main function, before any `scope` — has
+nothing to put down, so it waits on the thread the ordinary way.
 
-Nothing in your program calls those two functions. Everything in `std/net` and
-`std/http` is already bracketed, and so is `time.Sleep`. If you declare an
-`extern` function of your own that blocks, wrap the call the same way.
-
-Two numbers control the shape of it:
+Three numbers control the shape of it:
 
 | Variable | Meaning |
 |---|---|
-| `SWORD_THREADS` | Fixed workers. Defaults to one per core. |
-| `SWORD_MAX_THREADS` | How large the pool may grow. Defaults to 512. |
+| `SWORD_THREADS` | Workers. Defaults to one per core. |
+| `SWORD_MAX_THREADS` | How large the pool may grow to cover threads stuck in the kernel. Defaults to 512. |
 
-The ceiling is a brake rather than a wall. A pool at its limit with every
-thread parked and work still queued would be a program that has stopped, so in
-that one case the runtime goes over the limit instead.
+The ceiling is a brake rather than a wall. A pool at its limit with every thread
+parked and work still queued would be a program that has stopped, so in that one
+case the runtime goes over the limit instead.
+
+### Deadlines
+
+A timeout bounds one wait. It cannot bound a client that sends a byte every
+twenty milliseconds forever, because no single wait ever runs out. That is what
+a deadline is for:
+
+```sword
+try c.SetTimeout(time.Seconds(5))                      // any one wait
+try c.SetDeadline(time.Now().Add(time.Seconds(30)))    // the whole exchange
+```
+
+Past the deadline every read and write on that connection answers
+`error.Timeout`, and the handler leaves through the `try` it was already
+written with. Nothing is interrupted: a deadline is collected where the task was
+going to stop anyway, which is the only place it can be collected without
+tearing a task in half.
 
 ## Shared counters
 
@@ -541,9 +580,9 @@ implemented.
 they come from. A slice returned straight out of a call, never bound to
 anything, is not tracked — there is nothing to compare it against.
 
-**Async I/O.** I/O is synchronous. A task blocked on a socket holds a thread —
-the pool grows to cover it, which is enough for hundreds of connections but not
-for tens of thousands. Getting there means tasks that can suspend on I/O the
-way a goroutine does, which needs either segmented stacks or a state-machine
-transform in the compiler: a bigger project than the rest of the scheduler put
-together.
+**Growable stacks.** A task's stack is reserved at a megabyte and the pages it
+touches are what it costs, which is fine into the low tens of thousands of
+tasks. Past that the reservations themselves start to matter: Linux counts
+mappings, and the usual limit is around sixty-five thousand of them, or about
+thirty thousand tasks. Go grows and moves stacks instead, which needs the
+compiler's help to find and rewrite the pointers into them.

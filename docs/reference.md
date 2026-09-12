@@ -640,7 +640,8 @@ func (mut t *T) Run(name string, body func(mut *T) !void) !void
 func (mut t *T) RunWith(name string, body func(mut *T) !void, arg any) !void
 ```
 
-`t.Mem` is an arena reset before each test. `t.Arg` is what `RunWith` handed the
+Tests run at the same time, 64 at once by default; `shield test <path> -p 1`
+puts them back in order. `t.Mem` is an arena of that test's own. `t.Arg` is what `RunWith` handed the
 subtest, since a body cannot capture anything.
 
 ### `std/net`
@@ -655,16 +656,18 @@ func (l *Listener) Close()                   // wakes a blocked Accept
 
 func Dial(host string, port i32) !Conn
 func DialTimeout(host string, port i32, limit time.Duration) !Conn
-func (c *Conn) SetTimeout(limit time.Duration) !void  // 0 waits forever
+func (c *Conn) SetTimeout(limit time.Duration) !void  // any one wait
+func (c *Conn) SetDeadline(at time.Instant) !void     // the whole exchange
+func (c *Conn) ClearDeadline() !void
 func (c *Conn) Read(mut into []u8) !u64      // 0 means the peer is done
 func (c *Conn) Write(from []u8) !void
 func (c *Conn) WriteString(s string) !void
 func (c *Conn) Close()
 ```
 
-Every call here parks the thread in the kernel and tells the scheduler so, which
-is what lets many more connections be in flight than the machine has cores. See
-[Concurrency](concurrency.md#blocking-io).
+A wait here puts the *task* down, not the thread: the descriptor goes to the
+poller and the worker moves on. That is what lets connections outnumber threads
+by a couple of orders of magnitude. See [Concurrency](concurrency.md#waiting).
 
 ### `std/http`
 
@@ -678,9 +681,10 @@ interface Handler {
 
 func Listen(port i32) !Server
 func (s *Server) Port() i32
-func (s *Server) Serve(h Handler) !void      // 32 accept loops
-func (s *Server) ServeWith(h Handler, workers int) !void
-func (s *Server) Close()                     // stops a running server
+func (s *Server) Serve(h Handler) !void      // up to 1024 connections at once
+func (s *Server) ServeWith(h Handler, most u64) !void
+func (s *Server) Live() u64                  // connections in flight
+func (s *Server) Close()                     // stops accepting, then drains
 ```
 
 A `Request` carries `Method`, `Target`, `Path`, `RawQuery`, `Proto`, `Headers`
@@ -762,6 +766,7 @@ shield test <file.sw | directory> [options]
   -I <dir>        another directory to search for packages
   --mode=<m>      debug | safe | fast | small, default safe
   -O<level>       override the optimisation level
+  -p <n>          test only: how many tests may run at once
   --emit-tokens   stop after lexing
   --emit-ast      stop after parsing and checking
   --emit-ir       stop after lowering, print Sword IR

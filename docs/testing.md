@@ -77,9 +77,28 @@ because a failure about whitespace is unreadable otherwise:
 Anything `any` cannot carry — a struct, a slice — you compare yourself and report
 with `t.Failf`.
 
+## They run together
+
+Tests run at the same time — 64 at once by default. Sword has no global
+variables, so two tests cannot reach each other except through a port, a file or
+the clock; the reason other languages run tests in order by default is not here.
+
+```sh
+shield test std/http          # all at once
+shield test std/http -p 1     # one at a time
+shield test std/http -p 4     # four at a time
+```
+
+Each test has its own memory and its own output, and a test's output is written
+out in one piece when it ends, so two failing at the same time do not shuffle
+their lines together.
+
+Reach for `-p 1` when a test needs something it cannot share: a fixed port, a
+directory, the working directory.
+
 ## Memory
 
-`t.Mem` is an allocator the test can use, reset before each test runs. So a test
+`t.Mem` is an allocator the test can use, its own for each test. So a test
 allocates and never frees:
 
 ```sword
@@ -178,10 +197,6 @@ the run, not called.
 **Benchmarks.** There is no `testing.B`. Measuring is easy enough by hand with
 `std/time`, but there is no harness that repeats a body and reports per
 operation.
-
-**Parallel tests.** Everything runs in order. Each test would need its own
-allocator and its own result, and `spawn` takes a direct call rather than a
-function value, so this needs work on the language and not only on the library.
 
 **Line numbers.** A failure names the test and the subtest, not the file and
 line: there is no way to ask for the caller's position. Subtest labels are the

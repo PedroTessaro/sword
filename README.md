@@ -106,9 +106,10 @@ environment (`std/os`), clocks and durations (`std/time`), TCP (`std/net`),
 HTTP/1.1 with keep-alive, routing and timeouts, server and client (`std/http`),
 and tests (`std/testing`, run by `shield test`).
 
-I/O is blocking, but a task waiting on a socket tells the scheduler, which grows
-the thread pool to cover it — so a server handles far more connections at once
-than the machine has cores.
+A task has its own stack, so a task waiting on a socket is put down rather than
+holding a thread: the descriptor goes to a poller and the worker moves on.
+Measured, on ten cores — 4000 concurrent keep-alive connections at 84 000
+requests a second on twelve threads, and 3000 idle ones in 143 MiB.
 
 Not there yet: channels, file I/O, and TLS.
 
