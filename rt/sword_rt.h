@@ -38,4 +38,12 @@ enum { SWORD_GUARD_SIZE = 16 };
 
 void sword_mutex_lock(void *guard);
 void sword_mutex_unlock(void *guard);
+
+// Waits for a descriptor without holding the thread. Only a task can be put
+// down, so this answers -1 when there is none and the caller waits the old way.
+// 0 means ready, -2 means the deadline passed.
+int sword_park_fd(int32_t fd, int32_t writable, int64_t deadline_ns);
+int32_t sword_in_task(void);
+// Drops anything waiting on a descriptor about to be closed.
+void sword_forget_fd(int32_t fd);
 }

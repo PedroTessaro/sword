@@ -11,7 +11,8 @@ OBJ      := $(COREOBJ) src/main.o $(LSPOBJ)
 BIN      := shield
 LSP      := swordls
 RT       := libsword_rt.a
-RTOBJ    := rt/sword_rt.o rt/sword_net.o rt/sword_os.o rt/sword_ctx.o
+RTOBJ    := rt/sword_rt.o rt/sword_net.o rt/sword_os.o rt/sword_poll.o \
+            rt/sword_ctx.o
 
 all: $(BIN) $(LSP) $(RT)
 

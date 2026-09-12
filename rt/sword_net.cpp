@@ -1,4 +1,5 @@
 #include "sword_net.h"
+#include "sword_os.h"
 #include "sword_rt.h"
 
 #include <arpa/inet.h>
@@ -14,14 +15,93 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <mutex>
+#include <vector>
+
 namespace {
 
-// Everything below parks the thread in the kernel. The scheduler has to know,
-// or a handful of quiet sockets would use up the whole pool.
+// For the calls that still stop the thread outright — name resolution is the
+// one that matters. The scheduler covers the thread while it is gone.
 struct Parked {
   Parked() { sword_blocking_enter(); }
   ~Parked() { sword_blocking_exit(); }
 };
+
+// Every socket is non-blocking underneath; waiting is the runtime's job rather
+// than the kernel's. Inside a task that means putting the task down and letting
+// the worker go elsewhere; outside one — the main thread before any scope —
+// there is nothing to put down, so the thread waits on poll() instead.
+void unblock(int fd) {
+  int flags = fcntl(fd, F_GETFL, 0);
+  if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+// Two limits per descriptor, both in monotonic nanoseconds and both optional.
+// The timeout bounds one wait; the deadline bounds the whole exchange, which is
+// what keeps a client that sends a byte a second from living forever. The
+// kernel's own SO_RCVTIMEO cannot do either, because the waiting is the
+// runtime's now and not the kernel's.
+struct Limits {
+  int64_t timeout = 0;  // per wait, relative
+  int64_t deadline = 0; // absolute, for everything on this socket
+};
+
+std::vector<Limits> limits;
+std::mutex limits_lock;
+
+Limits limits_of(int fd) {
+  std::lock_guard<std::mutex> held(limits_lock);
+  if (fd < 0 || (size_t)fd >= limits.size()) return Limits{};
+  return limits[fd];
+}
+
+Limits &limits_for(int fd) {
+  if ((size_t)fd >= limits.size()) limits.resize((size_t)fd + 64);
+  return limits[fd];
+}
+
+void forget_limits(int fd) {
+  std::lock_guard<std::mutex> held(limits_lock);
+  if (fd >= 0 && (size_t)fd < limits.size()) limits[fd] = Limits{};
+}
+
+// Whichever runs out first.
+int64_t due_at(int fd) {
+  Limits l = limits_of(fd);
+  int64_t from_timeout = l.timeout > 0 ? sword_time_mono() + l.timeout : 0;
+  if (l.deadline == 0) return from_timeout;
+  if (from_timeout == 0) return l.deadline;
+  return from_timeout < l.deadline ? from_timeout : l.deadline;
+}
+
+// Waits for one direction of a descriptor. -2 is the deadline, -1 a failure.
+int await(int fd, bool writable) {
+  int64_t deadline = due_at(fd);
+  if (sword_in_task()) {
+    int got = sword_park_fd(fd, writable ? 1 : 0, deadline);
+    // -1 only comes back when there was no task to put down, which cannot
+    // happen here; anything else is the poller's answer.
+    return got;
+  }
+
+  // No task to put down: wait on the thread, and tell the scheduler so it can
+  // cover for it.
+  Parked parked;
+  int wait = -1;
+  if (deadline > 0) {
+    int64_t left = deadline - sword_time_mono();
+    if (left <= 0) return -2;
+    wait = (int)((left + 999999) / 1000000);
+  }
+  pollfd watch;
+  watch.fd = fd;
+  watch.events = writable ? POLLOUT : POLLIN;
+  watch.revents = 0;
+  int ready = poll(&watch, 1, wait);
+  if (ready == 0) return -2;
+  if (ready < 0) return errno == EINTR ? 0 : -1;
+  return 0;
+}
 
 } // namespace
 
@@ -45,6 +125,7 @@ int32_t sword_net_listen(int32_t port, int32_t backlog) {
     close(fd);
     return -1;
   }
+  unblock(fd);
   return fd;
 }
 
@@ -58,16 +139,21 @@ int32_t sword_net_port(int32_t fd) {
 }
 
 int32_t sword_net_accept(int32_t fd) {
-  Parked parked;
   while (true) {
     int client = accept(fd, nullptr, nullptr);
     if (client >= 0) {
       int on = 1;
       setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
+      unblock(client);
+      forget_limits(client);
       return client;
     }
     if (errno == EINTR) continue; // a signal, not a failure
-    return -1;
+    if (errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+    // Nothing waiting. Put the task down rather than the thread.
+    int ready = await(fd, false);
+    if (ready == -2) return -2;
+    if (ready < 0) return -1;
   }
 }
 
@@ -76,33 +162,30 @@ int32_t sword_net_accept(int32_t fd) {
 // and cannot be shortened per socket.
 static int connect_within(int fd, const sockaddr *addr, socklen_t len,
                           int64_t millis) {
-  if (millis <= 0) return connect(fd, addr, len);
-
-  int flags = fcntl(fd, F_GETFL, 0);
-  if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) return -1;
-
-  int result = connect(fd, addr, len);
-  if (result < 0 && errno == EINPROGRESS) {
-    pollfd watch;
-    watch.fd = fd;
-    watch.events = POLLOUT;
-    watch.revents = 0;
-    int ready = poll(&watch, 1, (int)millis);
-    if (ready == 0) {
-      fcntl(fd, F_SETFL, flags);
-      errno = ETIMEDOUT;
-      return -1;
-    }
-    int failure = 0;
-    socklen_t size = sizeof(failure);
-    if (ready < 0 || getsockopt(fd, SOL_SOCKET, SO_ERROR, &failure, &size) < 0)
-      failure = errno;
-    result = failure == 0 ? 0 : -1;
-    errno = failure;
+  unblock(fd);
+  forget_limits(fd);
+  if (millis > 0) {
+    std::lock_guard<std::mutex> held(limits_lock);
+    limits_for(fd).timeout = millis * 1000000;
   }
 
-  fcntl(fd, F_SETFL, flags);
-  return result;
+  int result = connect(fd, addr, len);
+  if (result == 0) return 0;
+  if (errno != EINPROGRESS) return -1;
+
+  int ready = await(fd, true);
+  if (ready == -2) {
+    errno = ETIMEDOUT;
+    return -1;
+  }
+  if (ready < 0) return -1;
+
+  int failure = 0;
+  socklen_t size = sizeof(failure);
+  if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &failure, &size) < 0)
+    failure = errno;
+  errno = failure;
+  return failure == 0 ? 0 : -1;
 }
 
 // Zero waits as long as the kernel would. -2 separates "took too long" from
@@ -149,37 +232,45 @@ int32_t sword_net_dial(const char *host, int64_t host_len, int32_t port) {
 }
 
 int32_t sword_net_timeout(int32_t fd, int64_t millis) {
-  timeval tv;
-  tv.tv_sec = (time_t)(millis / 1000);
-  tv.tv_usec = (suseconds_t)((millis % 1000) * 1000);
-  if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) return -1;
-  if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) return -1;
+  std::lock_guard<std::mutex> held(limits_lock);
+  limits_for(fd).timeout = millis > 0 ? millis * 1000000 : 0;
+  return 0;
+}
+
+// An absolute point on the monotonic clock, after which nothing on this socket
+// waits any longer. Zero clears it.
+int32_t sword_net_deadline(int32_t fd, int64_t at_ns) {
+  std::lock_guard<std::mutex> held(limits_lock);
+  limits_for(fd).deadline = at_ns;
   return 0;
 }
 
 // -2 rather than -1 for a timeout, so a caller can tell "nothing arrived in
 // time" from "this connection is broken".
 int64_t sword_net_read(int32_t fd, void *buf, int64_t len) {
-  Parked parked;
   while (true) {
     ssize_t n = read(fd, buf, (size_t)len);
     if (n >= 0) return n;
     if (errno == EINTR) continue;
-    if (errno == EAGAIN || errno == EWOULDBLOCK) return -2;
-    return -1;
+    if (errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+    int ready = await(fd, false);
+    if (ready == -2) return -2;
+    if (ready < 0) return -1;
   }
 }
 
 int64_t sword_net_write(int32_t fd, const void *buf, int64_t len) {
   // Short writes are normal on a socket; the caller wants all or nothing.
-  Parked parked;
   int64_t sent = 0;
   while (sent < len) {
     ssize_t n = write(fd, (const char *)buf + sent, (size_t)(len - sent));
     if (n < 0) {
       if (errno == EINTR) continue;
-      if (errno == EAGAIN || errno == EWOULDBLOCK) return -2;
-      return -1;
+      if (errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+      int ready = await(fd, true);
+      if (ready == -2) return -2;
+      if (ready < 0) return -1;
+      continue;
     }
     if (n == 0) return -1;
     sent += n;
@@ -187,12 +278,18 @@ int64_t sword_net_write(int32_t fd, const void *buf, int64_t len) {
   return sent;
 }
 
-int32_t sword_net_close(int32_t fd) { return close(fd); }
+int32_t sword_net_close(int32_t fd) {
+  sword_forget_fd(fd);
+  forget_limits(fd);
+  return close(fd);
+}
 
 // A plain close does not wake a thread sitting in accept() on the same
 // descriptor; shutting the socket down first does.
 int32_t sword_net_stop(int32_t fd) {
   shutdown(fd, SHUT_RDWR);
+  sword_forget_fd(fd);
+  forget_limits(fd);
   return close(fd);
 }
 }

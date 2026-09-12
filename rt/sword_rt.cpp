@@ -1,4 +1,5 @@
 #include "sword_rt.h"
+#include "sword_poll.h"
 
 #include <atomic>
 #include <chrono>
@@ -91,6 +92,11 @@ const size_t kStackReserve = 512 * 1024;
 
 // A task and the stack it runs on. It outlives any one worker: a task that
 // stops for I/O is resumed by whichever worker picks it up next.
+// Where a task is between leaving a worker and coming back. The handoff
+// matters: the poller may answer before the task has finished switching out, so
+// whichever of the two gets there second is the one that queues it.
+enum FiberState { FIBER_RUNNING, FIBER_PARKING, FIBER_PARKED, FIBER_READY };
+
 struct Fiber {
   void *sp = nullptr;       // where to resume this task
   void *sched_sp = nullptr; // where to go back to, set on every entry
@@ -98,6 +104,9 @@ struct Fiber {
   size_t size = 0;
   Task *task = nullptr;
   bool finished = false;
+  std::atomic<int> state{FIBER_RUNNING};
+  int wake_result = 0;
+  int home = 0; // the worker it last ran on, where a wake puts it back
 #ifdef SWORD_ASAN
   void *fake_stack = nullptr;
 #endif
@@ -159,6 +168,7 @@ void prepare(Fiber *f) {
 struct Worker {
   std::mutex lock;
   std::vector<Task *> queue; // back is the owner's end, front is stolen from
+  std::vector<Fiber *> ready; // parked tasks the poller has woken
   std::vector<Task *> spare;
   std::vector<Fiber *> stacks; // mapped once, reused
 };
@@ -206,6 +216,25 @@ Task *steal_task(Worker &w) {
   Task *task = w.queue.front();
   w.queue.erase(w.queue.begin());
   return task;
+}
+
+// A task the poller has woken. These come before fresh work: resuming one costs
+// nothing but a switch, and finishing what has been started is what keeps the
+// number of live stacks down.
+Fiber *find_ready(int me) {
+  Pool &p = pool();
+  size_t count = p.workers.size();
+  for (size_t i = 0; i < count; i++) {
+    size_t at = (me >= 0 ? (size_t)me + i : i) % count;
+    Worker &w = *p.workers[at];
+    std::lock_guard<std::mutex> held(w.lock);
+    if (w.ready.empty()) continue;
+    Fiber *f = w.ready.back();
+    w.ready.pop_back();
+    p.pending.fetch_sub(1, std::memory_order_relaxed);
+    return f;
+  }
+  return nullptr;
 }
 
 // Own queue first, then everyone else's, starting from a different neighbour
@@ -293,16 +322,62 @@ void leave(Fiber *f, bool done) {
 #endif
 }
 
+void make_runnable(Fiber *f) {
+  Pool &p = pool();
+  Worker &w = *p.workers[f->home < (int)p.workers.size() ? f->home : 0];
+  {
+    std::lock_guard<std::mutex> held(w.lock);
+    w.ready.push_back(f);
+  }
+  p.pending.fetch_add(1, std::memory_order_relaxed);
+  p.wake.notify_one();
+}
+
+// Called by the poller, on its own thread. The task may still be switching out
+// when this runs, which is what the state machine is for.
+void on_ready(void *token, int result) {
+  Fiber *f = (Fiber *)token;
+  f->wake_result = result;
+  if (f->state.exchange(FIBER_READY, std::memory_order_acq_rel) == FIBER_PARKED)
+    make_runnable(f);
+}
+
+// Back from a task: either it is done, or it has parked and the poller owns it
+// now — unless the poller got there first, in which case it is runnable again
+// already.
+void after_enter(Fiber *f) {
+  if (f->finished) {
+    retire_fiber(f);
+    return;
+  }
+  int parking = FIBER_PARKING;
+  if (!f->state.compare_exchange_strong(parking, FIBER_PARKED,
+                                        std::memory_order_acq_rel))
+    make_runnable(f);
+}
+
 void run_task(Task *task) {
   Fiber *f = fresh_fiber(task);
+  f->home = tl_worker >= 0 ? tl_worker : 0;
   enter(f);
-  retire_fiber(f);
+  after_enter(f);
+}
+
+void resume_fiber(Fiber *f) {
+  f->home = tl_worker >= 0 ? tl_worker : 0;
+  f->state.store(FIBER_RUNNING, std::memory_order_release);
+  enter(f);
+  after_enter(f);
 }
 
 void worker_loop(int me) {
   tl_worker = me;
   Pool &p = pool();
   while (!p.stopping.load(std::memory_order_acquire)) {
+    if (Fiber *f = find_ready(me)) {
+      resume_fiber(f);
+      continue;
+    }
     if (Task *task = find_task(me)) {
       run_task(task);
       continue;
@@ -320,6 +395,11 @@ void helper_loop() {
   Pool &p = pool();
   int idle = 0;
   while (!p.stopping.load(std::memory_order_acquire)) {
+    if (Fiber *f = find_ready(-1)) {
+      resume_fiber(f);
+      idle = 0;
+      continue;
+    }
     if (Task *task = find_task(-1)) {
       run_task(task);
       idle = 0;
@@ -388,6 +468,7 @@ Pool &pool() {
 
 void stop_pool() {
   Pool &p = pool();
+  sword_poll_stop();
   p.stopping.store(true, std::memory_order_release);
   p.wake.notify_all();
   for (std::thread &t : p.threads)
@@ -555,7 +636,8 @@ namespace {
 // find. That is what makes nested scopes safe from deadlock.
 void drain_until(Scope *scope) {
   while (scope->outstanding.load(std::memory_order_acquire) > 0) {
-    if (Task *task = find_task(tl_worker)) run_task(task);
+    if (Fiber *f = find_ready(tl_worker)) resume_fiber(f);
+    else if (Task *task = find_task(tl_worker)) run_task(task);
     else std::this_thread::yield();
   }
 }
@@ -600,6 +682,28 @@ void sword_scope_spawn(void *blob, sword_task_fn fn, const void *args,
   // the next blocking call to notice it.
   cover_for_parked(p);
 }
+
+// Waits for a descriptor from inside a task, without holding the thread: the
+// task is put down, the worker goes to other work, and the poller picks it up
+// again when the kernel says so. Returns 0 when ready, -2 when the deadline
+// passed, and -1 when there is no task to put down — the caller then waits the
+// old way, on the thread.
+int sword_park_fd(int32_t fd, int32_t writable, int64_t deadline_ns) {
+  Fiber *f = tl_fiber;
+  if (!f) return SWORD_POLL_FAILED;
+
+  sword_poll_start(on_ready);
+  f->wake_result = SWORD_POLL_READY;
+  f->state.store(FIBER_PARKING, std::memory_order_release);
+  sword_poll_wait((int)fd, (int)writable, f, deadline_ns);
+  leave(f, false);
+  // Resumed, possibly on another thread. Everything from here reads fresh.
+  return f->wake_result;
+}
+
+int32_t sword_in_task(void) { return tl_fiber != nullptr; }
+
+void sword_forget_fd(int32_t fd) { sword_poll_forget((int)fd); }
 
 void sword_blocking_enter(void) {
   Pool *p = running.load(std::memory_order_acquire);
