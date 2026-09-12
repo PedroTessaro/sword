@@ -1,13 +1,20 @@
 package testing
 
+import "std/bytes"
 import "std/fmt"
 import "std/io"
 import "std/mem"
+import "std/os"
+import "std/strings"
 import "std/time"
 
-// Memory each test gets, reset between them so nothing has to be freed. A test
-// that needs more builds its own arena.
+// Memory each test gets. Tests run at the same time by default, so this is per
+// task rather than shared, and a test that needs more builds its own arena.
 const ArenaSize = 262144
+// How many tests may run at once. Sword has no global state, so two tests
+// cannot reach each other except through a port, a file or the clock — the
+// reason other languages default to running them in order simply is not here.
+const DefaultParallel = 64
 // How deep `Run` may nest. Deeper than this and the label stops being a label.
 const MaxDepth = 4
 
@@ -30,7 +37,7 @@ func NewCase(name string, run func(mut *T) !void) Case {
 // Everything one test needs. It is handed in rather than reached for, which is
 // what lets the runner reset the memory and collect the result.
 struct T {
-    // The test's own memory. Reset before each test, so a test never frees.
+    // The test's own memory. Each test has its own, so a test never frees.
     Mem mem.Allocator
     // What `RunWith` was given. There are no closures, so this is how a subtest
     // is told which case it is: read `Arg.Text` or `Arg.Int`. It carries
@@ -41,16 +48,18 @@ struct T {
     subs   [MaxDepth]string
     depth  u64
     failed bool
-    out    io.Writer
+    // Everything this test said, kept until it finishes. Tests run together, so
+    // writing straight to the terminal would interleave them line by line.
+    out bytes.Buffer
 }
 
 func nothing() any {
     return any{Kind: 0, Int: 0, Real: 0.0, Text: ""}
 }
 
-func newT(name string, mut a mem.Allocator) T {
+func newT(name string, mut a mem.Allocator) !T {
     return T{Mem: a, Arg: nothing(), name: name, subs: [MaxDepth]string{},
-             depth: 0, failed: false, out: io.NewWriter(io.Stdout)}
+             depth: 0, failed: false, out: try bytes.New(a, 512)}
 }
 
 func (t *T) Name() string {
@@ -72,7 +81,6 @@ func (mut t *T) header() !void {
         try t.out.WriteString(t.subs[i])
     }
     try t.out.WriteString("\n")
-    try t.out.Flush()
 }
 
 // Marks the test failed and says nothing. Use it where the reason is already on
@@ -86,7 +94,6 @@ func (mut t *T) Failf(format string, args ...any) !void {
     try t.out.WriteString("      ")
     try fmt.Format(&t.out, format, args)
     try t.out.WriteString("\n")
-    try t.out.Flush()
 }
 
 // Same, and ends the test: the error travels out through the `try` at the call
@@ -100,7 +107,6 @@ func (mut t *T) Logf(format string, args ...any) !void {
     try t.out.WriteString("      ")
     try fmt.Format(&t.out, format, args)
     try t.out.WriteString("\n")
-    try t.out.Flush()
 }
 
 func (mut t *T) Check(ok bool) !void {
@@ -155,7 +161,6 @@ func (mut t *T) mismatch(got any, want any) !void {
     try t.show("got ", got)
     try t.show(", want ", want)
     try t.out.WriteString("\n")
-    try t.out.Flush()
 }
 
 // Records a mismatch and carries on, for when the rest of the test still has
@@ -181,7 +186,6 @@ func (mut t *T) Skip(why string) !void {
     try t.out.WriteString(": ")
     try t.out.WriteString(why)
     try t.out.WriteString("\n")
-    try t.out.Flush()
     return error.Skipped
 }
 
@@ -215,35 +219,90 @@ func (mut t *T) RunWith(name string, body func(mut *T) !void, arg any) !void {
     t.depth -= 1
 }
 
-// Runs every case in order and reports. The exit status is what `shield test`
-// hands back to the shell: zero only when nothing failed.
-func Run(cases []Case) !int {
+// The shared tally, so every task can add to it and the run can be reported
+// once at the end.
+struct Tally {
+    failed  atomic[u64]
+    skipped atomic[u64]
+}
+
+// One test, on its own task with its own memory, saying nothing to the terminal
+// until it is done.
+func runOne(cases []Case, at u64, tally *Tally, gate *shared[u64]) !void {
     mut backing := [ArenaSize]u8{}
     mut arena := mem.NewArena(backing[..])
 
-    mut failed u64 = 0
-    mut skipped u64 = 0
-    start := time.Now()
-
-    for c in cases {
-        arena.Reset()
-        mut t := newT(c.Name, &arena)
-        mut was_skipped := false
-        c.Run(&t) catch |e| {
-            if e == error.Skipped {
-                was_skipped = true
-            } else if e != error.Failed {
-                try t.Failf("returned error {}", u64(e))
-            }
-        }
-        if t.failed {
-            failed += 1
-        } else if was_skipped {
-            skipped += 1
+    c := cases[at]
+    mut t := try newT(c.Name, &arena)
+    mut was_skipped := false
+    c.Run(&t) catch |e| {
+        if e == error.Skipped {
+            was_skipped = true
+        } else if e != error.Failed {
+            try t.Failf("returned error {}", u64(e))
         }
     }
 
+    if t.failed {
+        tally.failed.Add(1)
+    } else if was_skipped {
+        tally.skipped.Add(1)
+    }
+
+    // The whole of what this test said, in one piece. Without the lock two
+    // tests finishing together would shuffle their lines into each other.
+    if t.out.Len() > 0 {
+        lock held := gate {
+            try io.Write(io.Stdout, string(t.out.Bytes()))
+        }
+    }
+}
+
+// `-p N` caps how many run at once; `-p 1` puts them back in order, which is
+// what a test needing a port or a directory to itself wants.
+func parallelism() u64 {
+    mut room := [16]string{}
+    args := os.Args(room[..])
+    for i in 0..args.len {
+        if args[i] != "-p" || i + 1 >= args.len {
+            continue
+        }
+        want := strings.ParseU64(args[i+1]) catch 0
+        if want > 0 {
+            return want
+        }
+    }
+    return DefaultParallel
+}
+
+// Runs every case and reports. The exit status is what `shield test` hands back
+// to the shell: zero only when nothing failed.
+func Run(cases []Case) !int {
+    mut tally := Tally{failed: atomic[u64](0), skipped: atomic[u64](0)}
+    mut gate := shared[u64](0)
+    at_once := parallelism()
+    start := time.Now()
+
+    // A scope per batch rather than one for everything: it is the join that
+    // bounds how many tasks — and how many stacks — exist at a time.
+    mut from u64 = 0
+    for from < cases.len {
+        mut upto := from + at_once
+        if upto > cases.len {
+            upto = cases.len
+        }
+        scope {
+            for i in from..upto {
+                spawn runOne(cases, i, &tally, &gate)
+            }
+        }
+        from = upto
+    }
+
     took := time.Since(start)
+    failed := tally.failed.Load()
+    skipped := tally.skipped.Load()
+
     mut w := io.NewWriter(io.Stdout)
     if failed == 0 {
         try w.WriteString("ok    ")

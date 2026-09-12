@@ -26,6 +26,7 @@ void usage() {
         "       shield test <file.sw | directory> [options]\n"
         "\n"
         "  -o <path>      output binary (default: a.out)\n"
+        "  -p <n>         test only: how many tests may run at once\n"
         "  -I <dir>       add a directory to the package search path\n"
         "  --mode=<m>     debug | safe | fast | small (default safe)\n"
         "                 debug and safe check bounds and integer overflow\n"
@@ -144,6 +145,7 @@ int main(int argc, char **argv) {
   bool testing = argc > 1 && !strcmp(argv[1], "test");
   int first = testing ? 2 : 1;
   bool named = false; // whether -o asked for a particular path
+  std::string forwarded; // options the test binary reads for itself
   if (testing) output = "";
 
   for (int i = first; i < argc; i++) {
@@ -166,6 +168,8 @@ int main(int argc, char **argv) {
     else if (!strcmp(arg, "--emit-ast")) stage = STAGE_AST;
     else if (!strcmp(arg, "--emit-ir")) stage = STAGE_IR;
     else if (!strcmp(arg, "--emit-llvm")) stage = STAGE_LLVM;
+    else if (testing && !strcmp(arg, "-p") && i + 1 < argc)
+      forwarded += " -p " + std::string(argv[++i]);
     else if (!strcmp(arg, "-h") || !strcmp(arg, "--help")) { usage(); return 0; }
     else if (arg[0] == '-') { usage(); return 1; }
     else input = arg;
@@ -248,6 +252,7 @@ int main(int argc, char **argv) {
   // Run it, hand back what it says, and leave nothing behind.
   std::string command = output;
   if (command.find('/') == std::string::npos) command = "./" + command;
+  command += forwarded;
   int status = system(command.c_str());
   // A name the user asked for is theirs to keep.
   if (!named) unlink(output.c_str());

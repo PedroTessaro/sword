@@ -1,0 +1,38 @@
+// expect: 42
+// expect-output: six 100ms tests together
+// Tests run at the same time unless told otherwise. Six that sleep for a tenth
+// of a second each take a tenth of a second, not six.
+
+import "std/io"
+import "std/testing"
+import "std/time"
+
+func slow(mut t *testing.T) !void {
+    time.Sleep(time.Millis(100))
+    try t.Equal(1, 1)
+}
+
+func main() !int {
+    mut cases := [6]testing.Case{
+        testing.NewCase("a", slow), testing.NewCase("b", slow),
+        testing.NewCase("c", slow), testing.NewCase("d", slow),
+        testing.NewCase("e", slow), testing.NewCase("f", slow)}
+
+    start := time.Now()
+    code := try testing.Run(cases[..])
+    took := time.Since(start)
+
+    if code != 0 {
+        return 1
+    }
+    // In order this would be six hundred milliseconds. The margin is wide on
+    // purpose: the point is the shape, not the stopwatch.
+    if took.AsMillis() > 400 {
+        return 2
+    }
+    if took.AsMillis() < 90 {
+        return 3
+    }
+    try io.Printf("six 100ms tests together in {}ms\n", took.AsMillis())
+    return 42
+}
