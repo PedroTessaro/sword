@@ -15,9 +15,13 @@ const ArenaSize = 32768
 // kernel's backlog hold the rest, which is what backpressure looks like from
 // the outside: a queue rather than a collapse.
 const DefaultMaxConns = 1024
-// A client that connects and then says nothing releases its connection after
-// this long.
+// The most any single wait on a connection may take: a client that connects and
+// then says nothing releases it after this long.
 const DefaultTimeout = 15
+// And the most one turn of the keep-alive loop may take altogether — waiting
+// for a request and serving it. A timeout alone cannot bound a client that
+// dribbles a byte at a time, because no single wait ever runs out.
+const RequestTimeout = 30
 
 const MaxParams = 8
 
@@ -215,6 +219,11 @@ func handleConn(mut c *net.Conn, h Handler, mut a mem.Allocator) !void {
     mut body := try bytes.New(a, 1024)
 
     for {
+        // One deadline per turn, covering the wait for a request and the
+        // serving of it. An idle connection is dropped when it runs out, which
+        // is what a keep-alive idle timeout is.
+        c.SetDeadline(time.Now().Add(time.Seconds(RequestTimeout))) catch {}
+
         mut req := newRequest(buf)
         got := try readRequest(c, buf, &req)
         if got == 0 {

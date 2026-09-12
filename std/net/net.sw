@@ -15,6 +15,7 @@ extern func sword_net_dial_timeout(host [*]u8, host_len i64, port i32,
 extern func sword_net_read(fd i32, buf [*]u8, len i64) i64
 extern func sword_net_write(fd i32, buf [*]u8, len i64) i64
 extern func sword_net_timeout(fd i32, millis i64) i32
+extern func sword_net_deadline(fd i32, at_ns i64) i32
 extern func sword_net_close(fd i32) i32
 extern func sword_net_stop(fd i32) i32
 
@@ -78,10 +79,29 @@ func DialTimeout(host string, port i32, limit time.Duration) !Conn {
     return Conn{fd: fd}
 }
 
-// A connection that goes quiet should not hold a task forever. A zero
-// duration waits indefinitely, which is what a socket does by default.
+// The most any single wait on this connection may take. A zero duration waits
+// as long as it takes, which is what a socket does by default.
 func (c *Conn) SetTimeout(limit time.Duration) !void {
     if sword_net_timeout(c.fd, limit.AsMillis()) < 0 {
+        return error.TimeoutNotSet
+    }
+}
+
+// A point after which nothing on this connection waits any longer, however
+// little each wait took on its own. A timeout cannot bound a client that sends
+// one byte a second forever; this can.
+//
+//     try c.SetDeadline(time.Now().Add(time.Seconds(30)))
+//
+// The zero instant clears it.
+func (c *Conn) SetDeadline(at time.Instant) !void {
+    if sword_net_deadline(c.fd, at.AsNanos()) < 0 {
+        return error.TimeoutNotSet
+    }
+}
+
+func (c *Conn) ClearDeadline() !void {
+    if sword_net_deadline(c.fd, 0) < 0 {
         return error.TimeoutNotSet
     }
 }

@@ -1,0 +1,55 @@
+// expect: 42
+// expect-output: gave up after
+// A timeout bounds one wait; a deadline bounds the whole exchange. A client
+// that sends a byte every twenty milliseconds never runs a five-second timeout
+// out, and would hold the connection forever without the second limit.
+
+import "std/io"
+import "std/net"
+import "std/time"
+
+// A client that sends a byte at a time forever: a per-wait timeout never fires,
+// but the deadline does.
+func dribble(port i32, mut stop *atomic[u64]) !void {
+    mut c := try net.Dial("127.0.0.1", port)
+    for stop.Load() == 0 {
+        c.WriteString("x") catch break
+        time.Sleep(time.Millis(20))
+    }
+    c.Close()
+}
+
+func victim(l *net.Listener, mut out *atomic[u64], mut stop *atomic[u64]) !void {
+    mut c := try l.Accept()
+    try c.SetTimeout(time.Seconds(5))
+    try c.SetDeadline(time.Now().Add(time.Millis(300)))
+    mut buf := [64]u8{}
+    start := time.Now()
+    for {
+        c.Read(buf[..]) catch {
+            took := time.Since(start)
+            out.Store(u64(took.AsMillis()))
+            break
+        }
+    }
+    stop.Store(1)
+    c.Close()
+}
+
+func main() !int {
+    mut out := atomic[u64](0)
+    mut stop := atomic[u64](0)
+    mut l := try net.Listen(0)
+    port := l.Port()
+    scope {
+        spawn victim(&l, &out, &stop)
+        spawn dribble(port, &stop)
+    }
+    l.Close()
+    took := out.Load()
+    try io.Printf("gave up after {}ms\n", took)
+    if took < 250 || took > 900 {
+        return 1
+    }
+    return 42
+}

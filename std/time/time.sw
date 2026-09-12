@@ -75,6 +75,12 @@ func (t Instant) Add(d Duration) Instant {
     return Instant{ns: t.ns + d.ns}
 }
 
+// The reading itself, for handing to something that wants an absolute point —
+// a connection deadline, say. On its own the number means nothing.
+func (t Instant) AsNanos() i64 {
+    return t.ns
+}
+
 // Negative when `t` is in the past, which is how a deadline is checked.
 func (t Instant) Until() Duration {
     return Duration{ns: t.ns - sword_time_mono()}

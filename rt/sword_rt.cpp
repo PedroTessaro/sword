@@ -86,9 +86,10 @@ struct Task {
 // --- stacks --------------------------------------------------------------
 
 // Reserved, not committed: the pages a task never touches cost nothing but
-// address space. Sword code puts whole buffers on the stack — an accept loop's
-// arena lives there — so this has to be roomy.
-const size_t kStackReserve = 512 * 1024;
+// address space, and the measured cost of an idle connection is what it touches
+// rather than what it reserved. Sword code puts whole buffers on the stack — a
+// connection's arena lives there — so this is roomy on purpose.
+const size_t kStackReserve = 1024 * 1024;
 
 // A task and the stack it runs on. It outlives any one worker: a task that
 // stops for I/O is resumed by whichever worker picks it up next.
