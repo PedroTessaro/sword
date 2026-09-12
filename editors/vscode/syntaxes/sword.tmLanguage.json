@@ -38,7 +38,7 @@
         },
         {
           "name": "keyword.declaration.sword",
-          "match": "\\b(package|import|func|struct|interface|extern|const|chan)\\b"
+          "match": "\\b(package|import|func|struct|interface|enum|extern|const|chan)\\b"
         },
         { "name": "storage.modifier.sword", "match": "\\bmut\\b" },
         { "name": "constant.language.sword", "match": "\\b(true|false|nil)\\b" }

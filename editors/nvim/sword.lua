@@ -53,6 +53,7 @@ function M.link_defaults()
     ['@lsp.type.keyword']    = 'Keyword',
     ['@lsp.type.string']     = 'String',
     ['@lsp.type.number']     = 'Number',
+    ['@lsp.type.enum']       = 'Structure',
     ['@lsp.type.enumMember'] = 'Constant',
   }
   for group, target in pairs(links) do

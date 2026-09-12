@@ -5,7 +5,7 @@ if exists("b:current_syntax")
 endif
 
 syn keyword swordKeyword package import func return if else for in break continue
-syn keyword swordKeyword struct interface extern defer errdefer scope spawn
+syn keyword swordKeyword struct interface enum extern defer errdefer scope spawn
 syn keyword swordKeyword parallel reduce chan lock const
 syn keyword swordKeyword switch case default
 syn keyword swordKeyword try catch orelse

@@ -9,7 +9,7 @@
 const std::vector<std::string> kTokenTypes = {
     "namespace", "type",     "struct",   "interface", "parameter",
     "variable",  "property", "function", "method",    "keyword",
-    "string",    "number",   "enumMember",
+    "string",    "number",   "enumMember", "enum",
 };
 
 const std::vector<std::string> kTokenModifiers = {
@@ -21,7 +21,7 @@ namespace {
 enum Type {
   T_NAMESPACE, T_TYPE, T_STRUCT, T_INTERFACE, T_PARAMETER,
   T_VARIABLE, T_PROPERTY, T_FUNCTION, T_METHOD, T_KEYWORD,
-  T_STRING, T_NUMBER, T_ENUM_MEMBER,
+  T_STRING, T_NUMBER, T_ENUM_MEMBER, T_ENUM,
 };
 
 enum Modifier {
@@ -79,6 +79,12 @@ struct Classifier {
       break;
     case ND_INTERFACE_DECL:
       mark(n->name_pos, T_INTERFACE, M_DECLARATION);
+      break;
+    case ND_ENUM_DECL:
+      mark(n->name_pos, T_ENUM, M_DECLARATION);
+      break;
+    case ND_ENUM_MEMBER:
+      mark(n->name_pos, T_ENUM_MEMBER, M_DECLARATION | M_READONLY);
       break;
     case ND_FIELD_DECL:
       mark(n->name_pos, T_PROPERTY, M_DECLARATION);
