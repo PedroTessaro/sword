@@ -199,9 +199,9 @@ func main() int {
 ```
 
 One case per value, several values per case, and no fallthrough — a case body
-ends where the next `case` begins. The subject can be an integer, a bool or a
-string. Two cases matching the same value is an error, because one of them
-could never run.
+ends where the next `case` begins. The subject can be an integer, a bool, a
+string or an enum. Two cases matching the same value is an error, because one of
+them could never run.
 
 A `switch` is not a loop, so `break` and `continue` inside one speak to the loop
 around it. There is nothing to break out of: a case body ends on its own.
@@ -415,6 +415,85 @@ Two ways to get at the value, and no third:
 ```sword
 p := lookup(key) orelse return error.NotFound
 ```
+
+To ask only whether something is there, compare it against `nil`:
+
+```sword
+import "std/io"
+import "std/os"
+
+func main() !int {
+    if os.Env("HOME") != nil {
+        try io.Print("HOME is set\n")
+    }
+    return 0
+}
+```
+
+That is the only comparison an optional has. Two of them cannot be compared,
+because that would mean comparing the values inside, and an absent one has none.
+
+## Enums
+
+A set of named integers, with a type of its own:
+
+```sword
+import "std/io"
+
+enum Kind u8 {
+    None
+    Bool
+    Text = 9
+    Real
+}
+
+func describe(k Kind) string {
+    switch k {
+    case Kind.None:
+        return "nothing"
+    case Kind.Bool:
+        return "a flag"
+    case Kind.Text:
+        return "a string"
+    case Kind.Real:
+        return "a number"
+    }
+}
+
+func main() !int {
+    try io.Print(describe(Kind.Text))
+    return 0
+}
+```
+
+Look at what is not in that switch: a `default`. It is not needed, and that is
+the point of naming the set. **A switch over an enum with no `default` has to
+cover every member**, so the function returns on every path and the compiler
+knows it. Add a member later and every switch that has stopped being complete
+tells you where:
+
+```
+error: this switch over Kind does not cover Bytes
+note: add the missing cases, or a 'default'
+```
+
+The width is optional — `enum Kind u8` above, `enum Kind` for the default `int`.
+A member with no value continues from the one before, starting at zero, so
+`Real` is 10.
+
+The type is its own, which is the other half of the bargain. `k + 1` does not
+compile, and neither does passing a `Kind` where an integer is wanted. Crossing
+over is written out:
+
+```sword
+byte := u8(Kind.Text)      // 9
+back := Kind(9)            // Kind.Text
+```
+
+The second one is **not** checked against the members — there is no table at run
+time to check it against — which is what makes it usable for a value that just
+came off a socket. An enum also prints as its number rather than its name, for
+the same reason.
 
 ## Errors
 

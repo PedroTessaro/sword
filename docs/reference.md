@@ -20,6 +20,7 @@ For looking things up. [The tour](tour.md) is the place to learn from.
 | `[N]T` | array, a value |
 | `[*]T` | raw pointer, no length, for FFI |
 | `struct` `interface` | |
+| `enum` | a named set of integers, with its own type |
 | `func(T, mut U) R` | a function value: one word, no capture |
 | `atomic[T]` | an integer or bool many tasks may write at once |
 | `shared[T]` | any value, behind a mutex; `lock` is the only way in |
@@ -56,6 +57,7 @@ struct Name { field T ... }
 struct Name[T] { field T ... }     // generic; a type only once instantiated
 extern struct Name { ... }         // declared field order, for C
 interface Name { Method(a T) R ... }
+enum Name T { A; B = 3; C }        // T is the width, default int
 
 package name                       // documentation; the directory decides
 import "path/to/package"
@@ -233,12 +235,47 @@ default:
 }
 ```
 
-The subject is an integer, a bool or a string. No fallthrough: a case body ends
-where the next `case` begins. Two cases matching the same constant is an error,
-and so is a second `default`.
+The subject is an integer, a bool, a string or an enum. No fallthrough: a case
+body ends where the next `case` begins. Two cases matching the same constant is
+an error, and so is a second `default`.
 
 A `switch` is not a loop, so `break` and `continue` inside one belong to the loop
 around it.
+
+Over an enum with no `default`, every member has to be covered:
+
+```
+error: this switch over Kind does not cover Bool, Int, Text
+note: add the missing cases, or a 'default'
+```
+
+## Enums
+
+```sword
+enum Kind u8 {
+    None            // 0
+    Bool            // 1
+    Text = 9
+    Real            // 10
+}
+```
+
+The width is optional and defaults to `int`. A member with no value continues
+from the one before, starting at zero; two members with the same value is an
+error.
+
+A member is named through its type — `Kind.Text`, or `json.Kind.Object` from
+another package. The type is its own, so nothing arithmetic reaches it by
+accident:
+
+| | |
+|---|---|
+| `==` `!=` | yes |
+| `switch` | yes, and checked for completeness without a `default` |
+| `+` `<` and the rest | no |
+| `u8(k)`, `Kind(n)` | yes, and **not** checked against the members |
+
+An enum prints as the number it is: there is no table of names to print from.
 
 ## Reductions
 
@@ -280,7 +317,12 @@ var ?*T = nil
 if x := optional { ... } else { ... }
 optional orelse fallback
 optional orelse return error.Name
+optional == nil                // present or not
+optional != nil
 ```
+
+Comparing against `nil` is the only comparison an optional has: two of them
+would mean comparing payloads, and an absent one has none.
 
 ## Conversions
 
