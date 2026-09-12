@@ -523,6 +523,10 @@ struct Emitter {
          "declare i16 @sword_parallel_for(i64, i64, ptr, ptr)"},
         {"sword_mutex_lock", "declare void @sword_mutex_lock(ptr)"},
         {"sword_mutex_unlock", "declare void @sword_mutex_unlock(ptr)"},
+        {"sword_mutex_wait", "declare void @sword_mutex_wait(ptr)"},
+        {"sword_mutex_notify", "declare void @sword_mutex_notify(ptr)"},
+        {"sword_mutex_notify_all",
+         "declare void @sword_mutex_notify_all(ptr)"},
     };
     bool any = false;
     for (const auto &entry : runtime) {

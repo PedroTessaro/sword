@@ -1140,6 +1140,7 @@ struct Lowerer {
 
   int call(Node *n) {
     if (n->form == 3) return atomic_call(n);
+    if (n->form == 5) return shared_call(n);
     IrInst in{};
     in.op = IR_CALL;
     in.callee = n->name.empty() ? n->lhs->name : n->name;
@@ -1177,6 +1178,18 @@ struct Lowerer {
     if (result < 0 && n->type->kind != TY_VOID) in.dst = new_value(n->type);
     emit(in);
     return result >= 0 ? result : in.dst;
+  }
+
+  // Wait, Notify and NotifyAll, all of which take the guard and nothing else.
+  int shared_call(Node *n) {
+    Node *base = n->lhs->lhs;
+    Type *box = base->type;
+    if (box->kind == TY_PTR) box = box->elem;
+    int at = base->type->kind == TY_PTR ? expr(base) : addr(base);
+    static const char *names[] = {"sword_mutex_wait", "sword_mutex_notify",
+                                  "sword_mutex_notify_all"};
+    call_runtime(names[n->ival], {gep_named(at, box, "guard")}, types.void_ty);
+    return -1;
   }
 
   int expr(Node *n) {
@@ -1655,6 +1668,35 @@ struct Lowerer {
     cur = exit_bb;
   }
 
+  // `for x := optional { }`. The optional is evaluated afresh each turn, which
+  // is what makes it a loop rather than an `if`.
+  void optional_loop(Node *n) {
+    Type *box_type = n->cond->type;
+    int slot = alloca_slot(n->sym->type);
+    n->sym->slot = slot;
+
+    int cond_bb = new_block();
+    int body_bb = new_block();
+    int exit_bb = new_block();
+
+    branch(cond_bb);
+    cur = cond_bb;
+    int box = expr(n->cond);
+    cond_branch(opt_present(box, box_type), body_bb, exit_bb);
+
+    cur = body_bb;
+    int inner = opt_value(box, box_type);
+    if (is_aggregate(n->sym->type)) copy(slot, inner, n->sym->type);
+    else store(inner, slot, n->sym->type);
+
+    loops.push_back({cond_bb, exit_bb, scopes.size()});
+    stmt(n->body);
+    branch(cond_bb);
+    loops.pop_back();
+
+    cur = exit_bb;
+  }
+
   void cond_loop(Node *n) {
     int cond_bb = new_block();
     int body_bb = new_block();
@@ -1793,6 +1835,7 @@ struct Lowerer {
 
     case ND_FOR:
       if (n->is_parallel) parallel_for(n);
+      else if (n->form == 2) optional_loop(n); // FOR_OPTIONAL
       else if (n->is_range) range_loop(n);
       else if (!n->name.empty()) walk_loop(n);
       else cond_loop(n);

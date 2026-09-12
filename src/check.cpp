@@ -1307,6 +1307,28 @@ struct Checker {
     return n->type = result;
   }
 
+  // The whole API of a shared value, beside `lock`. All three must be called
+  // with the lock held: `Wait` lets go of it, puts the task down, and takes it
+  // back before returning, which is what turns a mutex into something a queue
+  // can be built out of.
+  Type *check_shared_call(Node *n, Type *owner) {
+    Node *field = n->lhs;
+    const std::string &name = field->name;
+    if (name != "Wait" && name != "Notify" && name != "NotifyAll") {
+      error(field->pos, "%s has no operation '%s'; reach the value with 'lock'",
+            type_str(owner).c_str(), name.c_str());
+      return nullptr;
+    }
+    if (!n->kids.empty()) {
+      error(n->pos, "'%s' takes no arguments", name.c_str());
+      return nullptr;
+    }
+    n->form = CALL_SHARED;
+    n->ival = name == "Wait" ? 0 : (name == "Notify" ? 1 : 2);
+    n->name = name;
+    return n->type = types.void_ty;
+  }
+
   Type *check_method_call(Node *n) {
     Node *field = n->lhs;
     Type *base = check_expr(field->lhs);
@@ -1314,6 +1336,7 @@ struct Checker {
     Type *owner = base->kind == TY_PTR ? base->elem : base;
 
     if (owner->kind == TY_ATOMIC) return check_atomic_call(n, owner);
+    if (is_shared(owner)) return check_shared_call(n, owner);
 
     if (owner->is_interface) {
       for (size_t i = 0; i < owner->methods.size(); i++) {
@@ -2162,7 +2185,8 @@ struct Checker {
   enum CompareForm { CMP_VALUES, CMP_NIL };
   // How a call reaches its target, kept in `form`.
   enum CallForm {
-    CALL_DIRECT, CALL_METHOD, CALL_DYNAMIC, CALL_ATOMIC, CALL_INDIRECT
+    CALL_DIRECT, CALL_METHOD, CALL_DYNAMIC, CALL_ATOMIC, CALL_INDIRECT,
+    CALL_SHARED
   };
 
   void check_return(Node *n) {
@@ -2377,7 +2401,7 @@ struct Checker {
   }
 
   // Which of the two named `for` loops this is, kept in `form`.
-  enum ForForm { FOR_PARTITION, FOR_ELEMENTS };
+  enum ForForm { FOR_PARTITION, FOR_ELEMENTS, FOR_OPTIONAL };
 
   // `for x in xs` and `for part in xs.chunks(n)` are the same syntax, so which
   // loop it is comes from what is being walked.
@@ -2655,6 +2679,26 @@ struct Checker {
 
     case ND_FOR:
       push_scope();
+      // `for x := optional { }`: run while it has something, with the value
+      // bound, the same way `if x := optional` unwraps once.
+      if (n->form == FOR_OPTIONAL) {
+        Type *t = check_expr(n->cond);
+        if (!t) { pop_scope(); return; }
+        if (!is_optional(t)) {
+          error(n->cond->pos,
+                "'for %s := ...' needs an optional value, got %s",
+                n->name.c_str(), type_str(t).c_str());
+          pop_scope();
+          return;
+        }
+        n->sym = declare(n->name, const_cast<Type *>(opt_payload(t)), false,
+                         n->name_pos);
+        loop_depth++;
+        check_stmt(n->body);
+        loop_depth--;
+        pop_scope();
+        break;
+      }
       if (!n->is_range && !n->name.empty()) {
         if (!check_walk(n)) {
           pop_scope();
