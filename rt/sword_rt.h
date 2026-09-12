@@ -30,4 +30,12 @@ uint16_t sword_parallel_for(int64_t lo, int64_t hi, sword_chunk_fn fn,
 // never spawns anything.
 void sword_blocking_enter(void);
 void sword_blocking_exit(void);
+
+// The guard inside a `shared[T]`, which generated code only ever passes the
+// address of. All-zero bytes are an unlocked guard, so a shared needs no
+// constructor and can sit in an array or a struct field.
+enum { SWORD_GUARD_SIZE = 16 };
+
+void sword_mutex_lock(void *guard);
+void sword_mutex_unlock(void *guard);
 }

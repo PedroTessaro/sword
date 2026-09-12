@@ -1,7 +1,9 @@
 #include "sword_rt.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -250,6 +252,83 @@ Task *fresh_task() {
   }
   return new Task();
 }
+
+// --- the guard inside a shared -------------------------------------------
+
+// Plain fields with explicit atomic builtins rather than std::atomic, because
+// nothing constructs this: it comes into existence as sixteen zero bytes,
+// wherever the `shared` around it happens to live.
+struct Guard {
+  int32_t held;
+  uint64_t owner; // which thread, so locking twice is a diagnostic not a hang
+};
+
+static_assert(sizeof(Guard) <= SWORD_GUARD_SIZE, "guard blob too small");
+static_assert(alignof(Guard) <= 8, "guard needs more alignment than the"
+                                   " caller's slot provides");
+
+uint64_t thread_tag() {
+  static std::atomic<uint64_t> next{1};
+  // Zero is "nobody", so tags start at one.
+  static thread_local uint64_t mine = next.fetch_add(1);
+  return mine;
+}
+
+bool take_guard(Guard *g, uint64_t me) {
+  int32_t idle = 0;
+  if (!__atomic_compare_exchange_n(&g->held, &idle, 1, false, __ATOMIC_ACQUIRE,
+                                   __ATOMIC_RELAXED))
+    return false;
+  __atomic_store_n(&g->owner, me, __ATOMIC_RELEASE);
+  return true;
+}
+
+} // namespace
+
+extern "C" {
+
+void sword_mutex_lock(void *blob) {
+  Guard *g = (Guard *)blob;
+  uint64_t me = thread_tag();
+
+  if (__atomic_load_n(&g->held, __ATOMIC_ACQUIRE) == 1 &&
+      __atomic_load_n(&g->owner, __ATOMIC_ACQUIRE) == me) {
+    // The checker catches the case it can see. This is the one it cannot: two
+    // `lock` blocks on the same value with a call in between.
+    fputs("sword: deadlock, this task already holds this shared value\n",
+          stderr);
+    abort();
+  }
+
+  if (take_guard(g, me)) return;
+
+  // Contended. Spin briefly for the usual short critical section, then start
+  // sleeping — and tell the scheduler, so the thread this task is using goes
+  // to other work instead of waiting here.
+  sword_blocking_enter();
+  int64_t nap = 1000; // nanoseconds, doubling to a millisecond
+  for (int spins = 0; !take_guard(g, me); spins++) {
+    if (spins < 64) {
+      std::this_thread::yield();
+      continue;
+    }
+    std::this_thread::sleep_for(std::chrono::nanoseconds(nap));
+    if (nap < 1000000) nap *= 2;
+  }
+  sword_blocking_exit();
+}
+
+// Owner first: it is what the self-deadlock check reads, and clearing it before
+// releasing keeps a thread that locks the same value twice in a row from
+// mistaking its own stale tag for a live one.
+void sword_mutex_unlock(void *blob) {
+  Guard *g = (Guard *)blob;
+  __atomic_store_n(&g->owner, (uint64_t)0, __ATOMIC_RELEASE);
+  __atomic_store_n(&g->held, 0, __ATOMIC_RELEASE);
+}
+}
+
+namespace {
 
 // Instead of idling, a thread waiting on a scope runs whatever work it can
 // find. That is what makes nested scopes safe from deadlock.
