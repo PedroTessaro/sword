@@ -34,6 +34,14 @@ func main() int {
     mut fallback := Node{key: 40, next: nil}
     miss := find(&a, 9) orelse &fallback
 
+    // A plain value assigned into an optional is wrapped where it is stored,
+    // so the literal itself stays a plain u64.
+    mut count ?u64 = nil
+    count = 5
+    if (count orelse 0) != 5 {
+        return 96
+    }
+
     mut buf := malloc(16) orelse return 91
     buf[0] = 2
     total := int(hit.key) + int(miss.key) + int(buf[0])

@@ -980,7 +980,14 @@ struct Checker {
   // interface conversion happens uniformly.
   bool convert(Node *value, Type *to) {
     if (assignable(value->type, to)) {
-      apply_type(value, to);
+      // An untyped literal going into an optional becomes the payload, not the
+      // optional: the wrapping happens where the value is stored, and a literal
+      // carrying the box's type would be copied as if it were one.
+      if (is_optional(to) && value->type->untyped &&
+          value->type->kind != TY_OPT)
+        apply_type(value, const_cast<Type *>(opt_payload(to)));
+      else
+        apply_type(value, to);
       return true;
     }
     if (to->is_any) {
