@@ -429,8 +429,20 @@ struct Emitter {
     fputs("}\n\n", out);
   }
 
+  // A program only gets the argument vector if it asks: `main` takes no
+  // parameters otherwise, and nothing from the runtime gets linked in.
+  bool wants_args() const {
+    return calls("sword_os_argc") || calls("sword_os_arg");
+  }
+
   void entry_wrapper(const IrFunc &f) {
-    fputs("define i32 @main() {\nbb0:\n", out);
+    if (wants_args()) {
+      fputs("define i32 @main(i32 %argc, ptr %argv) {\nbb0:\n"
+            "  call void @sword_os_set_args(i32 %argc, ptr %argv)\n",
+            out);
+    } else {
+      fputs("define i32 @main() {\nbb0:\n", out);
+    }
     if (f.ret->is_error_union) {
       // A fallible main reports the error code as its exit status, and its
       // ordinary result when it succeeds.
@@ -514,6 +526,11 @@ struct Emitter {
     for (const auto &entry : runtime) {
       if (!calls(entry.name)) continue;
       fprintf(out, "%s\n", entry.decl);
+      any = true;
+    }
+    // This one is called by the entry wrapper rather than by lowered code.
+    if (wants_args()) {
+      fputs("declare void @sword_os_set_args(i32, ptr)\n", out);
       any = true;
     }
     if (any) fputc('\n', out);
