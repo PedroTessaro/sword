@@ -5,6 +5,7 @@
 *.swp
 *~
 a.out
+CLAUDE.md
 docs/design.md
 editors/vscode/node_modules/
 libsword_rt.a
