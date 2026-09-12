@@ -315,6 +315,18 @@ struct Parser {
       std::string name = advance().text;
       if (kind() == TK_LBRACE && !no_struct_lit) return struct_lit(name, pos);
 
+      // `pkg.Type{...}`: the qualifier is a package rather than a value, which
+      // the three tokens after the name are enough to tell.
+      if (kind() == TK_DOT && kind(1) == TK_IDENT && kind(2) == TK_LBRACE &&
+          !no_struct_lit) {
+        advance(); // '.'
+        Pos at = peek().pos;
+        std::string type = advance().text;
+        Node *lit = struct_lit(type, at);
+        if (lit) lit->text = name;
+        return lit;
+      }
+
       if (kind() == TK_LBRACK && !no_struct_lit) {
         size_t saved_i = i;
         bool saved_failed = failed;
