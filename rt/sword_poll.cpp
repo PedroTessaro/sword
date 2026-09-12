@@ -47,7 +47,10 @@ struct Poller {
   // Indexed by descriptor, two slots each. Descriptors are small and dense, so
   // a vector beats a hash for the lookup that happens on every event.
   std::vector<Slot> slots;
-  std::multimap<int64_t, std::pair<int, uint64_t>> timers; // deadline -> slot
+  // deadline -> (slot, seq), where a slot of -1 means the entry is a sleeper
+  // waiting on the time alone rather than on any descriptor.
+  std::multimap<int64_t, std::pair<int, uint64_t>> timers;
+  std::map<uint64_t, void *> sleepers;
   uint64_t next_seq = 1;
 };
 
@@ -72,6 +75,19 @@ void deliver(Poller &p, size_t slot, int result) {
     woken.swap(p.slots[slot].waiting);
   }
   for (const Waiter &w : woken) p.wake(w.token, result);
+}
+
+// A task waiting on the clock and nothing else.
+void deliver_sleeper(Poller &p, uint64_t seq) {
+  void *token = nullptr;
+  {
+    std::lock_guard<std::mutex> held(p.lock);
+    auto found = p.sleepers.find(seq);
+    if (found == p.sleepers.end()) return;
+    token = found->second;
+    p.sleepers.erase(found);
+  }
+  p.wake(token, SWORD_POLL_TIMEOUT);
 }
 
 // One waiter, for a deadline that belongs to it alone.
@@ -157,8 +173,10 @@ void expire(Poller &p) {
   }
   // A registration that has already been answered is simply not there any
   // more, so the sequence number is all the checking this needs.
-  for (const auto &entry : due)
-    deliver_one(p, entry.first, entry.second, SWORD_POLL_TIMEOUT);
+  for (const auto &entry : due) {
+    if (entry.first == (size_t)-1) deliver_sleeper(p, entry.second);
+    else deliver_one(p, entry.first, entry.second, SWORD_POLL_TIMEOUT);
+  }
 }
 
 void drain_nudge(Poller &p) {
@@ -281,6 +299,17 @@ void sword_poll_wait(int fd, int writable, void *token, int64_t deadline_ns) {
 // Whoever is waiting has to be told, not dropped: a descriptor is forgotten
 // when it is about to be closed, and a task still parked on it would never be
 // woken by anything else.
+void sword_poll_sleep(void *token, int64_t deadline_ns) {
+  Poller &p = poller();
+  {
+    std::lock_guard<std::mutex> held(p.lock);
+    uint64_t seq = p.next_seq++;
+    p.sleepers[seq] = token;
+    p.timers.insert({deadline_ns, {-1, seq}});
+  }
+  nudge(p);
+}
+
 void sword_poll_forget(int fd) {
   Poller &p = poller();
   if (p.handle < 0) return;

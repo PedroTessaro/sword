@@ -44,6 +44,9 @@ void sword_mutex_unlock(void *guard);
 // 0 means ready, -2 means the deadline passed.
 int sword_park_fd(int32_t fd, int32_t writable, int64_t deadline_ns);
 int32_t sword_in_task(void);
+// The same for the clock: waits without holding the thread, and answers -1 when
+// there is no task to put down.
+int sword_park_timer(int64_t deadline_ns);
 // Drops anything waiting on a descriptor about to be closed.
 void sword_forget_fd(int32_t fd);
 }

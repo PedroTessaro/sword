@@ -702,6 +702,19 @@ int sword_park_fd(int32_t fd, int32_t writable, int64_t deadline_ns) {
   return f->wake_result;
 }
 
+// Waits for a time without holding the thread. -1 when there is no task to put
+// down, so the caller sleeps the old way.
+int sword_park_timer(int64_t deadline_ns) {
+  Fiber *f = tl_fiber;
+  if (!f) return -1;
+  sword_poll_start(on_ready);
+  f->wake_result = SWORD_POLL_TIMEOUT;
+  f->state.store(FIBER_PARKING, std::memory_order_release);
+  sword_poll_sleep(f, deadline_ns);
+  leave(f, false);
+  return 0;
+}
+
 int32_t sword_in_task(void) { return tl_fiber != nullptr; }
 
 void sword_forget_fd(int32_t fd) { sword_poll_forget((int)fd); }

@@ -59,6 +59,10 @@ int64_t sword_time_unix(void) {
 
 void sword_time_sleep(int64_t nanos) {
   if (nanos <= 0) return;
+  // Inside a task this costs a timer, not a thread: a program that sleeps in a
+  // hundred tasks at once still runs on the workers it had.
+  if (sword_park_timer(sword_time_mono() + nanos) == 0) return;
+
   timespec want;
   want.tv_sec = (time_t)(nanos / 1000000000);
   want.tv_nsec = (long)(nanos % 1000000000);

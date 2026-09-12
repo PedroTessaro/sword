@@ -27,5 +27,9 @@ void sword_poll_wait(int fd, int writable, void *token, int64_t deadline_ns);
 // Drops anything still waiting on `fd`, for a descriptor about to be closed.
 void sword_poll_forget(int fd);
 
+// Waits for a time rather than for a descriptor. The wake function is called
+// once, with SWORD_POLL_TIMEOUT.
+void sword_poll_sleep(void *token, int64_t deadline_ns);
+
 void sword_poll_stop(void);
 }
