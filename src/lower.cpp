@@ -1420,6 +1420,55 @@ struct Lowerer {
   // Walks a slice in fixed-size pieces, the last one short. Each iteration
   // rebuilds the piece in the same slot, which is fine because a task copies
   // the header it is given.
+  // `for x in xs`: one element at a time, copied into the binding. The length
+  // is read once, so growing the thing being walked mid-loop cannot run off
+  // the end of what was there when it started.
+  void element_loop(Node *n) {
+    Type *elem = n->sym->type;
+    Type *word = types.usize_ty;
+
+    int len = -1;
+    int data = data_pointer(n->lhs, &len);
+
+    int index = alloca_slot(word);
+    store(constant(0, word), index, word);
+    int slot = alloca_slot(elem);
+    n->sym->slot = slot;
+    if (n->index_sym) n->index_sym->slot = index;
+
+    int cond_bb = new_block();
+    int body_bb = new_block();
+    int step_bb = new_block();
+    int exit_bb = new_block();
+
+    branch(cond_bb);
+    cur = cond_bb;
+    cond_branch(binop(IR_LT, load(index, word), len, types.bool_ty), body_bb,
+                exit_bb);
+
+    cur = body_bb;
+    int at = gep_index(data, load(index, word), elem);
+    if (is_aggregate(elem)) copy(slot, at, elem);
+    else store(load(at, elem), slot, elem);
+
+    loops.push_back({step_bb, exit_bb, scopes.size()});
+    stmt(n->body);
+    branch(step_bb);
+    loops.pop_back();
+
+    cur = step_bb;
+    store(binop(IR_ADD, load(index, word), constant(1, word), word), index,
+          word);
+    branch(cond_bb);
+
+    cur = exit_bb;
+  }
+
+  void walk_loop(Node *n) {
+    if (n->form == 1) element_loop(n); // FOR_ELEMENTS
+    else partition_loop(n);
+  }
+
   void partition_loop(Node *n) {
     Type *slice = n->type;
     Type *elem = slice->elem;
@@ -1623,7 +1672,7 @@ struct Lowerer {
     case ND_FOR:
       if (n->is_parallel) parallel_for(n);
       else if (n->is_range) range_loop(n);
-      else if (!n->name.empty()) partition_loop(n);
+      else if (!n->name.empty()) walk_loop(n);
       else cond_loop(n);
       break;
 

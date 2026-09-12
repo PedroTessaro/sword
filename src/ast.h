@@ -90,7 +90,7 @@ struct Node {
   // ND_PARAM: gathers the rest of the arguments. On a call or an argument:
   // the gathered list is being passed straight through.
   bool is_variadic = false;
-  int form = 0;    // return/call: which shape the checker settled on
+  int form = 0;    // return/call/for: which shape the checker settled on
   int reduce_kind = 0;    // which atomic fold a parallel loop uses
   int variadic_at = -1;   // ND_CALL: where the gathered arguments start
   int vtable = -1;        // set when this value is wrapped in an interface

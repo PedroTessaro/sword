@@ -2123,17 +2123,57 @@ struct Checker {
   // `for part in xs.chunks(n)` is the only way to hand pieces of one slice to
   // different tasks: the pieces cannot overlap, so the compiler does not have
   // to prove anything about the indices.
-  bool check_partition(Node *n) {
-    Node *call = n->lhs;
-    bool shaped = call->kind == ND_CALL && call->lhs->kind == ND_FIELD &&
-                  call->lhs->name == "chunks" && call->kids.size() == 1;
-    if (!shaped) {
+  // Which of the two named `for` loops this is, kept in `form`.
+  enum ForForm { FOR_PARTITION, FOR_ELEMENTS };
+
+  // `for x in xs` and `for part in xs.chunks(n)` are the same syntax, so which
+  // loop it is comes from what is being walked.
+  bool check_walk(Node *n) {
+    Node *over = n->lhs;
+    if (over->kind == ND_CALL && over->lhs->kind == ND_FIELD &&
+        over->lhs->name == "chunks")
+      return check_partition(n);
+    return check_elements(n);
+  }
+
+  // One element at a time, copied, out of a slice, an array or a string. `for
+  // i, x in xs` binds the position as well.
+  bool check_elements(Node *n) {
+    Type *type = check_expr(n->lhs);
+    if (!type) return false;
+
+    Type *elem = nullptr;
+    if (type->kind == TY_SLICE || type->kind == TY_ARRAY) elem = type->elem;
+    else if (type->kind == TY_STRING) elem = types.u8_ty;
+    else {
       error(n->lhs->pos,
-            "'for %s in ...' walks a partition, written 'xs.chunks(n)'; for a "
-            "range write 'for %s in a..b'",
+            "'for %s in ...' walks a slice, an array, a string or a partition "
+            "written 'xs.chunks(n)'; for a range write 'for %s in a..b'",
             n->name.c_str(), n->name.c_str());
       return false;
     }
+    if (!n->text.empty()) {
+      error(n->pos, "a loop over elements has no reduction");
+      return false;
+    }
+
+    n->type = type;
+    n->form = FOR_ELEMENTS;
+    // The element is a copy, so it is its own value and immutable the same way
+    // a range variable is. Write through the slice to change anything.
+    n->sym = declare(n->name, elem, false, n->name_pos);
+    if (!n->name2.empty())
+      n->index_sym = declare(n->name2, types.usize_ty, false, n->name_pos);
+    return true;
+  }
+
+  bool check_partition(Node *n) {
+    Node *call = n->lhs;
+    if (call->kids.size() != 1) {
+      error(call->pos, "chunks() takes one size");
+      return false;
+    }
+    n->form = FOR_PARTITION;
 
     Node *base = call->lhs->lhs;
     Type *type = check_expr(base);
@@ -2359,7 +2399,7 @@ struct Checker {
     case ND_FOR:
       push_scope();
       if (!n->is_range && !n->name.empty()) {
-        if (!check_partition(n)) {
+        if (!check_walk(n)) {
           pop_scope();
           return;
         }
