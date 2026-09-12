@@ -7,8 +7,46 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <sys/mman.h>
 #include <thread>
+#include <unistd.h>
 #include <vector>
+
+// Written in assembly, one per architecture. `switch` saves the callee-saved
+// registers on the stack it is leaving and resumes the one it is given;
+// `start` is where a stack that has never run begins.
+extern "C" {
+void sword_ctx_switch(void **save_sp, void *resume_sp);
+void sword_ctx_start(void);
+void sword_fiber_entry(void);
+}
+
+// The sanitizers track one stack per thread, so a task that moves between
+// stacks looks to them like memory appearing and disappearing. These are the
+// hooks that tell them otherwise; without them ASan reports stack overflows
+// that are not there and TSan reports races between two tasks that never ran
+// at the same time.
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define SWORD_ASAN 1
+#endif
+#if __has_feature(thread_sanitizer)
+#define SWORD_TSAN 1
+#endif
+#endif
+
+#ifdef SWORD_ASAN
+extern "C" void __sanitizer_start_switch_fiber(void **fake, const void *bottom,
+                                               size_t size);
+extern "C" void __sanitizer_finish_switch_fiber(void *fake, const void **bottom,
+                                                size_t *size);
+#endif
+#ifdef SWORD_TSAN
+extern "C" void *__tsan_get_current_fiber(void);
+extern "C" void *__tsan_create_fiber(unsigned flags);
+extern "C" void __tsan_destroy_fiber(void *fiber);
+extern "C" void __tsan_switch_to_fiber(void *fiber, unsigned flags);
+#endif
 
 namespace {
 
@@ -44,10 +82,85 @@ struct Task {
   alignas(16) unsigned char args[kInlineArgs];
 };
 
+// --- stacks --------------------------------------------------------------
+
+// Reserved, not committed: the pages a task never touches cost nothing but
+// address space. Sword code puts whole buffers on the stack — an accept loop's
+// arena lives there — so this has to be roomy.
+const size_t kStackReserve = 512 * 1024;
+
+// A task and the stack it runs on. It outlives any one worker: a task that
+// stops for I/O is resumed by whichever worker picks it up next.
+struct Fiber {
+  void *sp = nullptr;       // where to resume this task
+  void *sched_sp = nullptr; // where to go back to, set on every entry
+  char *base = nullptr;     // the mapping, guard page first
+  size_t size = 0;
+  Task *task = nullptr;
+  bool finished = false;
+#ifdef SWORD_ASAN
+  void *fake_stack = nullptr;
+#endif
+#ifdef SWORD_TSAN
+  void *tsan = nullptr;
+#endif
+};
+
+size_t page_size() {
+  static size_t size = (size_t)sysconf(_SC_PAGESIZE);
+  return size;
+}
+
+// A guard page at the low end turns a stack overflow into a fault at the point
+// of overflow, rather than into a quiet write through somebody else's memory.
+bool map_stack(Fiber *f) {
+  size_t guard = page_size();
+  size_t total = kStackReserve + guard;
+  void *base = mmap(nullptr, total, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (base == MAP_FAILED) return false;
+  if (mprotect(base, guard, PROT_NONE) != 0) {
+    munmap(base, total);
+    return false;
+  }
+  f->base = (char *)base;
+  f->size = total;
+  return true;
+}
+
+// Lays out a frame the context switch can resume into: zeroed callee-saved
+// registers and a return address of `sword_ctx_start`, which calls the entry
+// point below.
+void prepare(Fiber *f) {
+  char *top = f->base + f->size;
+  uintptr_t aligned = (uintptr_t)top & ~(uintptr_t)15;
+
+#if defined(__aarch64__) || defined(__arm64__)
+  // 192 bytes: x19-x28, x29, x30, d8-d15. The link register sits at 88.
+  char *frame = (char *)(aligned - 192);
+  memset(frame, 0, 192);
+  void (*start)(void) = sword_ctx_start;
+  memcpy(frame + 88, &start, sizeof(start));
+  f->sp = frame;
+#elif defined(__x86_64__)
+  // r15, r14, r13, r12, rbx, rbp, then the address `ret` jumps to. That last
+  // slot has to be 16-aligned so the entry sees the stack a call would leave.
+  char *ret_slot = (char *)(aligned - 16);
+  void (*start)(void) = sword_ctx_start;
+  memcpy(ret_slot, &start, sizeof(start));
+  memset(ret_slot - 48, 0, 48);
+  f->sp = ret_slot - 48;
+#else
+#error "sword: no stack layout for this architecture"
+#endif
+  f->finished = false;
+}
+
 struct Worker {
   std::mutex lock;
   std::vector<Task *> queue; // back is the owner's end, front is stolen from
   std::vector<Task *> spare;
+  std::vector<Fiber *> stacks; // mapped once, reused
 };
 
 struct Pool {
@@ -71,6 +184,10 @@ Pool &pool();
 // program that never spawns a task.
 std::atomic<Pool *> running{nullptr};
 thread_local int tl_worker = -1;
+// The task running on this thread right now, and where to go back to when it
+// stops. Both are read fresh after every switch: a task may well come back on
+// a different thread than it left.
+thread_local Fiber *tl_fiber = nullptr;
 // Blocking hints this thread has counted, so an unmatched exit cannot push the
 // pool's tally negative.
 thread_local int tl_parked = 0;
@@ -124,9 +241,7 @@ void recycle(Task *task) {
   else delete task;
 }
 
-void run_task(Task *task) {
-  void *args = task->heap_args ? task->heap_args : (void *)task->args;
-  uint16_t code = task->fn(args);
+void finish_task(Task *task, uint16_t code) {
   Scope *scope = task->scope;
   if (code != 0) {
     unsigned none = 0;
@@ -134,6 +249,54 @@ void run_task(Task *task) {
   }
   recycle(task);
   scope->outstanding.fetch_sub(1, std::memory_order_release);
+}
+
+Fiber *fresh_fiber(Task *task);
+void retire_fiber(Fiber *f);
+
+// Switching in. Nothing after the switch may assume it is still on the thread
+// it started on, which is why the sanitizer bookkeeping brackets it here and
+// nothing is cached across it.
+void enter(Fiber *f) {
+  tl_fiber = f;
+#ifdef SWORD_TSAN
+  if (!f->tsan) f->tsan = __tsan_create_fiber(0);
+  void *back = __tsan_get_current_fiber();
+  __tsan_switch_to_fiber(f->tsan, 0);
+#endif
+#ifdef SWORD_ASAN
+  __sanitizer_start_switch_fiber(&f->fake_stack, f->base, f->size);
+#endif
+  sword_ctx_switch(&f->sched_sp, f->sp);
+#ifdef SWORD_ASAN
+  const void *bottom = nullptr;
+  size_t size = 0;
+  __sanitizer_finish_switch_fiber(f->fake_stack, &bottom, &size);
+#endif
+#ifdef SWORD_TSAN
+  __tsan_switch_to_fiber(back, 0);
+#endif
+  tl_fiber = nullptr;
+}
+
+// Switching out, from inside the task. `f` comes off the task's own stack, so
+// no thread-local is read on the way out.
+void leave(Fiber *f, bool done) {
+#ifdef SWORD_ASAN
+  __sanitizer_start_switch_fiber(done ? nullptr : &f->fake_stack, nullptr, 0);
+#endif
+  sword_ctx_switch(&f->sp, f->sched_sp);
+#ifdef SWORD_ASAN
+  const void *bottom = nullptr;
+  size_t size = 0;
+  __sanitizer_finish_switch_fiber(f->fake_stack, &bottom, &size);
+#endif
+}
+
+void run_task(Task *task) {
+  Fiber *f = fresh_fiber(task);
+  enter(f);
+  retire_fiber(f);
 }
 
 void worker_loop(int me) {
@@ -238,6 +401,46 @@ void stop_pool() {
   }
 }
 
+Fiber *fresh_fiber(Task *task) {
+  Pool &p = pool();
+  Worker &w = *p.workers[tl_worker >= 0 ? tl_worker : 0];
+  Fiber *f = nullptr;
+  {
+    std::lock_guard<std::mutex> held(w.lock);
+    if (!w.stacks.empty()) {
+      f = w.stacks.back();
+      w.stacks.pop_back();
+    }
+  }
+  if (!f) {
+    f = new Fiber();
+    if (!map_stack(f)) {
+      fputs("sword: out of memory for a task stack\n", stderr);
+      abort();
+    }
+  }
+  f->task = task;
+  prepare(f);
+  return f;
+}
+
+// Stacks go back on the worker's own pile rather than to the kernel: mapping
+// one is far more expensive than keeping it.
+void retire_fiber(Fiber *f) {
+  Pool &p = pool();
+  Worker &w = *p.workers[tl_worker >= 0 ? tl_worker : 0];
+  std::lock_guard<std::mutex> held(w.lock);
+  if (w.stacks.size() < 64) {
+    w.stacks.push_back(f);
+    return;
+  }
+#ifdef SWORD_TSAN
+  if (f->tsan) __tsan_destroy_fiber(f->tsan);
+#endif
+  munmap(f->base, f->size);
+  delete f;
+}
+
 Task *fresh_task() {
   Pool &p = pool();
   int me = tl_worker >= 0 ? tl_worker : 0;
@@ -286,6 +489,24 @@ bool take_guard(Guard *g, uint64_t me) {
 } // namespace
 
 extern "C" {
+
+// Where a task begins. It reads the thread-local once, immediately after the
+// switch that landed here, and works from its own stack afterwards.
+void sword_fiber_entry(void) {
+#ifdef SWORD_ASAN
+  const void *bottom = nullptr;
+  size_t size = 0;
+  __sanitizer_finish_switch_fiber(nullptr, &bottom, &size);
+#endif
+  Fiber *f = tl_fiber;
+  Task *task = f->task;
+  void *args = task->heap_args ? task->heap_args : (void *)task->args;
+  uint16_t code = task->fn(args);
+  finish_task(task, code);
+  f->finished = true;
+  leave(f, true);
+  __builtin_unreachable();
+}
 
 void sword_mutex_lock(void *blob) {
   Guard *g = (Guard *)blob;
