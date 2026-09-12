@@ -1,0 +1,92 @@
+// expect: 0
+// expect-output: router: all checks passed
+// Routing by method and path, wildcard segments, query strings, and the
+// difference between a path that is missing and one that exists under another
+// method.
+
+import "std/http"
+import "std/io"
+import "std/mem"
+import "std/strings"
+
+struct Users {
+    seen u64
+}
+
+func (h *Users) Serve(req *http.Request, mut res *http.Response) !void {
+    mut room := [64]u8{}
+    name := try http.Unescape(req.Query("name"), room[..])
+    try res.Printf("{}/{}", req.Param("id"), name)
+    res.Status = 200
+}
+
+struct Health {
+    seen u64
+}
+
+func (h *Health) Serve(req *http.Request, mut res *http.Response) !void {
+    try res.Text(200, "ok")
+}
+
+func serve(s *http.Server, m *http.Mux) !void {
+    try s.ServeWith(m, 2)
+}
+
+func drive(port i32, mut a mem.Allocator, mut out []u64,
+           s *http.Server) !void {
+    one := try http.Get("127.0.0.1", port, "/users/7?name=ada+king", a)
+    out[0] = one.Status
+    if strings.Equal(string(one.Body), "7/ada king") {
+        out[1] = 1
+    }
+
+    root := try http.Get("127.0.0.1", port, "/health/", a)
+    out[2] = root.Status
+
+    missing := try http.Get("127.0.0.1", port, "/nowhere", a)
+    out[3] = missing.Status
+
+    wrong := try http.Post("127.0.0.1", port, "/users/7", "text/plain",
+                           []u8("x"), a)
+    out[4] = wrong.Status
+}
+
+func runClient(port i32, mut a mem.Allocator, mut out []u64,
+               s *http.Server) !void {
+    drive(port, a, out, s) catch {}
+    s.Close()
+}
+
+func main() !int {
+    mut backing := [262144]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut results := mem.Alloc[u64](&arena, 5) orelse return error.OutOfMemory
+
+    mut users := Users{seen: 0}
+    mut health := Health{seen: 0}
+    mut mux := http.NewMux()
+    try mux.Get("/users/{id}", &users)
+    try mux.Get("/health", &health)
+
+    mut srv := try http.Listen(0)
+    port := srv.Port()
+    scope {
+        spawn serve(&srv, &mux)
+        spawn runClient(port, &arena, results, &srv)
+    }
+
+    if results[0] != 200 || results[1] != 1 {
+        return 1
+    }
+    if results[2] != 200 {
+        return 2
+    }
+    if results[3] != 404 {
+        return 3
+    }
+    if results[4] != 405 {
+        return 4
+    }
+    try io.Print("router: all checks passed\n")
+    return 0
+}
