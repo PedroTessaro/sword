@@ -176,7 +176,37 @@ func main() int {
 }
 ```
 
-`for` has three forms and no others:
+When one value is being compared against several, `switch` says so more
+directly than a chain of `if`:
+
+```sword
+func statusText(code u64) string {
+    switch code {
+    case 200:
+        return "OK"
+    case 400, 404, 405:
+        return "your fault"
+    case 500:
+        return "my fault"
+    default:
+        return "unknown"
+    }
+}
+
+func main() int {
+    return int(statusText(404).len) + 32
+}
+```
+
+One case per value, several values per case, and no fallthrough — a case body
+ends where the next `case` begins. The subject can be an integer, a bool or a
+string. Two cases matching the same value is an error, because one of them
+could never run.
+
+A `switch` is not a loop, so `break` and `continue` inside one speak to the loop
+around it. There is nothing to break out of: a case body ends on its own.
+
+`for` has four forms and no others:
 
 ```sword
 func main() int {
@@ -184,6 +214,10 @@ func main() int {
 
     for i in 0..5 {          // a range
         sum += i
+    }
+
+    for v in [3]int{1, 2, 3} { // the elements of a slice, array or string
+        sum += v
     }
 
     mut n := 0
@@ -203,7 +237,22 @@ func main() int {
 }
 ```
 
-There is a fourth form, `for part in xs.chunks(n)`, but it exists for
+The element form binds a copy, so writing to it changes nothing behind it. When
+you need the position too, bind both:
+
+```sword
+import "std/io"
+
+func main() !int {
+    words := [3]string{"ada", "grace", "alan"}
+    for i, w in words {
+        try io.Printf("{}: {}\n", i, w)
+    }
+    return 0
+}
+```
+
+There is a fifth form, `for part in xs.chunks(n)`, but it exists for
 concurrency and is covered there.
 
 ## Arrays and slices
@@ -270,6 +319,22 @@ func main() !int {
 
 Indexing a string gives you bytes. Decoding UTF-8 is a library's job, not the
 type's.
+
+`==` and `!=` compare content, so a string behaves the way you would expect and
+`switch` over one works:
+
+```sword
+func kind(method string) int {
+    if method == "GET" {
+        return 1
+    }
+    return 0
+}
+
+func main() int {
+    return kind("GET") + 41
+}
+```
 
 ## Structs
 
@@ -482,6 +547,25 @@ func main() int {
 `mut` on the receiver means the same thing it means on any parameter, and only
 a mutable binding can call such a method.
 
+A receiver is always a struct, so a value that was just computed already lives
+somewhere and can be used directly — which is what makes a fluent API read the
+way it should:
+
+```sword
+import "std/io"
+import "std/time"
+
+func main() !int {
+    start := time.Now()
+    time.Sleep(time.Millis(10))
+    try io.Printf("took {}ms\n", time.Since(start).AsMillis())
+    return 0
+}
+```
+
+A method that writes through its receiver is the exception: there is nowhere for
+the change to go, so bind the value first.
+
 An interface is a set of method signatures, satisfied structurally — nothing is
 declared to implement anything:
 
@@ -512,6 +596,69 @@ Note the `&`. **Only pointers satisfy an interface.** Boxing a value would mean
 allocating, and nothing in Sword allocates on its own, so the pointer is
 explicit. An interface value is two words — the data and a table of methods —
 and costs nothing to pass.
+
+## Function values
+
+A function named without being called is its own address:
+
+```sword
+func add(a, b i64) i64 {
+    return a + b
+}
+
+func mul(a, b i64) i64 {
+    return a * b
+}
+
+func apply(op func(i64, i64) i64, a i64, b i64) i64 {
+    return op(a, b)
+}
+
+func main() int {
+    return int(apply(add, 20, 22))
+}
+```
+
+The type is written `func(T, U) R`, the result omitted when there is none. A
+parameter the function may write through says `mut` there too — `func(mut []i64)`
+is a different type from `func([]i64)`, because handing over one that writes
+where the caller expected one that does not would grant permission nobody asked
+for.
+
+One is a single word, so it sits in a struct or an array without ceremony:
+
+```sword
+struct Op {
+    name string
+    run  func(i64, i64) i64
+}
+
+func add(a, b i64) i64 {
+    return a + b
+}
+
+func mul(a, b i64) i64 {
+    return a * b
+}
+
+func main() int {
+    ops := [2]Op{Op{name: "add", run: add}, Op{name: "mul", run: mul}}
+    mut total i64 = 0
+    for o in ops {
+        total += o.run(3, 4)
+    }
+    return int(total) + 23
+}
+```
+
+**There are no closures.** A function value is one top-level function and
+nothing else — it captures nothing, allocates nothing, and has no lifetime to
+worry about. When a callback needs state to go with it, that is what an
+interface is for: it carries the state in the pointer.
+
+`?func(...)` costs one word, with null standing for absence, the same as `?*T`.
+A generic function has no value, because there is no single function to point
+at.
 
 ## Generics
 

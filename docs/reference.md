@@ -20,12 +20,13 @@ For looking things up. [The tour](tour.md) is the place to learn from.
 | `[N]T` | array, a value |
 | `[*]T` | raw pointer, no length, for FFI |
 | `struct` `interface` | |
+| `func(T, mut U) R` | a function value: one word, no capture |
 | `atomic[T]` | an integer or bool many tasks may write at once |
 | `shared[T]` | any value, behind a mutex; `lock` is the only way in |
 | `any` | a boxed value, what a `...any` parameter gathers |
 
-`?*T` and `?[*]T` cost one word. Over anything else, `?T` is the value with a
-flag beside it.
+`?*T`, `?[*]T` and `?func(...)` cost one word. Over anything else, `?T` is the
+value with a flag beside it.
 
 ## Declarations
 
@@ -74,8 +75,12 @@ if x := optional { } else { }
 for { }                            // until break or return
 for cond { }
 for i in a..b { }
+for x in xs { }                    // elements of a slice, array or string
+for i, x in xs { }                 // with the position
 for part in xs.chunks(n) { }
 for off, part in xs.chunks(n) { }
+
+switch subject { case a, b: ... default: ... }
 
 parallel for i in a..b { }
 parallel for i in a..b reduce(+: acc) { }
@@ -98,7 +103,7 @@ By precedence, tightest first:
 |---|---|
 | `*` `/` `%` `<<` `>>` `&` | |
 | `+` `-` `\|` `^` | |
-| `==` `!=` `<` `<=` `>` `>=` | |
+| `==` `!=` `<` `<=` `>` `>=` | `==` on strings compares content |
 | `&&` | short-circuits |
 | `\|\|` | short-circuits |
 | `catch` `orelse` | below everything else |
@@ -112,6 +117,25 @@ wrapping forms below.
 any build mode.
 
 `[*]T` supports `p + n` and `p - n`. `*T` and `[]T` do not.
+
+## Function values
+
+A function named without being called is its address. There are no closures, so
+a function value is one top-level function, one word wide, capturing nothing.
+
+```sword
+func apply(op func(i64, i64) i64, a i64, b i64) i64 {
+    return op(a, b)
+}
+
+f := add                    // the function itself
+mut maybe ?func() = nil     // one word, null meaning absent
+```
+
+Write `mut` on a parameter the function may write through: `func(mut []i64)` and
+`func([]i64)` are different types. A generic function has no value — there is no
+single function to point at. When a callback needs state alongside it, use an
+interface: the state travels in the pointer.
 
 ## Variadic functions
 
@@ -195,6 +219,26 @@ The rules around it:
 There is no read-only lock and no try-lock. A contended lock spins briefly and
 then sleeps, telling the scheduler while it waits, so a thread stuck behind a
 long critical section does not cost a core.
+
+## Switch
+
+```sword
+switch subject {
+case a, b:
+    ...
+case c:
+    ...
+default:
+    ...
+}
+```
+
+The subject is an integer, a bool or a string. No fallthrough: a case body ends
+where the next `case` begins. Two cases matching the same constant is an error,
+and so is a second `default`.
+
+A `switch` is not a loop, so `break` and `continue` inside one belong to the loop
+around it.
 
 ## Reductions
 
@@ -666,5 +710,4 @@ A `.sw` file compiles alone. A directory compiles as one package.
 
 ## Reserved but not implemented
 
-`chan`. The word is taken; the feature is not there. There are also no function
-values, so a callback is an interface with one method.
+`chan`. The word is taken; the feature is not there.

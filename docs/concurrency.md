@@ -210,7 +210,9 @@ for part in dst.chunks(8) {
 ```
 
 Each `part` is a distinct piece, so they can all be written in parallel. The
-last one is short when the length does not divide evenly.
+last one is short when the length does not divide evenly. (`for x in xs` walks
+the elements one at a time, which is the loop to reach for when there is no task
+involved.)
 
 Slicing by hand inside a loop is rejected:
 
