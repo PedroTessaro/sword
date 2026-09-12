@@ -123,26 +123,41 @@ func bodyLength(h *Headers) !u64 {
 }
 
 func writeHeaders(mut out *bytes.Buffer, h *Headers) !void {
-    for i in 0..h.count {
-        try out.WriteString(h.items[i].Name)
+    for entry in h.items[0..h.count] {
+        try out.WriteString(entry.Name)
         try out.WriteString(": ")
-        try out.WriteString(h.items[i].Value)
+        try out.WriteString(entry.Value)
         try out.WriteString("\r\n")
     }
 }
 
 func StatusText(code u64) string {
-    if code == 200 { return "OK" }
-    if code == 201 { return "Created" }
-    if code == 204 { return "No Content" }
-    if code == 301 { return "Moved Permanently" }
-    if code == 302 { return "Found" }
-    if code == 400 { return "Bad Request" }
-    if code == 401 { return "Unauthorized" }
-    if code == 403 { return "Forbidden" }
-    if code == 404 { return "Not Found" }
-    if code == 405 { return "Method Not Allowed" }
-    if code == 413 { return "Payload Too Large" }
-    if code == 500 { return "Internal Server Error" }
-    return "Unknown"
+    switch code {
+    case 200:
+        return "OK"
+    case 201:
+        return "Created"
+    case 204:
+        return "No Content"
+    case 301:
+        return "Moved Permanently"
+    case 302:
+        return "Found"
+    case 400:
+        return "Bad Request"
+    case 401:
+        return "Unauthorized"
+    case 403:
+        return "Forbidden"
+    case 404:
+        return "Not Found"
+    case 405:
+        return "Method Not Allowed"
+    case 413:
+        return "Payload Too Large"
+    case 500:
+        return "Internal Server Error"
+    default:
+        return "Unknown"
+    }
 }

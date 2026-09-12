@@ -34,7 +34,7 @@ func QueryValue(query string, name string) string {
         if eq == pair.len {
             continue
         }
-        if strings.Equal(pair[0..eq], name) {
+        if pair[0..eq] == name {
             return pair[eq+1..pair.len]
         }
     }

@@ -110,7 +110,7 @@ func matchPattern(pattern string, path string, mut req *Request) bool {
                 }
                 req.pcount += 1
             }
-        } else if !strings.Equal(left.text, right.text) {
+        } else if left.text != right.text {
             return false
         }
     }
@@ -126,7 +126,7 @@ func (m *Mux) Serve(req *Request, mut res *Response) !void {
         if !matchPattern(m.routes[i].pattern, req.Path, &routed) {
             continue
         }
-        if !strings.Equal(m.routes[i].method, req.Method) {
+        if m.routes[i].method != req.Method {
             wrongMethod = true
             continue
         }

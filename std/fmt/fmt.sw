@@ -197,20 +197,21 @@ func Quote(mut out Sink, s string) !void {
 }
 
 func Value(mut out Sink, v any) !void {
-    if v.Kind == KindString {
+    switch v.Kind {
+    case KindString:
         try Str(out, v.Text)
-    } else if v.Kind == KindBool {
+    case KindBool:
         try Bool(out, v.Int != 0)
-    } else if v.Kind == KindInt {
+    case KindInt:
         try I64(out, v.Int)
-    } else if v.Kind == KindUint {
+    case KindUint:
         try U64(out, u64(v.Int))
-    } else if v.Kind == KindFloat {
+    case KindFloat:
         try Float(out, v.Real)
-    } else if v.Kind == KindPointer {
+    case KindPointer:
         try Str(out, "0x")
         try Hex(out, u64(v.Int), 1)
-    } else {
+    default:
         try Str(out, "<none>")
     }
 }

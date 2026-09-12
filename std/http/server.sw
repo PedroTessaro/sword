@@ -39,7 +39,7 @@ struct Request {
 // did not come through a Mux or the pattern had no such wildcard.
 func (r *Request) Param(name string) string {
     for i in 0..r.pcount {
-        if strings.Equal(r.params[i].Name, name) {
+        if r.params[i].Name == name {
             return r.params[i].Value
         }
     }
@@ -181,7 +181,7 @@ func wantsKeepAlive(req *Request) bool {
     if strings.EqualFold(connection, "keep-alive") {
         return true
     }
-    return strings.Equal(req.Proto, "HTTP/1.1")
+    return req.Proto == "HTTP/1.1"
 }
 
 func writeResponse(mut c *net.Conn, mut res *Response, keep bool,

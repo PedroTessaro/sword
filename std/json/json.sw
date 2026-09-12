@@ -4,7 +4,6 @@ import "std/bytes"
 import "std/collections"
 import "std/fmt"
 import "std/mem"
-import "std/strings"
 
 // The document is one flat list of nodes, and a node points at its children by
 // index rather than by pointer. That keeps everything in a single allocation
@@ -79,7 +78,7 @@ func (d *Document) KeyAt(at u64) string {
 func (d *Document) Get(at u64, key string) ?u64 {
     mut child := d.nodes.At(at).first
     for child != noNode {
-        if strings.Equal(d.nodes.At(child).key, key) {
+        if d.nodes.At(child).key == key {
             return child
         }
         child = d.nodes.At(child).next
@@ -319,7 +318,7 @@ func (mut p *parser) literal(word string, kind u8, truth bool) !u64 {
     if p.at + word.len > p.input.len {
         return error.BadJSON
     }
-    if !strings.Equal(string(p.input[p.at..p.at+word.len]), word) {
+    if string(p.input[p.at..p.at+word.len]) != word {
         return error.BadJSON
     }
     p.at += word.len

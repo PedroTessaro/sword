@@ -3,16 +3,10 @@ package strings
 // Byte-oriented. Sword strings are UTF-8 but these functions work on bytes,
 // which is what a protocol parser wants.
 
+// `==` on strings compares content, so this is a thin wrapper now. It stays
+// because reading `strings.Equal(a, b)` inside a parser says what is meant.
 func Equal(a string, b string) bool {
-    if a.len != b.len {
-        return false
-    }
-    for i in 0..a.len {
-        if a[i] != b[i] {
-            return false
-        }
-    }
-    return true
+    return a == b
 }
 
 func HasPrefix(s string, prefix string) bool {
@@ -54,7 +48,12 @@ func Contains(s string, needle string) bool {
 }
 
 func isSpace(c u8) bool {
-    return c == 32 || c == 9 || c == 13 || c == 10
+    switch c {
+    case 32, 9, 13, 10:
+        return true
+    default:
+        return false
+    }
 }
 
 func TrimSpace(s string) string {
