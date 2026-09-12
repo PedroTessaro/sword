@@ -1,5 +1,7 @@
 // expect: 42
 
+const billion = 1000000000
+
 func area(r f64) f64 {
     return 3.14159265358979 * r * r
 }
@@ -25,6 +27,20 @@ func main() int {
     }
     if -f64(acc) != -3.0 {
         return 4
+    }
+
+    // A literal converted to a float keeps its value: it stops being an
+    // integer at the conversion, not at the machine instruction.
+    if f64(1000000000) != 1.0e9 {
+        return 5
+    }
+    if f64(billion) / f64(4) != 2.5e8 {
+        return 6
+    }
+    mut sum := 1.5
+    sum += 2
+    if sum != 3.5 || i64(2.75) != 2 {
+        return 7
     }
     return 42
 }

@@ -215,6 +215,16 @@ struct Checker {
   void apply_type(Node *n, Type *t) {
     if (!n || !n->type || !n->type->untyped) return;
     n->type = t;
+    // An untyped literal that lands on the other kind of number has to move
+    // its value across with it: everything downstream reads ival or fval by
+    // the node kind, not by the type.
+    if (n->kind == ND_INT_LIT && is_float(t)) {
+      n->kind = ND_FLOAT_LIT;
+      n->fval = (double)(int64_t)n->ival;
+    } else if (n->kind == ND_FLOAT_LIT && is_integer(t)) {
+      n->kind = ND_INT_LIT;
+      n->ival = (uint64_t)(int64_t)n->fval;
+    }
     apply_type(n->lhs, t);
     apply_type(n->rhs, t);
   }
