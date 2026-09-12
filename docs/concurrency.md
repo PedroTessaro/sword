@@ -405,11 +405,132 @@ scope {
 }
 ```
 
-## What is not here yet
+## Shared structures
 
-**`shared[T]`.** An atomic covers scalars. There is still no mutex-protected
-wrapper for a whole structure — a map, a queue, a cache — so sharing one of
-those for writing remains a compile error.
+An atomic covers one scalar. A hit table, a work queue, a cache — anything with
+more than one field in it — needs something else, because a counter's worth of
+synchronisation cannot cover a structure whose invariants span several writes.
+
+That is `shared[T]`:
+
+```sword
+import "std/collections"
+import "std/mem"
+
+func count(mut table *shared[collections.Map[u64]], words []string) !void {
+    for i in 0..words.len {
+        lock m := table {
+            seen := m.Get(words[i]) orelse 0
+            try m.Set(words[i], seen + 1)
+        }
+    }
+}
+
+func main() !int {
+    mut backing := [131072]u8{}
+    mut arena := mem.NewArena(backing[..])
+
+    mut table := shared[collections.Map[u64]](
+        try collections.NewMap[u64](&arena, 64))
+
+    mut words := [2]string{}
+    words[0] = "ada"
+    words[1] = "grace"
+
+    scope {
+        for i in 0..6 {
+            spawn count(&table, words[..])
+        }
+    }
+
+    lock m := &table {
+        return int(m.Len())
+    }
+}
+```
+
+Six tasks writing one map, and it compiles. The exemption the race checker makes
+is the same one it makes for an atomic, and it rests on the same thing: **there
+is no way to reach the value except through the lock.** `shared[T](v)` builds
+one, `lock` opens one, and the type has no fields you can read.
+
+### The block is the critical section
+
+```sword
+lock m := table {
+    ...
+}
+```
+
+The opening brace takes the mutex and the closing brace releases it. So does a
+`return` out of the middle, a `break`, a `continue`, or a `try` that fails —
+it unwinds the same way `defer` does, and for the same reason. There is no
+`Unlock` to forget and no way to unbalance the pair.
+
+Inside, the name is a mutable `*T`. Outside, it does not exist.
+
+Nothing here is marked `mut`, and that is on purpose. The type already says the
+value will be written by whoever holds the lock, so the binding's mutability has
+nothing left to decide — exactly as with an atomic. A shared can also sit in a
+struct field, and the struct around it stays an ordinary struct:
+
+```sword
+struct Server {
+    name  string
+    tally shared[Tally]
+}
+
+func serve(s *Server) {
+    lock c := &s.tally {
+        c.hits += 1
+    }
+}
+```
+
+### Two rules
+
+**A lock inside a lock on the same value is an error.**
+
+```sword
+lock a := &table {
+    lock b := &table {      // error: 'table' is already locked here
+    }
+}
+```
+
+That is the version the compiler can see. The version it cannot — a second
+`lock` reached through a function call — aborts at runtime with a message rather
+than hanging, because the guard remembers which thread holds it.
+
+**A task cannot outlive the lock it starts under.**
+
+```sword
+scope {
+    lock c := &table {
+        spawn touch(c)      // error: this task would outlive the 'lock'
+    }
+}
+```
+
+The lock releases at its own brace, the scope joins at its own, and the task is
+still running in between. Put the `scope` inside the `lock` — which is safe and
+useful, parallel work over a locked structure — or put the `lock` inside the
+task.
+
+### What it costs
+
+A contended lock spins for a moment and then sleeps, and while it sleeps it
+tells the scheduler, so a thread waiting behind a long critical section does not
+cost a core. Eight tasks doing 200 000 locked increments each — 1.6 million
+lock/unlock pairs — take about 25 ms on a ten-core machine. The same work
+through one `atomic[u64]` takes about 45 ms, because eight threads hammering one
+cache line contend harder than eight threads taking turns. Read nothing general
+into that: the point is only that the lock is not going to be your bottleneck.
+
+What is missing: no read-only lock, so two readers still take turns, and no
+try-lock, so there is no way to do something else instead of waiting.
+
+## What is not here yet
 
 **Channels.** The syntax is reserved and the design is settled, but nothing is
 implemented.

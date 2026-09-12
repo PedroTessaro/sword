@@ -692,6 +692,17 @@ Eight tasks, each writing its own piece. The closing brace of `scope` waits for
 all of them. Nothing here is a convention you have to remember — the compiler
 rejects the versions of this program that would race.
 
+When tasks really do need to share one structure, `shared[T]` puts a mutex in
+front of it and `lock` is the only way in:
+
+```sword
+lock m := table {
+    try m.Set(key, 1)
+}
+```
+
+The brace releases it, and so does every other way out of the block.
+
 ## The outside world
 
 A program that cannot be told anything is not much use. `std/os` has the

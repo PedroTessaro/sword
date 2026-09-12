@@ -92,7 +92,7 @@ synchronisation at all, which is what the race checker leans on.
 Sword compiles to native code through LLVM and the language is usable, but it
 is young. Working today: functions with variadic parameters, methods, interfaces with
 dynamic dispatch, generics over both functions and structs, floating point,
-top-level constants, atomics, structs,
+top-level constants, atomics, mutex-protected `shared[T]`, structs,
 slices, strings, pointers, optionals, error unions, `defer`, packages, and the
 whole concurrency story with a work-stealing scheduler behind it.
 
@@ -107,7 +107,7 @@ I/O is blocking, but a task waiting on a socket tells the scheduler, which grows
 the thread pool to cover it — so a server handles far more connections at once
 than the machine has cores.
 
-Not there yet: `shared[T]`, channels, function values, file I/O, and TLS.
+Not there yet: channels, function values, file I/O, and TLS.
 
 ## License
 

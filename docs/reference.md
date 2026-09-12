@@ -21,6 +21,7 @@ For looking things up. [The tour](tour.md) is the place to learn from.
 | `[*]T` | raw pointer, no length, for FFI |
 | `struct` `interface` | |
 | `atomic[T]` | an integer or bool many tasks may write at once |
+| `shared[T]` | any value, behind a mutex; `lock` is the only way in |
 | `any` | a boxed value, what a `...any` parameter gathers |
 
 `?*T` and `?[*]T` cost one word. Over anything else, `?T` is the value with a
@@ -80,6 +81,7 @@ parallel for i in a..b { }
 parallel for i in a..b reduce(+: acc) { }
 
 scope { spawn f(args) ... }
+lock name := shared_value { }
 
 break
 continue
@@ -157,6 +159,42 @@ hits.CompareSwap(old, new)   // bool: whether it matched
 
 Every one of these is a single machine instruction, with sequentially
 consistent ordering.
+
+## Shared values
+
+`shared[T]` over anything. Where an atomic covers one scalar, this covers a
+whole structure — a map, a queue, a cache — by putting a mutex in front of it.
+
+```sword
+mut table := shared[collections.Map[u64]](try collections.NewMap[u64](&a, 64))
+
+lock m := &table {
+    seen := m.Get(key) orelse 0
+    try m.Set(key, seen + 1)
+}
+```
+
+`shared[T](v)` is the only way to build one and `lock` is the only way to reach
+the value, which is what makes the race checker's exemption safe. Inside the
+block the name is a mutable `*T`; the brace releases the lock, and so does a
+`return`, a `break`, a `continue` or a `try` that fails.
+
+No `mut` is needed anywhere, the same way an atomic needs none: the type says it
+will be written by whoever holds the lock, so the binding's mutability has
+nothing left to say. A shared may also sit in a struct field, and the struct
+around it stays ordinary.
+
+The rules around it:
+
+- a `lock` inside another on the same value is an error, and the runtime aborts
+  with a message when the second one comes through a call;
+- `spawn` under a lock whose `scope` is outside it is an error: the task would
+  still be running when the block released. Put the `scope` inside the `lock`,
+  or the `lock` inside the task.
+
+There is no read-only lock and no try-lock. A contended lock spins briefly and
+then sleeps, telling the scheduler while it waits, so a thread stuck behind a
+long critical section does not cost a core.
 
 ## Reductions
 
@@ -628,5 +666,5 @@ A `.sw` file compiles alone. A directory compiles as one package.
 
 ## Reserved but not implemented
 
-`chan` and `shared`. The words are taken; the features are not there. There are
-also no function values, so a callback is an interface with one method.
+`chan`. The word is taken; the feature is not there. There are also no function
+values, so a callback is an interface with one method.
