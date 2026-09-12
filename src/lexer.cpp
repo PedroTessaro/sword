@@ -21,7 +21,7 @@ const std::unordered_map<std::string, TokKind> keywords = {
     {"orelse", TK_ORELSE},
     {"scope", TK_SCOPE},       {"spawn", TK_SPAWN},
     {"parallel", TK_PARALLEL}, {"reduce", TK_REDUCE},
-    {"chan", TK_CHAN},         {"shared", TK_SHARED},
+    {"chan", TK_CHAN},         {"lock", TK_LOCK},
     {"true", TK_TRUE},         {"false", TK_FALSE},
     {"nil", TK_NIL},
 };
@@ -343,7 +343,7 @@ const char *tok_name(TokKind kind) {
   case TK_PARALLEL: return "parallel";
   case TK_REDUCE: return "reduce";
   case TK_CHAN: return "chan";
-  case TK_SHARED: return "shared";
+  case TK_LOCK: return "lock";
   case TK_TRUE: return "true";
   case TK_FALSE: return "false";
   case TK_NIL: return "nil";

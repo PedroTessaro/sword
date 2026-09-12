@@ -644,6 +644,20 @@ struct Parser {
       n->lhs = expr();
       return n->lhs ? n : nullptr;
     }
+    case TK_LOCK: {
+      Node *n = make(ND_LOCK, advance().pos);
+      if (kind() != TK_IDENT || kind(1) != TK_DEFINE) {
+        fail("expected 'lock name := shared'");
+        return nullptr;
+      }
+      n->name_pos = peek().pos;
+      n->name = advance().text;
+      advance(); // ':='
+      n->lhs = header_expr();
+      if (!n->lhs) return nullptr;
+      n->body = block();
+      return n->body ? n : nullptr;
+    }
     case TK_DEFER: case TK_ERRDEFER: {
       Node *n = make(ND_DEFER, pos);
       n->is_errdefer = advance().kind == TK_ERRDEFER;

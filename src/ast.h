@@ -33,6 +33,7 @@ enum NodeKind {
   ND_DEFER, // is_errdefer tells the two forms apart
   ND_SCOPE, // structured concurrency: joins on the way out
   ND_SPAWN,
+  ND_LOCK, // lock name := shared { ... }: holds the mutex for the block
 
   ND_INT_LIT,
   ND_FLOAT_LIT,
