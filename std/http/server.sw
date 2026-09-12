@@ -7,10 +7,15 @@ import "std/net"
 import "std/strings"
 import "std/time"
 
-// A connection's arena. One per connection rather than one per worker: a task
-// waiting on a socket is put down rather than holding a thread, so connections
-// outnumber threads by a lot and each needs its own memory.
-const ArenaSize = 32768
+// A connection's arena, on its own stack. One per connection rather than one
+// per worker: a task waiting on a socket is put down rather than holding a
+// thread, so connections outnumber threads by a lot and each needs its own.
+//
+// Its size is most of what an idle connection costs, and the cost comes in
+// whole pages: 32 KiB here measured 49 KiB per idle connection, 16 KiB measures
+// 33 KiB. Pooling the arena instead would save one more page, at the price of a
+// lock on the hottest path in the server.
+const ArenaSize = 16384
 // Most connections at once. Past this the server stops accepting and lets the
 // kernel's backlog hold the rest, which is what backpressure looks like from
 // the outside: a queue rather than a collapse.

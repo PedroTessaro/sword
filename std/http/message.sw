@@ -4,7 +4,12 @@ import "std/bytes"
 import "std/strings"
 
 const MaxHeaders = 32
-const MaxHead = 16384
+// The most a request line and its headers may come to. Eight kilobytes is what
+// nginx allows by default too; past it the connection is dropped rather than
+// grown, which keeps a hostile client from deciding how much memory the server
+// uses — and keeps an idle connection's buffer small, which is most of what one
+// costs.
+const MaxHead = 8192
 
 struct Header {
     Name, Value string

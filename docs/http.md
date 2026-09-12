@@ -68,10 +68,10 @@ Measured on ten cores, with keep-alive, which is what every real client does:
 | 1 000 | 146 000 req/s, 12 threads, 34 MiB |
 | 4 000 | 84 000 req/s, 12 threads |
 
-Three thousand idle keep-alive connections sit in 143 MiB on twelve threads —
-about 49 KiB each.
+Two thousand idle keep-alive connections sit in 65 MiB on twelve threads — about
+33 KiB each, most of it the connection's own 16 KiB arena.
 
-**Each connection has its own arena**, 32 KiB on its own stack. That is not an
+**Each connection has its own arena**, 16 KiB on its own stack. That is not an
 optimisation, it is a requirement the compiler enforces: an allocator is mutable
 state, and handing the same one to two tasks is a compile error.
 
@@ -110,7 +110,7 @@ of the keep-alive loop — waiting for a request and serving it. A timeout alone
 cannot bound a client that dribbles a byte at a time, because no single wait ever
 runs out.
 
-A request is capped at 32 headers and 16 KiB of head. Past that the connection is
+A request is capped at 32 headers and 8 KiB of head. Past that the connection is
 dropped rather than grown, which keeps a hostile client from deciding how much
 memory the server uses.
 

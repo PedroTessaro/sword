@@ -360,8 +360,8 @@ func handle(c net.Conn) !void {
 
 A stack is reserved rather than committed, so what a waiting task actually costs
 is the few pages it has touched. Measured on a real server: a keep-alive
-connection sitting idle costs about 49 KiB, against roughly 80 KiB and a whole
-thread before. Three thousand of them run on twelve threads.
+connection sitting idle costs about 33 KiB, against roughly 80 KiB and a whole
+thread before. Two thousand of them run on twelve threads.
 
 An overflow hits a guard page and faults where it happened, rather than writing
 quietly through somebody else's stack.
