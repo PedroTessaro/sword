@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <sys/wait.h>
 #include <unistd.h>
 
 namespace {
@@ -21,7 +22,8 @@ namespace {
 enum Stage { STAGE_TOKENS, STAGE_AST, STAGE_IR, STAGE_LLVM, STAGE_BINARY };
 
 void usage() {
-  fputs("usage: shield <file.sw> [options]\n"
+  fputs("usage: shield <file.sw | directory> [options]\n"
+        "       shield test <file.sw | directory> [options]\n"
         "\n"
         "  -o <path>      output binary (default: a.out)\n"
         "  -I <dir>       add a directory to the package search path\n"
@@ -137,9 +139,16 @@ int main(int argc, char **argv) {
   Mode mode = MODE_SAFE;
   std::string opt_level;
 
-  for (int i = 1; i < argc; i++) {
+  // `shield test <path>` builds the package together with its `*_test.sw`
+  // files, behind an entry point that runs them, then runs it.
+  bool testing = argc > 1 && !strcmp(argv[1], "test");
+  int first = testing ? 2 : 1;
+  bool named = false; // whether -o asked for a particular path
+  if (testing) output = "";
+
+  for (int i = first; i < argc; i++) {
     const char *arg = argv[i];
-    if (!strcmp(arg, "-o") && i + 1 < argc) output = argv[++i];
+    if (!strcmp(arg, "-o") && i + 1 < argc) { output = argv[++i]; named = true; }
     else if (!strcmp(arg, "-I") && i + 1 < argc) search.push_back(argv[++i]);
     else if (!strncmp(arg, "-O", 2) && arg[2]) opt_level = arg + 2;
     else if (!strncmp(arg, "--mode=", 7)) {
@@ -167,6 +176,10 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  // A test binary lands beside the package it tests and is removed after.
+  if (testing && output.empty()) output = std::string(input) + ".test";
+  if (output.empty()) output = "a.out";
+
   if (opt_level.empty()) {
     // Debug keeps every local on the stack, which is what makes a debug build
     // readable; the other modes rely on LLVM to promote them.
@@ -191,7 +204,7 @@ int main(int argc, char **argv) {
   for (const std::string &root : package_roots()) search.push_back(root);
 
   Program prog;
-  if (!load_program(input, search, prog)) return 1;
+  if (!load_program(input, search, prog, testing)) return 1;
 
   TypeTable types;
   if (!check(prog, types)) return 1;
@@ -229,5 +242,15 @@ int main(int argc, char **argv) {
 
   bool ok = assemble(ll_path, output, opt_level, runtime_archive());
   unlink(ll_path.c_str());
-  return ok ? 0 : 1;
+  if (!ok) return 1;
+  if (!testing) return 0;
+
+  // Run it, hand back what it says, and leave nothing behind.
+  std::string command = output;
+  if (command.find('/') == std::string::npos) command = "./" + command;
+  int status = system(command.c_str());
+  // A name the user asked for is theirs to keep.
+  if (!named) unlink(output.c_str());
+  if (status == -1) return 1;
+  return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }

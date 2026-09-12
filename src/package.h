@@ -70,5 +70,9 @@ void clear_overlay(const std::string &path);
 
 // `input` is a directory (the whole package) or a single .sw file. Parses it
 // and everything it imports, in dependency order.
+// `with_tests` includes the `*_test.sw` files, which an ordinary build leaves
+// out, and writes the entry point that runs whatever `Test*` functions they
+// declare.
 bool load_program(const std::string &input,
-                  const std::vector<std::string> &search, Program &out);
+                  const std::vector<std::string> &search, Program &out,
+                  bool with_tests = false);

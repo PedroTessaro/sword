@@ -27,7 +27,13 @@ std::string last_segment(const std::string &path) {
   return cut == std::string::npos ? path : path.substr(cut + 1);
 }
 
-std::vector<std::string> sword_files(const std::string &dir) {
+bool is_test_file(const std::string &name) {
+  const std::string suffix = "_test.sw";
+  return name.size() > suffix.size() &&
+         name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+std::vector<std::string> sword_files(const std::string &dir, bool with_tests) {
   std::vector<std::string> files;
   DIR *handle = opendir(dir.c_str());
   if (!handle) return files;
@@ -35,6 +41,9 @@ std::vector<std::string> sword_files(const std::string &dir) {
     std::string name = entry->d_name;
     if (name.size() < 4 || name.compare(name.size() - 3, 3, ".sw") != 0)
       continue;
+    // Tests live beside what they test, and an ordinary build must not drag
+    // them into every program that imports the package.
+    if (!with_tests && is_test_file(name)) continue;
     files.push_back(dir + "/" + name);
   }
   closedir(handle);
@@ -48,8 +57,56 @@ struct Loader {
   Program &prog;
   const std::vector<std::string> &search;
   std::vector<std::string> visiting;
+  bool tests = false;
+  std::string label; // what the user named on the command line
 
   Loader(Program &p, const std::vector<std::string> &s) : prog(p), search(s) {}
+
+  // The entry point of a test build, written as source and handed to the same
+  // parser as everything else. Generating text rather than nodes keeps this
+  // honest: whatever the language accepts, this has to be written in.
+  bool add_test_main(Package &pkg) {
+    std::vector<std::string> found;
+    for (Node *decl : pkg.unit->kids) {
+      if (decl->kind != ND_FUNC || decl->lhs || decl->is_extern) continue;
+      // `Test` on its own is not a test, and a test takes exactly the one
+      // parameter. Whether it is the right type is the checker's business.
+      if (decl->name.size() <= 4 || decl->name.compare(0, 4, "Test") != 0)
+        continue;
+      if (decl->kids.size() != 1) continue;
+      found.push_back(decl->name);
+    }
+    if (found.empty()) {
+      fprintf(stderr, "shield: no 'Test...' functions in '%s'\n",
+              label.empty() ? pkg.dir.c_str() : label.c_str());
+      return false;
+    }
+
+    // Testing a program means not running it: its own main is renamed out of
+    // reach rather than colliding with the one below.
+    for (Node *decl : pkg.unit->kids)
+      if (decl->kind == ND_FUNC && !decl->lhs && decl->name == "main")
+        decl->name = "main.under test";
+
+    std::string src = "import \"std/testing\"\n\nfunc main() !int {\n";
+    src += "    mut cases := [" + std::to_string(found.size()) +
+           "]testing.Case{";
+    for (size_t i = 0; i < found.size(); i++) {
+      src += i ? ",\n        " : "\n        ";
+      src += "testing.NewCase(\"" + found[i] + "\", " + found[i] + ")";
+    }
+    src += "}\n    return try testing.Run(cases[..])\n}\n";
+
+    int id = add_source("<test main>", src);
+    std::vector<Token> tokens = lex(id);
+    if (error_count() > 0) return false;
+    if (!parse(tokens, prog.ast, pkg.unit)) return false;
+
+    for (Node *decl : pkg.unit->kids)
+      if (decl->kind == ND_IMPORT && decl->text == "std/testing")
+        pkg.imports.push_back(decl->text);
+    return true;
+  }
 
   bool parse_files(Package &pkg, const std::vector<std::string> &files) {
     if (files.empty()) {
@@ -107,7 +164,9 @@ struct Loader {
         if (c == '/') c = '.';
     }
 
-    if (!parse_files(pkg, sword_files(dir))) return nullptr;
+    if (!parse_files(pkg, sword_files(dir, tests && import_path.empty())))
+      return nullptr;
+    if (tests && import_path.empty() && !add_test_main(pkg)) return nullptr;
 
     for (Node *decl : pkg.unit->kids) {
       if (decl->kind != ND_IMPORT) continue;
@@ -139,8 +198,11 @@ bool exported(const std::string &name) {
 }
 
 bool load_program(const std::string &input,
-                  const std::vector<std::string> &search, Program &out) {
+                  const std::vector<std::string> &search, Program &out,
+                  bool with_tests) {
   Loader loader(out, search);
+  loader.tests = with_tests;
+  loader.label = input;
 
   if (is_directory(input)) return loader.load("", input, Pos{}) != nullptr;
 
@@ -150,6 +212,7 @@ bool load_program(const std::string &input,
   Package &pkg = out.packages.back();
   pkg.dir = parent_of(input);
   if (!loader.parse_files(pkg, {input})) return false;
+  if (with_tests && !loader.add_test_main(pkg)) return false;
 
   for (Node *decl : pkg.unit->kids) {
     if (decl->kind != ND_IMPORT) continue;
