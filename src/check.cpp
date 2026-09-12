@@ -997,6 +997,10 @@ struct Checker {
              type_str(value->type).c_str());
         return false;
       }
+      // Boxing happens at the call site, the same way an interface pair is
+      // built there. Without this a plain `any` parameter — as opposed to a
+      // gathered `...any` — receives the raw value where it expects a box.
+      if (!value->type->is_any) value->bind_to = to;
       return true;
     }
     return to->is_interface && bind_interface(value, to);
