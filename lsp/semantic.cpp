@@ -93,6 +93,10 @@ struct Classifier {
     case ND_CATCH:
       mark(n->name_pos, T_VARIABLE, M_DECLARATION | M_READONLY);
       break;
+    case ND_LOCK:
+      // The locked value is a mutable binding for the length of the block.
+      mark(n->name_pos, T_VARIABLE, M_DECLARATION);
+      break;
     case ND_TYPE_NAME:
       // `mem.Arena`: the qualifier sits at pos, the name at name_pos.
       if (!n->text.empty()) mark(n->pos, T_NAMESPACE);

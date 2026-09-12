@@ -70,6 +70,7 @@ const char *node_name(NodeKind kind) {
   case ND_DEFER: return "defer";
   case ND_SCOPE: return "scope";
   case ND_SPAWN: return "spawn";
+  case ND_LOCK: return "lock";
   case ND_FIELD: return "field";
   case ND_INDEX: return "index";
   case ND_SLICE_EXPR: return "slice";

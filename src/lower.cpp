@@ -25,6 +25,9 @@ struct Lowerer {
   struct Deferred {
     Node *stmt;
     bool on_error_only;
+    // A `lock` block's release rather than a user statement: the slot holds the
+    // address of the guard, so every way out of the block unlocks it.
+    int unlock_guard = -1;
   };
   // One list per open block. Leaving a block runs its list backwards; leaving
   // through an error runs the errdefer entries as well.
@@ -283,6 +286,28 @@ struct Lowerer {
     in.type = types.rawptr(types.u8_ty);
     emit(in);
     return in.dst;
+  }
+
+  // The guard is taken on the way in and released on every way out, which the
+  // defer list already knows how to arrange.
+  void lock_stmt(Node *n) {
+    Type *box = n->lhs->type;
+    if (box->kind == TY_PTR) box = box->elem;
+
+    int base = expr(n->lhs);
+    Type *opaque = types.rawptr(types.u8_ty);
+    int holder = alloca_slot(opaque);
+    store(gep_named(base, box, "guard"), holder, opaque);
+    call_runtime("sword_mutex_lock", {load(holder, opaque)}, types.void_ty);
+
+    n->sym->slot = alloca_slot(n->sym->type);
+    store(gep_named(base, box, "value"), n->sym->slot, n->sym->type);
+
+    scopes.emplace_back();
+    scopes.back().push_back({nullptr, false, holder});
+    stmt(n->body);
+    emit_defers(scopes.size() - 1, false);
+    scopes.pop_back();
   }
 
   void scope_stmt(Node *n) {
@@ -549,7 +574,12 @@ struct Lowerer {
       for (size_t j = list.size(); j > 0; j--) {
         if (terminated()) return;
         const Deferred &entry = list[j - 1];
-        if (!entry.on_error_only || error_path) stmt(entry.stmt);
+        if (entry.unlock_guard >= 0) {
+          int guard = load(entry.unlock_guard, types.rawptr(types.u8_ty));
+          call_runtime("sword_mutex_unlock", {guard}, types.void_ty);
+        } else if (!entry.on_error_only || error_path) {
+          stmt(entry.stmt);
+        }
       }
     }
   }
@@ -1201,6 +1231,17 @@ struct Lowerer {
       // An atomic is its payload, seen through a narrower door.
       if (source->kind == TY_ATOMIC || n->type->kind == TY_ATOMIC)
         return expr(n->kids[0]);
+      // A fresh shared starts unlocked, and all-zeroes is what unlocked means.
+      if (n->type->is_shared) {
+        int slot = alloca_slot(n->type);
+        zero(slot, n->type);
+        Type *payload = n->type->elem;
+        int inner = gep_named(slot, n->type, "value");
+        int v = expr(n->kids[0]);
+        if (is_aggregate(payload)) copy(inner, v, payload);
+        else store(v, inner, payload);
+        return slot;
+      }
 
       int value = expr(n->kids[0]);
       Type *from = fn->value_type[value];
@@ -1604,6 +1645,10 @@ struct Lowerer {
       spawn_stmt(n);
       break;
 
+    case ND_LOCK:
+      lock_stmt(n);
+      break;
+
     case ND_EXPR_STMT:
       expr(n->lhs);
       break;
@@ -1693,6 +1738,7 @@ void lower(Program &prog, TypeTable &types, Mode mode, IrModule &mod) {
   mod.structs.push_back(types.any_ty);
   for (Type *t : types.error_unions_made()) mod.structs.push_back(t);
   for (Type *t : types.optionals_made()) mod.structs.push_back(t);
+  for (Type *t : types.shareds_made()) mod.structs.push_back(t);
   for (Type *t : types.instances_made()) mod.structs.push_back(t);
 
   // Dependencies come first, so a package is always lowered after everything

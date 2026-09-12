@@ -521,6 +521,8 @@ struct Emitter {
         {"sword_scope_end", "declare i16 @sword_scope_end(ptr)"},
         {"sword_parallel_for",
          "declare i16 @sword_parallel_for(i64, i64, ptr, ptr)"},
+        {"sword_mutex_lock", "declare void @sword_mutex_lock(ptr)"},
+        {"sword_mutex_unlock", "declare void @sword_mutex_unlock(ptr)"},
     };
     bool any = false;
     for (const auto &entry : runtime) {
