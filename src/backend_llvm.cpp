@@ -420,7 +420,7 @@ struct Emitter {
       }
     }
 
-    signature(f, "define");
+    signature(f, f.is_internal ? "define internal" : "define");
     fputs(" {\n", out);
     for (const IrBlock &bb : f.blocks) {
       fprintf(out, "bb%d:\n", bb.id);

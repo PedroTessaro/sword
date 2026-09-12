@@ -53,6 +53,11 @@ struct Program {
   std::unordered_map<std::string, Symbol *> instances;
   std::unordered_map<std::string, Type *> struct_instances;
 
+  // Every enum gets a synthesized function from value to member name, which is
+  // what `nameof` calls. Keyed by the type, because the caller may be in
+  // another package.
+  std::unordered_map<Type *, Symbol *> enum_names;
+
   Package *main() { return order.empty() ? nullptr : order.back(); }
 };
 

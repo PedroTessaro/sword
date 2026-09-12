@@ -64,6 +64,10 @@ struct Lowerer {
   std::vector<Chunk> chunks;
   int task_serial = 0;
 
+  // Maps an enum onto the function that names its members, which is how a
+  // boxed enum comes out as a name rather than a number.
+  const std::unordered_map<Type *, Symbol *> *enum_names = nullptr;
+
   Lowerer(TypeTable &t, IrModule &m, Mode mo) : types(t), mod(m), mode(mo) {}
 
   int new_value(Type *type) {
@@ -1326,10 +1330,32 @@ struct Lowerer {
   void box_any(int at, Node *value, Type *any) {
     Type *source = value->type;
     int kind = any_kind_of(source);
+    // An enum boxes as its member's name: printing `2` where the program says
+    // `Kind.Int` would be technically true and useless. The number is still one
+    // conversion away.
+    Symbol *names = nullptr;
+    if (source->kind == TY_ENUM && enum_names) {
+      auto found = enum_names->find(source);
+      if (found != enum_names->end()) {
+        names = found->second;
+        kind = ANY_STRING;
+      }
+    }
     zero(at, any);
     store(constant(kind, types.named("u8")),
           gep_named(at, any, "Kind"), types.named("u8"));
 
+    if (names) {
+      int slot = alloca_slot(types.string_ty);
+      IrInst in{};
+      in.op = IR_CALL;
+      in.callee = names->name;
+      in.type = types.void_ty;
+      in.args = {slot, expr(value)}; // the hidden out pointer comes first
+      emit(in);
+      copy(gep_named(at, any, "Text"), slot, types.string_ty);
+      return;
+    }
     if (kind == ANY_STRING) {
       copy(gep_named(at, any, "Text"), expr(value), types.string_ty);
       return;
@@ -1818,6 +1844,7 @@ struct Lowerer {
     out.name = decl->name;
     out.ret = ret = decl->sym->type->ret;
     out.is_extern = decl->is_extern;
+    out.is_internal = decl->is_hidden;
     out.ret_by_pointer = is_aggregate(out.ret);
     for (Node *p : decl->kids) out.params.push_back(p->type);
     if (decl->is_extern) return;
@@ -1873,6 +1900,7 @@ struct Lowerer {
 
 void lower(Program &prog, TypeTable &types, Mode mode, IrModule &mod) {
   Lowerer lowerer(types, mod, mode);
+  lowerer.enum_names = &prog.enum_names;
 
   for (Package *pkg : prog.order)
     for (Node *decl : pkg->unit->kids)

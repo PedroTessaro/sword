@@ -69,6 +69,7 @@ struct IrFunc {
   std::vector<Type *> params;
   Type *ret = nullptr;
   bool is_extern = false;
+  bool is_internal = false; // synthesized: droppable when unused
   // Aggregate returns go through a hidden pointer parameter, ahead of the
   // declared ones.
   bool ret_by_pointer = false;

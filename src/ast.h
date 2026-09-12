@@ -90,6 +90,9 @@ struct Node {
   bool is_mut = false;
   bool is_range = false;
   bool is_extern = false;
+  // Written by the compiler rather than by the programmer: it gets internal
+  // linkage, so LLVM drops it when nothing calls it.
+  bool is_hidden = false;
   bool is_errdefer = false;
   bool is_parallel = false; // ND_FOR spread across workers
   // ND_PARAM: gathers the rest of the arguments. On a call or an argument:

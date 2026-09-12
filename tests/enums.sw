@@ -89,7 +89,18 @@ func main() !int {
         return 10
     }
 
-    // It prints as the number it is.
-    try io.Printf("enums work: {} is {}\n", u8(Kind.Real), describe(Kind.Real))
+    // A member's name, and the empty string for a value that is not one.
+    if nameof(Kind.Real) != "Real" || nameof(k) != "Int" {
+        return 11
+    }
+    if nameof(Kind(200)) != "" {
+        return 12
+    }
+    if nameof(shapes.Corner.Bevelled) != "Bevelled" {
+        return 13
+    }
+    // Printing one gives the name, because the number would be useless.
+    try io.Printf("enums work: {} is {}, {} is {}\n", nameof(Kind.Real),
+                  describe(Kind.Real), Kind.Text, u8(Kind.Text))
     return 42
 }

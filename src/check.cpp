@@ -1577,6 +1577,32 @@ struct Checker {
     return check_generic_call(n, sym, owner, args);
   }
 
+  // `nameof(k)` is the name of the member `k` is, or empty when it is not one.
+  // It calls the function synthesized alongside the enum.
+  Type *check_nameof(Node *n) {
+    if (n->kids.size() != 1) {
+      error(n->pos, "'nameof' takes one enum value");
+      return nullptr;
+    }
+    Type *arg = check_expr(n->kids[0]);
+    if (!arg) return nullptr;
+    if (arg->kind != TY_ENUM) {
+      error(n->kids[0]->pos, "'nameof' needs an enum value, got %s",
+            type_str(arg).c_str());
+      return nullptr;
+    }
+    auto found = prog.enum_names.find(arg);
+    if (found == prog.enum_names.end()) {
+      error(n->pos, "%s has no names to look up", type_str(arg).c_str());
+      return nullptr;
+    }
+    n->form = CALL_DIRECT;
+    n->sym = found->second;
+    n->name = found->second->name;
+    if (!check_args(n, found->second, 0, true)) return nullptr;
+    return n->type = types.string_ty;
+  }
+
   Type *check_call(Node *n) {
     if (n->lhs->kind == ND_INDEX) return check_indexed_call(n);
     if (n->lhs->kind == ND_FIELD) {
@@ -1590,6 +1616,7 @@ struct Checker {
       error(n->pos, "only direct calls are supported for now");
       return nullptr;
     }
+    if (n->lhs->name == "nameof" && !lookup("nameof")) return check_nameof(n);
     if (!lookup(n->lhs->name))
       if (Type *target = lookup_type(n->lhs->name))
         return check_convert(n, target);
@@ -2797,6 +2824,7 @@ struct Checker {
   // reaches it by accident. A member with no value continues from the one
   // before, starting at zero.
   bool declare_enums() {
+    std::vector<Node *> made;
     for (Node *decl : pkg.unit->kids) {
       if (decl->kind != ND_ENUM_DECL) continue;
       if (pkg.type_names.count(decl->name) || types.named(decl->name)) {
@@ -2840,8 +2868,76 @@ struct Checker {
         next++;
       }
       type->fields = std::move(members);
+      made.push_back(made_name_func(decl));
     }
+    // Appended after the walk, not during it.
+    for (Node *fn : made) pkg.unit->kids.push_back(fn);
     return true;
+  }
+
+  Node *made_ident(Pos at, const std::string &name) {
+    Node *n = ast.make(ND_IDENT, at);
+    n->name = name;
+    n->name_pos = at;
+    return n;
+  }
+
+  Node *made_type_name(Pos at, const std::string &name) {
+    Node *n = ast.make(ND_TYPE_NAME, at);
+    n->name = name;
+    n->name_pos = at;
+    return n;
+  }
+
+  Node *made_return(Pos at, const std::string &text) {
+    Node *value = ast.make(ND_STRING_LIT, at);
+    value->text = text;
+    Node *ret = ast.make(ND_RETURN, at);
+    ret->lhs = value;
+    Node *block = ast.make(ND_BLOCK, at);
+    block->kids.push_back(ret);
+    return block;
+  }
+
+  // Every enum gets a function from a value to its member's name, which is what
+  // `nameof` calls. It is written as source rather than as IR, so the ordinary
+  // pipeline checks and lowers it like anything else — and its name carries a
+  // dot, which no identifier can, so nothing can call it by hand.
+  Node *made_name_func(Node *decl) {
+    Node *fn = ast.make(ND_FUNC, decl->pos);
+    fn->name = decl->name + ".name";
+    fn->name_pos = decl->name_pos;
+    fn->is_hidden = true;
+
+    Node *param = ast.make(ND_PARAM, decl->pos);
+    param->name = "v";
+    param->name_pos = decl->pos;
+    param->type_expr = made_type_name(decl->pos, decl->name);
+    fn->kids.push_back(param);
+    fn->type_expr = made_type_name(decl->pos, "string");
+
+    Node *sw = ast.make(ND_SWITCH, decl->pos);
+    sw->cond = made_ident(decl->pos, "v");
+    for (Node *m : decl->kids) {
+      Node *arm = ast.make(ND_CASE, m->pos);
+      Node *value = ast.make(ND_FIELD, m->pos);
+      value->lhs = made_ident(m->pos, decl->name);
+      value->name = m->name;
+      value->name_pos = m->name_pos;
+      arm->kids.push_back(value);
+      arm->body = made_return(m->pos, m->name);
+      sw->kids.push_back(arm);
+    }
+    // A value that is not a member has no name, which is what an empty string
+    // says. The conversion into an enum is unchecked, so this is reachable.
+    Node *fallback = ast.make(ND_CASE, decl->pos);
+    fallback->body = made_return(decl->pos, "");
+    sw->kids.push_back(fallback);
+
+    Node *body = ast.make(ND_BLOCK, decl->pos);
+    body->kids.push_back(sw);
+    fn->body = body;
+    return fn;
   }
 
   // A member named through its type: `Kind.Int`. Nothing else is spelled that
@@ -3028,6 +3124,9 @@ struct Checker {
         std::string plain = fn->name;
         sym = declare(plain, types.func(params, ret, param_mut), false,
                       fn->pos);
+        // The name function of an enum is found by its type, not by its name.
+        if (fn->is_hidden && !params.empty() && params[0]->kind == TY_ENUM)
+          prog.enum_names[params[0]] = sym;
         // Extern names are C symbols and stay as written; everything else is
         // qualified so two packages can both define `init`.
         if (!fn->is_extern) fn->name = pkg.prefix + plain;

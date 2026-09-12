@@ -410,8 +410,8 @@ int any_kind_of(const Type *t) {
   switch (t->kind) {
   case TY_BOOL: return ANY_BOOL;
   case TY_INT: return t->is_signed ? ANY_INT : ANY_UINT;
-  // An enum boxes as the number it is. Printing the member's name would need a
-  // table the compiler does not build.
+  // An enum is boxable; which slot it lands in is decided at the call site,
+  // where the name of its member can be looked up.
   case TY_ENUM: return t->is_signed ? ANY_INT : ANY_UINT;
   case TY_FLOAT: return ANY_FLOAT;
   case TY_STRING: return ANY_STRING;
