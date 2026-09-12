@@ -172,7 +172,8 @@ Type *TypeTable::opt(Type *elem) {
 
   // A pointer already has a spare bit pattern, so `?*T` is just the pointer
   // with null standing for absence. Anything else needs a flag beside it.
-  if (elem->kind == TY_PTR || elem->kind == TY_RAWPTR) {
+  if (elem->kind == TY_PTR || elem->kind == TY_RAWPTR ||
+      elem->kind == TY_FUNC) {
     Type t;
     t.kind = TY_OPT;
     t.elem = elem;
@@ -228,10 +229,13 @@ Type *TypeTable::shared(Type *elem) {
   return shareds[elem] = type;
 }
 
-Type *TypeTable::func(std::vector<Type *> params, Type *ret) {
+Type *TypeTable::func(std::vector<Type *> params, Type *ret,
+                      std::vector<bool> param_mut) {
   Type t;
   t.kind = TY_FUNC;
   t.params = std::move(params);
+  t.param_mut = std::move(param_mut);
+  t.param_mut.resize(t.params.size(), false);
   t.ret = ret;
   return add(t);
 }
@@ -316,6 +320,7 @@ std::string type_str(const Type *t) {
     std::string s = "func(";
     for (size_t i = 0; i < t->params.size(); i++) {
       if (i) s += ", ";
+      if (i < t->param_mut.size() && t->param_mut[i]) s += "mut ";
       s += type_str(t->params[i]);
     }
     s += ")";
@@ -340,6 +345,15 @@ bool type_eq(const Type *a, const Type *b) {
   case TY_ARRAY:
     return a->count == b->count && type_eq(a->elem, b->elem);
   case TY_STRUCT: return a->name == b->name;
+  case TY_FUNC: {
+    if (a->params.size() != b->params.size()) return false;
+    if (!type_eq(a->ret, b->ret)) return false;
+    for (size_t i = 0; i < a->params.size(); i++) {
+      if (!type_eq(a->params[i], b->params[i])) return false;
+      if (a->param_mut[i] != b->param_mut[i]) return false;
+    }
+    return true;
+  }
   default: return true;
   }
 }

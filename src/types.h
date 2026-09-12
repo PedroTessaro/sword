@@ -60,6 +60,10 @@ struct Type {
   std::vector<Field> fields;
   std::vector<Field> methods; // TY_STRUCT with is_interface
   std::vector<Type *> params;
+  // TY_FUNC: which parameters the callee may write through. Part of the type,
+  // because passing a function that writes where the caller expected one that
+  // does not would hand out permission nobody granted.
+  std::vector<bool> param_mut;
   Type *ret = nullptr;
 };
 
@@ -74,7 +78,8 @@ struct TypeTable {
   Type *opt(Type *elem);
   Type *atomic(Type *elem);
   Type *shared(Type *elem);
-  Type *func(std::vector<Type *> params, Type *ret);
+  Type *func(std::vector<Type *> params, Type *ret,
+             std::vector<bool> param_mut = {});
 
   Type *declare_struct(const std::string &name);
   Type *declare_interface(const std::string &name);

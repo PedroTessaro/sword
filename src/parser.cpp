@@ -144,6 +144,32 @@ struct Parser {
       n->lhs = type_expr();
       return n->lhs ? n : nullptr;
     }
+    // `func(T, mut U) R`. Parameters are types only: a name there would have
+    // nothing to name.
+    if (kind() == TK_FUNC) {
+      advance();
+      Node *n = make(ND_TYPE_FUNC, pos);
+      if (!expect(TK_LPAREN, "after 'func' in a type")) return nullptr;
+      if (!match(TK_RPAREN)) {
+        do {
+          bool is_mut = match(TK_MUT);
+          Node *param = type_expr();
+          if (!param) return nullptr;
+          param->is_mut = is_mut;
+          n->kids.push_back(param);
+        } while (match(TK_COMMA));
+        if (!expect(TK_RPAREN, "after the parameters of a function type"))
+          return nullptr;
+      }
+      // A result is optional, and `{` or a comma means there is none.
+      if (kind() != TK_LBRACE && kind() != TK_COMMA && kind() != TK_RPAREN &&
+          kind() != TK_TERM && kind() != TK_RBRACK && kind() != TK_ASSIGN &&
+          kind() != TK_EOF) {
+        n->lhs = type_expr();
+        if (!n->lhs) return nullptr;
+      }
+      return n;
+    }
     if (kind() == TK_IDENT) {
       Node *n = make(ND_TYPE_NAME, pos);
       n->name_pos = peek().pos;

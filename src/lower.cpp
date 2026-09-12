@@ -1154,6 +1154,11 @@ struct Lowerer {
       in.args.push_back(base->type->kind == TY_PTR ? expr(base) : addr(base));
     } else if (n->form == 2) {
       dispatch(n, in);
+    } else if (n->form == 4) {
+      // The target is a value, so there is no name to call: the backend takes
+      // it from `a`, the same way it does for a vtable entry.
+      in.callee.clear();
+      in.a = expr(n->lhs);
     }
 
     size_t fixed = n->variadic_at >= 0 ? (size_t)n->variadic_at
@@ -1194,6 +1199,8 @@ struct Lowerer {
       return slice_expr(n);
 
     case ND_IDENT:
+      // A function named without being called is its address.
+      if (n->sym->is_func) return func_address(n->sym->name);
       return is_aggregate(n->type) ? n->sym->slot : load(n->sym->slot, n->type);
 
     case ND_FIELD: case ND_INDEX: {

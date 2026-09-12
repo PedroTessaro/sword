@@ -66,6 +66,7 @@ enum NodeKind {
   ND_TYPE_OPT,
   ND_TYPE_ERR,  // !T
   ND_TYPE_INST, // Name[A, B]
+  ND_TYPE_FUNC, // func(T, mut U) R: kids are the parameters
 };
 
 // One struct for every node, chibicc style: fields are used selectively per

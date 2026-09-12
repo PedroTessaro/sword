@@ -148,6 +148,15 @@ struct Checker {
       return t ? t : types.void_ty;
     }
     case ND_TYPE_PTR: return types.ptr(resolve(n->lhs));
+    case ND_TYPE_FUNC: {
+      std::vector<Type *> params;
+      std::vector<bool> param_mut;
+      for (Node *p : n->kids) {
+        params.push_back(resolve(p));
+        param_mut.push_back(p->is_mut);
+      }
+      return types.func(params, resolve(n->lhs), param_mut);
+    }
     case ND_TYPE_RAWPTR: return types.rawptr(resolve(n->lhs));
     case ND_TYPE_SLICE: return types.slice(resolve(n->lhs));
     case ND_TYPE_OPT: return types.opt(resolve(n->lhs));
@@ -1119,6 +1128,14 @@ struct Checker {
 
   // Checks the argument list against a signature, skipping `skip` leading
   // parameters that the call site fills in for itself (the receiver).
+  // Whether a parameter takes write access. A declaration says so on the
+  // parameter; a function value has only its type, which carries the same
+  // answer.
+  bool wants_write(Type *sig, Node *param, size_t at) {
+    if (param) return param->is_mut;
+    return at < sig->param_mut.size() && sig->param_mut[at];
+  }
+
   bool check_args(Node *n, Symbol *sym, size_t skip,
                   bool already_checked = false) {
     Type *sig = sym->type;
@@ -1174,7 +1191,8 @@ struct Checker {
         }
         Node *param = i < fixed && sym->decl ? sym->decl->kids[i + skip]
                                              : nullptr;
-        if (param && param->is_mut && !require_mutable(n->kids[i], "pass"))
+        if (wants_write(sig, param, i + skip) &&
+            !require_mutable(n->kids[i], "pass"))
           return false;
       }
       return true;
@@ -1199,7 +1217,8 @@ struct Checker {
       // A `mut` parameter hands the callee write access, so the caller must
       // be entitled to it in the first place.
       Node *param = sym->decl ? sym->decl->kids[i + skip] : nullptr;
-      if (param && param->is_mut && !require_mutable(n->kids[i], "pass"))
+      if (wants_write(sig, param, i + skip) &&
+          !require_mutable(n->kids[i], "pass"))
         return false;
     }
     return true;
@@ -1285,6 +1304,17 @@ struct Checker {
       error(field->pos, "%s has no method '%s'", owner->name.c_str(),
             field->name.c_str());
       return nullptr;
+    }
+
+    // A field holding a function value is called like a method would be, and
+    // that is the point: `m.handler(req, res)` reads the same either way.
+    if (const Field *held = find_field(owner, field->name)) {
+      if (held->type->kind != TY_FUNC) {
+        error(field->pos, "'%s' is not a function", field->name.c_str());
+        return nullptr;
+      }
+      if (!check_expr(field)) return nullptr;
+      return check_indirect_call(n, held->type, field->name);
     }
 
     Symbol *sym = find_method(owner, field->name);
@@ -1544,6 +1574,11 @@ struct Checker {
       return nullptr;
     }
     if (!sym->is_func) {
+      if (sym->type && sym->type->kind == TY_FUNC) {
+        n->lhs->sym = sym;
+        n->lhs->type = sym->type;
+        return check_indirect_call(n, sym->type, sym->name);
+      }
       error(n->lhs->pos, "'%s' is not a function", sym->name.c_str());
       return nullptr;
     }
@@ -1578,7 +1613,14 @@ struct Checker {
           n->text = value->text;
           return n->type = value->type;
         }
-        error(n->pos, "package '%s' has no exported constant '%s'",
+        // `http.NotFound` without a call: the function itself, as a value.
+        if (sym && sym->is_func) {
+          n->kind = ND_IDENT;
+          n->name = sym->name;
+          n->sym = sym;
+          return check_func_value(n, sym);
+        }
+        error(n->pos, "package '%s' has no exported constant or function '%s'",
               other->name.c_str(), n->name.c_str());
         return nullptr;
       }
@@ -1904,6 +1946,31 @@ struct Checker {
     return n->type = value;
   }
 
+  // A function named but not called is its own address. There are no closures,
+  // so nothing is captured and nothing is allocated — which is also why a
+  // generic has no value: there is no one function to point at.
+  Type *check_func_value(Node *n, Symbol *sym) {
+    if (sym->is_generic) {
+      error(n->pos,
+            "'%s' is generic, so there is no single function to point at",
+            sym->name.c_str());
+      return nullptr;
+    }
+    return n->type = sym->type;
+  }
+
+  // Calling a value rather than a name: a local, a parameter or a field of
+  // function type.
+  Type *check_indirect_call(Node *n, Type *signature,
+                            const std::string &shown) {
+    Symbol probe{shown, signature, false, false, false, nullptr,
+                 nullptr, n->pos, -1, nullptr};
+    n->form = CALL_INDIRECT;
+    n->name.clear();
+    if (!check_args(n, &probe, 0)) return nullptr;
+    return n->type = signature->ret;
+  }
+
   Type *check_expr(Node *n) {
     if (!n) return nullptr;
     switch (n->kind) {
@@ -1934,6 +2001,7 @@ struct Checker {
         return n->type = value->type;
       }
       n->sym = sym;
+      if (sym->is_func) return check_func_value(n, sym);
       return n->type = sym->type;
     }
     case ND_BINARY: return check_binary(n);
@@ -1991,6 +2059,10 @@ struct Checker {
   // A `return` in a fallible function has four shapes; which one it is decides
   // what lowering writes into the { code, value } pair.
   enum ReturnForm { RET_PLAIN, RET_WRAP, RET_ERROR, RET_FORWARD, RET_OK };
+  // How a call reaches its target, kept in `form`.
+  enum CallForm {
+    CALL_DIRECT, CALL_METHOD, CALL_DYNAMIC, CALL_ATOMIC, CALL_INDIRECT
+  };
 
   void check_return(Node *n) {
     if (!ret_type->is_error_union) {
@@ -2782,6 +2854,7 @@ struct Checker {
       }
 
       std::vector<Type *> params;
+      std::vector<bool> param_mut;
       for (size_t i = 0; i < fn->kids.size(); i++) {
         Node *p = fn->kids[i];
         p->type = resolve(p->type_expr);
@@ -2793,6 +2866,7 @@ struct Checker {
           p->type = types.slice(p->type);
         }
         params.push_back(p->type);
+        param_mut.push_back(p->is_mut);
       }
       Type *ret = fn->type_expr ? resolve(fn->type_expr) : types.void_ty;
 
@@ -2806,12 +2880,13 @@ struct Checker {
         }
         std::string plain = fn->name;
         fn->name = method_of + "." + plain;
-        sym = ast.make_symbol(fn->name, types.func(params, ret), false,
-                              fn->pos);
+        sym = ast.make_symbol(fn->name, types.func(params, ret, param_mut),
+                              false, fn->pos);
         table[plain] = sym;
       } else {
         std::string plain = fn->name;
-        sym = declare(plain, types.func(params, ret), false, fn->pos);
+        sym = declare(plain, types.func(params, ret, param_mut), false,
+                      fn->pos);
         // Extern names are C symbols and stay as written; everything else is
         // qualified so two packages can both define `init`.
         if (!fn->is_extern) fn->name = pkg.prefix + plain;
