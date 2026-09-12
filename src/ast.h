@@ -34,6 +34,8 @@ enum NodeKind {
   ND_SCOPE, // structured concurrency: joins on the way out
   ND_SPAWN,
   ND_LOCK, // lock name := shared { ... }: holds the mutex for the block
+  ND_SWITCH, // kids are the cases, cond is the subject
+  ND_CASE,   // kids are the values to match; none of them means `default`
 
   ND_INT_LIT,
   ND_FLOAT_LIT,

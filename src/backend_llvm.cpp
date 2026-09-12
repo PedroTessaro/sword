@@ -530,6 +530,10 @@ struct Emitter {
       fprintf(out, "%s\n", entry.decl);
       any = true;
     }
+    if (calls("memcmp") && !declared.count("memcmp")) {
+      fputs("declare i32 @memcmp(ptr, ptr, i64)\n", out);
+      any = true;
+    }
     // This one is called by the entry wrapper rather than by lowered code.
     if (wants_args()) {
       fputs("declare void @sword_os_set_args(i32, ptr)\n", out);

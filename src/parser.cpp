@@ -493,6 +493,51 @@ struct Parser {
     return n;
   }
 
+  // `switch x { case a, b: ... default: ... }`. No fallthrough, so a case body
+  // ends where the next `case` begins.
+  Node *switch_stmt() {
+    Node *n = make(ND_SWITCH, advance().pos);
+    n->cond = header_expr();
+    if (!n->cond) return nullptr;
+    if (!expect(TK_LBRACE, "to open a switch")) return nullptr;
+
+    skip_terms();
+    while (kind() != TK_RBRACE && kind() != TK_EOF) {
+      Node *arm = make(ND_CASE, peek().pos);
+      if (match(TK_DEFAULT)) {
+        // No values: this is the one that runs when nothing matched.
+      } else if (match(TK_CASE)) {
+        do {
+          Node *value = expr();
+          if (!value) return nullptr;
+          arm->kids.push_back(value);
+        } while (match(TK_COMMA));
+      } else {
+        fail("expected 'case' or 'default'");
+        return nullptr;
+      }
+      if (!expect(TK_COLON, "after the values of a case")) return nullptr;
+      arm->body = case_body();
+      n->kids.push_back(arm);
+      skip_terms();
+    }
+    expect(TK_RBRACE, "to close a switch");
+    return n;
+  }
+
+  Node *case_body() {
+    Node *n = make(ND_BLOCK, peek().pos);
+    skip_terms();
+    while (kind() != TK_CASE && kind() != TK_DEFAULT && kind() != TK_RBRACE &&
+           kind() != TK_EOF) {
+      Node *st = statement();
+      if (st) n->kids.push_back(st);
+      else resync();
+      skip_terms();
+    }
+    return n;
+  }
+
   Node *if_stmt() {
     Node *n = make(ND_IF, advance().pos);
     if (kind() == TK_IDENT && kind(1) == TK_DEFINE) {
@@ -607,6 +652,7 @@ struct Parser {
     switch (kind()) {
     case TK_LBRACE: return block();
     case TK_IF: return if_stmt();
+    case TK_SWITCH: return switch_stmt();
     case TK_FOR: return for_stmt();
     case TK_PARALLEL: {
       Pos at = advance().pos;

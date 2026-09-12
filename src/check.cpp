@@ -1024,7 +1024,10 @@ struct Checker {
     bool is_ptr = lhs->kind == TY_PTR || lhs->kind == TY_RAWPTR;
     switch (n->op) {
     case TK_EQ: case TK_NE:
-      if (!is_numeric(lhs) && lhs->kind != TY_BOOL && !is_ptr) {
+      // Strings compare by content, which is the only comparison here that is
+      // not a single instruction. Everything else is a value or an address.
+      if (!is_numeric(lhs) && lhs->kind != TY_BOOL && !is_ptr &&
+          lhs->kind != TY_STRING) {
         error(n->pos, "cannot compare values of type %s",
               type_str(lhs).c_str());
         return nullptr;
@@ -2123,6 +2126,63 @@ struct Checker {
   // `for part in xs.chunks(n)` is the only way to hand pieces of one slice to
   // different tasks: the pieces cannot overlap, so the compiler does not have
   // to prove anything about the indices.
+  // `switch x { case a, b: ... default: ... }`. No fallthrough, so `break` and
+  // `continue` inside a case mean what they would anywhere else: they speak to
+  // the loop around the switch, not to the switch.
+  void check_switch(Node *n) {
+    Type *subject = check_expr(n->cond);
+    if (!subject) return;
+    if (!is_integer(subject) && subject->kind != TY_BOOL &&
+        subject->kind != TY_STRING) {
+      error(n->cond->pos,
+            "switch needs an integer, a bool or a string, got %s",
+            type_str(subject).c_str());
+      return;
+    }
+    subject = settle(n->cond);
+
+    Node *fallback = nullptr;
+    std::vector<Node *> values;
+    for (Node *arm : n->kids) {
+      if (arm->kids.empty()) {
+        if (fallback) {
+          error(arm->pos, "this switch already has a 'default'");
+          note(fallback->pos, "the first one is here");
+        }
+        fallback = arm;
+      }
+      for (Node *value : arm->kids) {
+        if (!check_expr(value)) continue;
+        if (!convert(value, subject)) {
+          error(value->pos, "cannot match %s against %s",
+                type_str(value->type).c_str(), type_str(subject).c_str());
+          continue;
+        }
+        for (Node *seen : values) {
+          if (!same_constant(seen, value)) continue;
+          error(value->pos, "this case is already covered");
+          note(seen->pos, "the earlier one is here");
+          break;
+        }
+        values.push_back(value);
+      }
+      push_scope();
+      check_stmt(arm->body);
+      pop_scope();
+    }
+  }
+
+  // Only literals, which is all the checker can compare without evaluating.
+  // A constant name has already been folded into one by the time it gets here.
+  bool same_constant(Node *a, Node *b) {
+    if (a->kind != b->kind) return false;
+    switch (a->kind) {
+    case ND_INT_LIT: case ND_BOOL_LIT: return a->ival == b->ival;
+    case ND_STRING_LIT: return a->text == b->text;
+    default: return false;
+    }
+  }
+
   // Which of the two named `for` loops this is, kept in `form`.
   enum ForForm { FOR_PARTITION, FOR_ELEMENTS };
 
@@ -2365,6 +2425,10 @@ struct Checker {
       check_lock(n);
       break;
 
+    case ND_SWITCH:
+      check_switch(n);
+      break;
+
     case ND_DEFER:
       check_stmt(n->body);
       if (n->is_errdefer && !ret_type->is_error_union)
@@ -2511,6 +2575,15 @@ struct Checker {
     // Leaving a `lock` releases it on the way out, so a `return` inside one
     // counts the same as a `return` in a plain block.
     case ND_LOCK: return always_returns(n->body);
+    // Only with a `default`: without one, falling past every case is a path.
+    case ND_SWITCH: {
+      bool has_default = false;
+      for (Node *arm : n->kids) {
+        if (!always_returns(arm->body)) return false;
+        if (arm->kids.empty()) has_default = true;
+      }
+      return has_default;
+    }
     default: return false;
     }
   }

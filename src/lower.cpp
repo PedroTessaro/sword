@@ -170,6 +170,38 @@ struct Lowerer {
     return in.dst;
   }
 
+  // Two strings are equal when their lengths match and so do their bytes. The
+  // length test comes first and short-circuits, so an empty string never calls
+  // memcmp at all.
+  int string_equal(int a, int b) {
+    Type *word = types.usize_ty;
+    Type *flag = types.bool_ty;
+    int result = alloca_slot(flag);
+    store(constant(0, flag), result, flag);
+
+    int la = load(gep_slice_len(a), word);
+    int lb = load(gep_slice_len(b), word);
+    int bytes_bb = new_block();
+    int done_bb = new_block();
+    cond_branch(binop(IR_EQ, la, lb, flag), bytes_bb, done_bb);
+
+    cur = bytes_bb;
+    Type *opaque = types.rawptr(types.u8_ty);
+    IrInst call{};
+    call.op = IR_CALL;
+    call.callee = "memcmp";
+    call.type = types.named("i32");
+    call.dst = new_value(call.type);
+    call.args = {load(gep_slice_ptr(a), opaque), load(gep_slice_ptr(b), opaque),
+                 la};
+    emit(call);
+    store(binop(IR_EQ, call.dst, constant(0, call.type), flag), result, flag);
+    branch(done_bb);
+
+    cur = done_bb;
+    return load(result, flag);
+  }
+
   int binop(IrOp op, int a, int b, Type *type) {
     IrInst in{};
     in.op = op;
@@ -1174,6 +1206,12 @@ struct Lowerer {
 
     case ND_BINARY:
       if (n->op == TK_ANDAND || n->op == TK_OROR) return short_circuit(n);
+      if (n->lhs->type->kind == TY_STRING &&
+          (n->op == TK_EQ || n->op == TK_NE)) {
+        int same = string_equal(expr(n->lhs), expr(n->rhs));
+        if (n->op == TK_EQ) return same;
+        return binop(IR_EQ, same, constant(0, types.bool_ty), types.bool_ty);
+      }
       if (n->type->kind == TY_RAWPTR) {
         int base = expr(n->lhs);
         int offset = to_word(expr(n->rhs));
@@ -1533,6 +1571,43 @@ struct Lowerer {
     cur = exit_bb;
   }
 
+  // A chain of compares in source order. No jump table: a switch here is
+  // usually a handful of cases, and LLVM turns a dense chain into a table on
+  // its own when it is worth it.
+  void switch_stmt(Node *n) {
+    bool text = n->cond->type->kind == TY_STRING;
+    int subject = expr(n->cond);
+
+    int exit_bb = new_block();
+    std::vector<int> arms;
+    int fallback_bb = exit_bb;
+    for (Node *arm : n->kids) {
+      arms.push_back(new_block());
+      if (arm->kids.empty()) fallback_bb = arms.back();
+    }
+
+    for (size_t i = 0; i < n->kids.size(); i++) {
+      for (Node *value : n->kids[i]->kids) {
+        int same = text ? string_equal(subject, expr(value))
+                        : binop(IR_EQ, subject, expr(value), types.bool_ty);
+        int next_bb = new_block();
+        cond_branch(same, arms[i], next_bb);
+        cur = next_bb;
+      }
+    }
+    branch(fallback_bb);
+
+    for (size_t i = 0; i < n->kids.size(); i++) {
+      cur = arms[i];
+      scopes.emplace_back();
+      stmt(n->kids[i]->body);
+      emit_defers(scopes.size() - 1, false);
+      scopes.pop_back();
+      branch(exit_bb);
+    }
+    cur = exit_bb;
+  }
+
   void cond_loop(Node *n) {
     int cond_bb = new_block();
     int body_bb = new_block();
@@ -1696,6 +1771,10 @@ struct Lowerer {
 
     case ND_LOCK:
       lock_stmt(n);
+      break;
+
+    case ND_SWITCH:
+      switch_stmt(n);
       break;
 
     case ND_EXPR_STMT:
