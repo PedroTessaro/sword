@@ -22,4 +22,12 @@ uint16_t sword_scope_end(void *scope);
 
 uint16_t sword_parallel_for(int64_t lo, int64_t hi, sword_chunk_fn fn,
                             void *env);
+
+// Brackets a call that parks the thread in the kernel. A parked thread is not
+// scheduler capacity, so the pool hires a replacement for as long as it is
+// gone: blocking I/O then costs a thread instead of a core. Cheap and safe to
+// call when no pool is running, which is the common case for a program that
+// never spawns anything.
+void sword_blocking_enter(void);
+void sword_blocking_exit(void);
 }

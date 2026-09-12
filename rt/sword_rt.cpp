@@ -15,6 +15,15 @@ namespace {
 // to avoid the allocator.
 const int64_t kInlineArgs = 96;
 
+// A hired thread waits this many idle milliseconds before retiring. Long
+// enough that a burst of blocking calls reuses the same threads, short enough
+// that a server which went quiet gives them back.
+const int kHelperIdleMillis = 200;
+
+// How far the pool may grow past the fixed workers when threads park in
+// syscalls. Threads are cheap next to a socket but not free.
+const int64_t kDefaultCeiling = 512;
+
 struct Scope {
   std::atomic<int64_t> outstanding;
   std::atomic<unsigned> failed; // holds the first error code seen
@@ -46,10 +55,23 @@ struct Pool {
   std::condition_variable wake;
   std::atomic<bool> stopping{false};
   std::atomic<int64_t> ready{0};
+
+  int64_t target = 1;   // fixed workers, one per core unless told otherwise
+  int64_t ceiling = 1;  // fixed workers plus the most hires allowed
+  std::atomic<int64_t> pending{0}; // spawned and not yet picked up
+  std::atomic<int64_t> parked{0};  // threads sitting in a syscall
+  std::atomic<int64_t> hired{0};   // extra threads covering for them
+  std::mutex hire_lock;
 };
 
 Pool &pool();
+// Null until the pool is up, which is how the blocking hints stay free for a
+// program that never spawns a task.
+std::atomic<Pool *> running{nullptr};
 thread_local int tl_worker = -1;
+// Blocking hints this thread has counted, so an unmatched exit cannot push the
+// pool's tally negative.
+thread_local int tl_parked = 0;
 
 Task *take_task(Worker &w) {
   std::lock_guard<std::mutex> held(w.lock);
@@ -68,23 +90,23 @@ Task *steal_task(Worker &w) {
 }
 
 // Own queue first, then everyone else's, starting from a different neighbour
-// each time so workers do not all converge on the same victim.
+// each time so workers do not all converge on the same victim. A hired thread
+// passes -1: it has no queue of its own and only steals.
 Task *find_task(int me) {
   Pool &p = pool();
-  if (me >= 0) {
-    if (Task *task = take_task(*p.workers[me])) return task;
-  }
-  size_t count = p.workers.size();
-  static thread_local unsigned rotation = 0;
-  for (size_t i = 0; i < count; i++) {
-    size_t victim = (rotation + i) % count;
-    if ((int)victim == me) continue;
-    if (Task *task = steal_task(*p.workers[victim])) {
-      rotation = (unsigned)victim;
-      return task;
+  Task *task = me >= 0 ? take_task(*p.workers[me]) : nullptr;
+  if (!task) {
+    size_t count = p.workers.size();
+    static thread_local unsigned rotation = 0;
+    for (size_t i = 0; i < count && !task; i++) {
+      size_t victim = (rotation + i) % count;
+      if ((int)victim == me) continue;
+      task = steal_task(*p.workers[victim]);
+      if (task) rotation = (unsigned)victim;
     }
   }
-  return nullptr;
+  if (task) p.pending.fetch_sub(1, std::memory_order_relaxed);
+  return task;
 }
 
 void recycle(Task *task) {
@@ -126,13 +148,58 @@ void worker_loop(int me) {
   }
 }
 
-int thread_count() {
-  if (const char *env = getenv("SWORD_THREADS")) {
-    int n = atoi(env);
+// A thread hired to cover for one that parked in a syscall. It steals, never
+// owns a queue, and retires once the work it was hired for has dried up.
+void helper_loop() {
+  tl_worker = -1;
+  Pool &p = pool();
+  int idle = 0;
+  while (!p.stopping.load(std::memory_order_acquire)) {
+    if (Task *task = find_task(-1)) {
+      run_task(task);
+      idle = 0;
+      continue;
+    }
+    if (++idle > kHelperIdleMillis) break;
+    std::unique_lock<std::mutex> held(p.sleep_lock);
+    if (p.stopping.load(std::memory_order_acquire)) break;
+    p.wake.wait_for(held, std::chrono::milliseconds(1));
+  }
+  p.hired.fetch_sub(1, std::memory_order_release);
+}
+
+// Capacity is every thread that is not parked in a syscall. When that falls
+// below the target and tasks are queued behind it, hire one more.
+void cover_for_parked(Pool &p) {
+  // Both loads are relaxed on purpose: this is a heuristic, and the next
+  // blocking call corrects an answer that was stale by a hair.
+  if (p.parked.load(std::memory_order_relaxed) == 0) return;
+  if (p.pending.load(std::memory_order_relaxed) <= 0) return;
+
+  std::lock_guard<std::mutex> held(p.hire_lock);
+  int64_t live = p.target + p.hired.load(std::memory_order_acquire);
+  int64_t runnable = live - p.parked.load(std::memory_order_acquire);
+  if (runnable >= p.target) return;
+  // The ceiling is a brake, not a wall. Holding to it while nothing at all can
+  // run would turn a program that is merely over its thread budget into one
+  // that has stopped, so the last thread is always allowed through.
+  if (live >= p.ceiling && runnable > 0) return;
+  p.hired.fetch_add(1, std::memory_order_release);
+  // Detached: a helper only touches the pool, which outlives the process.
+  std::thread(helper_loop).detach();
+}
+
+int64_t env_count(const char *name, int64_t fallback) {
+  if (const char *text = getenv(name)) {
+    int n = atoi(text);
     if (n > 0) return n;
   }
+  return fallback;
+}
+
+int thread_count() {
   unsigned n = std::thread::hardware_concurrency();
-  return n == 0 ? 1 : (int)n;
+  return (int)env_count("SWORD_THREADS", n == 0 ? 1 : (int64_t)n);
 }
 
 void stop_pool();
@@ -141,10 +208,14 @@ Pool &pool() {
   static Pool *instance = [] {
     Pool *p = new Pool();
     int n = thread_count();
+    p->target = n;
+    p->ceiling = env_count("SWORD_MAX_THREADS", kDefaultCeiling);
+    if (p->ceiling < p->target) p->ceiling = p->target;
     for (int i = 0; i < n; i++) p->workers.push_back(new Worker());
     for (int i = 1; i < n; i++) p->threads.emplace_back(worker_loop, i);
     tl_worker = 0; // the thread that starts the pool owns queue 0
     atexit(stop_pool);
+    running.store(p, std::memory_order_release);
     return p;
   }();
   return *instance;
@@ -156,6 +227,13 @@ void stop_pool() {
   p.wake.notify_all();
   for (std::thread &t : p.threads)
     if (t.joinable()) t.join();
+  // Hired threads are detached, so give them a moment to notice. One that is
+  // still parked in a syscall stays there; everything it can reach outlives
+  // the process anyway.
+  for (int i = 0; i < 100 && p.hired.load(std::memory_order_acquire) > 0; i++) {
+    p.wake.notify_all();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
 }
 
 Task *fresh_task() {
@@ -215,7 +293,29 @@ void sword_scope_spawn(void *blob, sword_task_fn fn, const void *args,
     std::lock_guard<std::mutex> held(w.lock);
     w.queue.push_back(task);
   }
+  p.pending.fetch_add(1, std::memory_order_relaxed);
   p.wake.notify_one();
+  // Work arriving while threads are parked is the other half of the hiring
+  // rule: without this, a task spawned after everyone blocked would wait for
+  // the next blocking call to notice it.
+  cover_for_parked(p);
+}
+
+void sword_blocking_enter(void) {
+  Pool *p = running.load(std::memory_order_acquire);
+  if (!p) return;
+  tl_parked++;
+  p->parked.fetch_add(1, std::memory_order_acq_rel);
+  cover_for_parked(*p);
+}
+
+// Counts down only what this thread counted up: the pool may well have come
+// up while the thread was already inside the syscall.
+void sword_blocking_exit(void) {
+  if (tl_parked == 0) return;
+  tl_parked--;
+  running.load(std::memory_order_acquire)
+      ->parked.fetch_sub(1, std::memory_order_acq_rel);
 }
 
 uint16_t sword_scope_end(void *blob) {

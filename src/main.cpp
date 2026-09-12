@@ -109,7 +109,9 @@ bool assemble(const std::string &ll_path, const std::string &out_path,
   // read as an archive and not as more LLVM IR.
   std::string cmd = "clang -O" + opt_level + " -Wno-override-module -x ir " +
                     ll_path;
-  if (!runtime.empty()) cmd += " -x none " + runtime + " -lc++";
+  // -pthread because the scheduler runs threads, and on older Linux they are
+  // not in libc; on Darwin it is accepted and does nothing.
+  if (!runtime.empty()) cmd += " -x none " + runtime + " -lc++ -pthread";
   cmd += " -o " + out_path;
   int status = system(cmd.c_str());
   if (status != 0) {
