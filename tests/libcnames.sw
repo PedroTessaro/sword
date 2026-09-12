@@ -8,6 +8,7 @@
 import "std/fs"
 import "std/io"
 import "std/net"
+import "std/os"
 
 // Every one of these is a libc symbol the runtime itself calls.
 func shutdown(n u64) u64 {
@@ -67,6 +68,10 @@ func main() !int {
         return 4
     }
     try fs.Remove(path)
+
+    if os.Pid() == 0 {
+        return 5
+    }
 
     try io.Print("libc names are not hijacked\n")
     return 42

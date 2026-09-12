@@ -2,14 +2,41 @@
 #include "sword_rt.h"
 
 #include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
 #include <stdlib.h>
+#include <sys/resource.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 namespace {
 
 int32_t saved_argc = 0;
 char **saved_argv = nullptr;
+
+// A signal arrives on whatever thread the kernel likes, in a context where
+// almost nothing is safe to call. So the handler does the one thing that is —
+// writes a byte down a pipe — and the waiting is ordinary polled reading on the
+// other end, which the scheduler already knows how to put a task down for.
+int signal_pipe[2] = {-1, -1};
+
+void on_signal(int sig) {
+  unsigned char which = (unsigned char)sig;
+  ssize_t ignored = write(signal_pipe[1], &which, 1);
+  (void)ignored;
+}
+
+bool open_signal_pipe() {
+  if (signal_pipe[0] >= 0) return true;
+  if (pipe(signal_pipe) != 0) return false;
+  for (int end = 0; end < 2; end++) {
+    int flags = fcntl(signal_pipe[end], F_GETFL, 0);
+    fcntl(signal_pipe[end], F_SETFL, flags | O_NONBLOCK);
+  }
+  return true;
+}
 
 } // namespace
 
@@ -42,6 +69,100 @@ const char *sword_os_env(const char *name, int64_t name_len, int64_t *len) {
 }
 
 void sword_os_exit(int32_t code) { exit(code); }
+
+// Writing to a socket the other end has closed raises SIGPIPE, and the default
+// for SIGPIPE is to kill the process. No server wants that: the write should
+// fail and be handled like any other failure. Called once, from the first
+// listen or dial.
+void sword_os_ignore_sigpipe(void) {
+  static bool done = false;
+  if (done) return;
+  done = true;
+  signal(SIGPIPE, SIG_IGN);
+}
+
+// Starts catching a signal. Until this is called the default stands, so a
+// program that asks for nothing behaves as it always did.
+int32_t sword_os_catch(int32_t sig) {
+  if (!open_signal_pipe()) return -1;
+  struct sigaction action;
+  memset(&action, 0, sizeof(action));
+  action.sa_handler = on_signal;
+  sigemptyset(&action.sa_mask);
+  action.sa_flags = SA_RESTART;
+  return sigaction(sig, &action, nullptr) == 0 ? 0 : -1;
+}
+
+// The next signal that was asked for, waiting without holding a thread. -1 when
+// nothing was ever asked for.
+int32_t sword_os_wait_signal(void) {
+  if (signal_pipe[0] < 0) return -1;
+  while (true) {
+    unsigned char which = 0;
+    ssize_t n = read(signal_pipe[0], &which, 1);
+    if (n == 1) return (int32_t)which;
+    if (n == 0) return -1;
+    if (errno == EINTR) continue;
+    if (errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+
+    if (sword_in_task()) {
+      if (sword_park_fd(signal_pipe[0], 0, 0) < 0) return -1;
+      continue;
+    }
+    // Outside a task there is nothing to put down, so the thread waits.
+    sword_blocking_enter();
+    pollfd watch;
+    watch.fd = signal_pipe[0];
+    watch.events = POLLIN;
+    watch.revents = 0;
+    int ready = poll(&watch, 1, -1);
+    sword_blocking_exit();
+    if (ready < 0 && errno != EINTR) return -1;
+  }
+}
+
+// How many descriptors this process may have open, and raising it as far as the
+// hard limit allows. A server that has not done this stops at whatever the
+// shell handed it, which on a Mac is 256.
+int64_t sword_os_max_files(void) {
+  struct rlimit limit;
+  if (getrlimit(RLIMIT_NOFILE, &limit) != 0) return -1;
+  return (int64_t)limit.rlim_cur;
+}
+
+int64_t sword_os_raise_max_files(int64_t want) {
+  struct rlimit limit;
+  if (getrlimit(RLIMIT_NOFILE, &limit) != 0) return -1;
+  rlim_t target = want > 0 ? (rlim_t)want : limit.rlim_max;
+  if (limit.rlim_max != RLIM_INFINITY && target > limit.rlim_max)
+    target = limit.rlim_max;
+  if (target > limit.rlim_cur) {
+    limit.rlim_cur = target;
+    if (setrlimit(RLIMIT_NOFILE, &limit) != 0) return -1;
+  }
+  return (int64_t)limit.rlim_cur;
+}
+
+int64_t sword_os_pid(void) { return (int64_t)getpid(); }
+
+int32_t sword_os_kill(int64_t pid, int32_t sig) {
+  return kill((pid_t)pid, sig) == 0 ? 0 : -1;
+}
+
+// Null when it cannot be read, which the caller turns into an optional.
+const char *sword_os_hostname(int64_t *len) {
+  static char name[256];
+  if (gethostname(name, sizeof(name)) != 0) return nullptr;
+  name[sizeof(name) - 1] = '\0';
+  *len = (int64_t)strlen(name);
+  return name;
+}
+
+// How many cores the scheduler saw. Useful for sizing a pool of anything else.
+int64_t sword_os_cpus(void) {
+  long n = sysconf(_SC_NPROCESSORS_ONLN);
+  return n > 0 ? (int64_t)n : 1;
+}
 
 // clock_gettime rather than gettimeofday: nanosecond resolution, and a
 // monotonic clock that a system time adjustment cannot drag backwards.

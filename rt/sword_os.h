@@ -18,6 +18,22 @@ const char *sword_os_arg(int64_t i, int64_t *len);
 const char *sword_os_env(const char *name, int64_t name_len, int64_t *len);
 void sword_os_exit(int32_t code);
 
+// Writing to a socket whose other end has gone raises SIGPIPE, whose default is
+// to kill the process. Called once, from the first listen or dial.
+void sword_os_ignore_sigpipe(void);
+
+// Signals arrive down a pipe, because a handler may do almost nothing safely.
+// `catch` starts catching one; `wait` takes the next, without holding a thread.
+int32_t sword_os_catch(int32_t sig);
+int32_t sword_os_wait_signal(void);
+
+int64_t sword_os_max_files(void);
+int64_t sword_os_raise_max_files(int64_t want);
+int64_t sword_os_pid(void);
+int32_t sword_os_kill(int64_t pid, int32_t sig);
+const char *sword_os_hostname(int64_t *len);
+int64_t sword_os_cpus(void);
+
 // Nanoseconds on a clock that only moves forward, which is the one to measure
 // with: the wall clock can jump backwards.
 int64_t sword_time_mono(void);

@@ -8,7 +8,13 @@
 extern "C" {
 
 // Returns a listening socket, or -1. Port 0 asks the OS to choose one.
+// The plain form binds loopback; the other takes an address, empty meaning
+// every interface, and can share the port with other sockets.
 int32_t sword_net_listen(int32_t port, int32_t backlog);
+int32_t sword_net_listen_on(const char *host, int64_t host_len, int32_t port,
+                            int32_t backlog, int32_t reuse_port);
+// Writes the peer's address into `out` and returns its port, or -1.
+int32_t sword_net_peer(int32_t fd, char *out, int64_t out_len);
 int32_t sword_net_port(int32_t fd);
 int32_t sword_net_accept(int32_t fd);
 int32_t sword_net_dial(const char *host, int64_t host_len, int32_t port);

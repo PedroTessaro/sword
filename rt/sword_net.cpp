@@ -107,18 +107,43 @@ int await(int fd, bool writable) {
 
 extern "C" {
 
-int32_t sword_net_listen(int32_t port, int32_t backlog) {
+// `host` is the address to bind, empty meaning every interface. Loopback used to
+// be hard-coded here, which meant nothing could be served off the machine.
+//
+// `reuse_port` lets several sockets — several processes, usually — hold the
+// same port and have the kernel spread connections between them. It is how a
+// restart happens without dropping anything.
+int32_t sword_net_listen_on(const char *host, int64_t host_len, int32_t port,
+                            int32_t backlog, int32_t reuse_port) {
+  sword_os_ignore_sigpipe();
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) return -1;
 
   int on = 1;
   setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+#ifdef SO_REUSEPORT
+  if (reuse_port) setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on));
+#endif
 
   sockaddr_in addr;
   memset(&addr, 0, sizeof(addr));
   addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   addr.sin_port = htons((uint16_t)port);
+  if (host_len <= 0) {
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  } else {
+    char name[64];
+    if (host_len >= (int64_t)sizeof(name)) {
+      close(fd);
+      return -1;
+    }
+    memcpy(name, host, (size_t)host_len);
+    name[host_len] = '\0';
+    if (inet_pton(AF_INET, name, &addr.sin_addr) != 1) {
+      close(fd);
+      return -1;
+    }
+  }
 
   if (bind(fd, (sockaddr *)&addr, sizeof(addr)) < 0 ||
       listen(fd, backlog) < 0) {
@@ -127,6 +152,21 @@ int32_t sword_net_listen(int32_t port, int32_t backlog) {
   }
   unblock(fd);
   return fd;
+}
+
+int32_t sword_net_listen(int32_t port, int32_t backlog) {
+  const char *loopback = "127.0.0.1";
+  return sword_net_listen_on(loopback, 9, port, backlog, 0);
+}
+
+// Who is on the other end, written into `out` as dotted quad. Returns the port,
+// or -1. A log or a rate limiter needs this and had no way to ask.
+int32_t sword_net_peer(int32_t fd, char *out, int64_t out_len) {
+  sockaddr_in addr;
+  socklen_t len = sizeof(addr);
+  if (getpeername(fd, (sockaddr *)&addr, &len) < 0) return -1;
+  if (!inet_ntop(AF_INET, &addr.sin_addr, out, (socklen_t)out_len)) return -1;
+  return ntohs(addr.sin_port);
 }
 
 // Needed because a test can ask for port 0 and then has to find out which one
@@ -205,6 +245,7 @@ int32_t sword_net_dial_timeout(const char *host, int64_t host_len, int32_t port,
   char service[16];
   snprintf(service, sizeof(service), "%d", port);
 
+  sword_os_ignore_sigpipe();
   Parked parked; // name resolution blocks too, often for longer than connect
   addrinfo *found = nullptr;
   if (getaddrinfo(name, service, &hints, &found) != 0) return -1;

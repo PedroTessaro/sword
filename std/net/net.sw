@@ -7,6 +7,9 @@ import "std/time"
 // conditional compilation to tell them apart. Everything above this file is
 // written in Sword.
 extern func sword_net_listen(port i32, backlog i32) i32
+extern func sword_net_listen_on(host [*]u8, host_len i64, port i32,
+                                backlog i32, reuse_port i32) i32
+extern func sword_net_peer(fd i32, out [*]u8, out_len i64) i32
 extern func sword_net_port(fd i32) i32
 extern func sword_net_accept(fd i32) i32
 extern func sword_net_dial(host [*]u8, host_len i64, port i32) i32
@@ -31,10 +34,29 @@ struct Listener {
     fd i32
 }
 
-// Port 0 asks the operating system to pick one; ask the listener afterwards
-// which it got.
+// Loopback only: nothing off this machine can reach it. Port 0 asks the
+// operating system to pick one; ask the listener afterwards which it got.
 func Listen(port i32) !Listener {
     fd := sword_net_listen(port, DefaultBacklog)
+    if fd < 0 {
+        return error.ListenFailed
+    }
+    return Listener{fd: fd}
+}
+
+// The address to bind, empty meaning every interface — which is what a server
+// that is meant to be reached needs.
+//
+// `share` lets other sockets hold the same port and has the kernel spread
+// connections between them, which is how one process is replaced by another
+// without dropping anything in between.
+func ListenOn(host string, port i32, share bool) !Listener {
+    mut shared i32 = 0
+    if share {
+        shared = 1
+    }
+    fd := sword_net_listen_on(host.ptr, i64(host.len), port, DefaultBacklog,
+                              shared)
     if fd < 0 {
         return error.ListenFailed
     }
@@ -133,6 +155,25 @@ func (c *Conn) Write(from []u8) !void {
 
 func (c *Conn) WriteString(s string) !void {
     try c.Write([]u8(s))
+}
+
+// Who is on the other end. The address is written into space the caller gives,
+// because a connection has no allocator of its own.
+struct Peer {
+    Address string
+    Port    i32
+}
+
+func (c *Conn) Peer(mut into []u8) !Peer {
+    port := sword_net_peer(c.fd, into.ptr, i64(into.len))
+    if port < 0 {
+        return error.NoPeer
+    }
+    mut n u64 = 0
+    for n < into.len && into[n] != 0 {
+        n += 1
+    }
+    return Peer{Address: string(into[0..n]), Port: port}
 }
 
 func (c *Conn) Close() {
