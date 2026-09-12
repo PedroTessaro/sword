@@ -4,6 +4,12 @@ import "std/bytes"
 import "std/mem"
 import "std/net"
 import "std/strings"
+import "std/time"
+
+// A request that hangs is worse than one that fails, so the package-level
+// helpers come with a limit rather than none.
+const DefaultConnectTimeout = 10
+const DefaultReadTimeout = 30
 
 // The body points into memory taken from the allocator that was passed in, so
 // it stays valid until that allocator is reset or freed.
@@ -11,6 +17,19 @@ struct ClientResponse {
     Status  u64
     Headers Headers
     Body    []u8
+}
+
+// Connect and Read are separate because they fail for different reasons: a
+// host that is not there answers within a moment, while a slow reply is the
+// server thinking. Either may be zero to wait as long as the kernel would.
+struct Client {
+    Connect time.Duration
+    Read    time.Duration
+}
+
+func NewClient() Client {
+    return Client{Connect: time.Seconds(DefaultConnectTimeout),
+                  Read: time.Seconds(DefaultReadTimeout)}
 }
 
 // `HTTP/1.1 200 OK`
@@ -68,13 +87,13 @@ func readResponse(mut c *net.Conn, mut buf []u8) !ClientResponse {
     return out
 }
 
-func request(host string, port i32, method string, path string,
-             contentType string, body []u8,
-             mut a mem.Allocator) !ClientResponse {
+func (c *Client) Do(host string, port i32, method string, target string,
+                    contentType string, body []u8,
+                    mut a mem.Allocator) !ClientResponse {
     mut req := try bytes.New(a, 512)
     try req.WriteString(method)
     try req.WriteByte(32)
-    try req.WriteString(path)
+    try req.WriteString(target)
     try req.WriteString(" HTTP/1.1\r\nHost: ")
     try req.WriteString(host)
     try req.WriteString("\r\nConnection: close\r\n")
@@ -88,28 +107,43 @@ func request(host string, port i32, method string, path string,
     try req.WriteString("\r\n")
     try req.Write(body)
 
-    mut c := try net.Dial(host, port)
-    c.Write(req.Bytes()) catch |e| {
-        c.Close()
+    mut conn := try net.DialTimeout(host, port, c.Connect)
+    conn.SetTimeout(c.Read) catch {}
+    conn.Write(req.Bytes()) catch |e| {
+        conn.Close()
         return e
     }
 
     mut buf := mem.Alloc[u8](a, MaxHead) orelse return error.OutOfMemory
-    res := readResponse(&c, buf) catch |e| {
-        c.Close()
+    res := readResponse(&conn, buf) catch |e| {
+        conn.Close()
         return e
     }
-    c.Close()
+    conn.Close()
     return res
 }
 
-func Get(host string, port i32, path string,
-         mut a mem.Allocator) !ClientResponse {
+func (c *Client) Get(host string, port i32, target string,
+                     mut a mem.Allocator) !ClientResponse {
     mut empty := [0]u8{}
-    return try request(host, port, "GET", path, "", empty[..], a)
+    return try c.Do(host, port, "GET", target, "", empty[..], a)
 }
 
-func Post(host string, port i32, path string, contentType string, body []u8,
+func (c *Client) Post(host string, port i32, target string,
+                      contentType string, body []u8,
+                      mut a mem.Allocator) !ClientResponse {
+    return try c.Do(host, port, "POST", target, contentType, body, a)
+}
+
+// The same request through a default client, which is what most calls want.
+func Get(host string, port i32, target string,
+         mut a mem.Allocator) !ClientResponse {
+    client := NewClient()
+    return try client.Get(host, port, target, a)
+}
+
+func Post(host string, port i32, target string, contentType string, body []u8,
           mut a mem.Allocator) !ClientResponse {
-    return try request(host, port, "POST", path, contentType, body, a)
+    client := NewClient()
+    return try client.Post(host, port, target, contentType, body, a)
 }

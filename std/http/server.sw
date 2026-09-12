@@ -9,16 +9,48 @@ import "std/time"
 
 // A worker's arena. Each accept loop has its own, so no allocator is ever
 // shared between tasks — which the race checker would reject anyway.
-const ArenaSize = 262144
-const DefaultWorkers = 4
+const ArenaSize = 65536
+// One accept loop handles one connection at a time, so this is the number of
+// connections the server can be in the middle of. It can be far larger than
+// the core count because a task waiting on a socket tells the scheduler, which
+// covers for it — see docs/concurrency.md.
+const DefaultWorkers = 32
 // A client that connects and then says nothing would otherwise hold an accept
-// loop for good; four such clients would be the whole server.
+// loop for good.
 const DefaultTimeout = 15
 
+const MaxParams = 8
+
+struct Param {
+    Name, Value string
+}
+
 struct Request {
-    Method, Path, Proto string
+    // Target is the request line unchanged; Path and RawQuery are its two
+    // halves, split at `?`.
+    Method, Target, Path, RawQuery, Proto string
     Headers Headers
     Body    []u8
+    params  [MaxParams]Param
+    pcount  u64
+}
+
+// The segment a `{name}` in the route pattern matched, empty when the request
+// did not come through a Mux or the pattern had no such wildcard.
+func (r *Request) Param(name string) string {
+    for i in 0..r.pcount {
+        if strings.Equal(r.params[i].Name, name) {
+            return r.params[i].Value
+        }
+    }
+    return ""
+}
+
+// Still percent-encoded: decoding needs somewhere to put the result, and the
+// request has no allocator. Pass it through Unescape when the value can carry
+// more than letters and digits.
+func (r *Request) Query(name string) string {
+    return QueryValue(r.RawQuery, name)
 }
 
 struct Response {
@@ -40,8 +72,9 @@ func NewHeaders() Headers {
 // The body starts as an empty window into the read buffer, so it always points
 // at memory that is alive.
 func newRequest(buf []u8) Request {
-    return Request{Method: "", Path: "", Proto: "", Headers: NewHeaders(),
-                   Body: buf[0..0]}
+    return Request{Method: "", Target: "", Path: "", RawQuery: "", Proto: "",
+                   Headers: NewHeaders(), Body: buf[0..0],
+                   params: [MaxParams]Param{}, pcount: 0}
 }
 
 func (mut r *Response) SetHeader(name string, value string) !void {
@@ -73,7 +106,7 @@ func (mut r *Response) JSON(status u64, s string) !void {
     try r.body.WriteString(s)
 }
 
-// `METHOD SP PATH SP PROTO`
+// `METHOD SP TARGET SP PROTO`
 func parseRequestLine(text string, mut req *Request) !void {
     first := strings.IndexByte(text, 32)
     if first == text.len {
@@ -85,8 +118,12 @@ func parseRequestLine(text string, mut req *Request) !void {
         return error.BadRequestLine
     }
     req.Method = text[0..first]
-    req.Path = rest[0..second]
+    req.Target = rest[0..second]
     req.Proto = rest[second+1..rest.len]
+
+    split := ParseTarget(req.Target)
+    req.Path = split.Path
+    req.RawQuery = split.RawQuery
 }
 
 // Returns how many bytes of `buf` the request occupies, or zero when the peer
