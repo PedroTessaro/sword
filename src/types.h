@@ -143,6 +143,9 @@ private:
 };
 
 std::string type_str(const Type *t);
+// Strips the program package's own prefix, which is for the linker and not for
+// a person reading an error.
+std::string shown_name(const std::string &name);
 bool type_eq(const Type *a, const Type *b);
 bool assignable(const Type *from, const Type *to);
 

@@ -157,6 +157,11 @@ struct Loader {
     Package &pkg = prog.packages.back();
     pkg.import_path = import_path;
     pkg.dir = dir;
+    // The program's own package is qualified too. Without a prefix its
+    // functions land in the object file under the names they were written
+    // with, and a program with a function called `read` or `shutdown` would
+    // have the runtime call that instead of the one in libc.
+    pkg.prefix = "main.";
     if (!import_path.empty()) {
       pkg.name = last_segment(import_path);
       pkg.prefix = import_path + ".";
@@ -211,6 +216,7 @@ bool load_program(const std::string &input,
   out.packages.emplace_back();
   Package &pkg = out.packages.back();
   pkg.dir = parent_of(input);
+  pkg.prefix = "main.";
   if (!loader.parse_files(pkg, {input})) return false;
   if (with_tests && !loader.add_test_main(pkg)) return false;
 

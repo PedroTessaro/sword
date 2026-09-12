@@ -306,6 +306,15 @@ void TypeTable::layout_struct(Type *type, std::vector<Field> fields) {
   type->fields = std::move(fields);
 }
 
+// The program's own package is qualified in the object file so its names cannot
+// collide with libc's, but that prefix is a linker concern and has no business
+// in a diagnostic: the user wrote `Kind`, not `main.Kind`.
+std::string shown_name(const std::string &name) {
+  const std::string own = "main.";
+  if (name.compare(0, own.size(), own) == 0) return name.substr(own.size());
+  return name;
+}
+
 std::string type_str(const Type *t) {
   if (!t) return "<none>";
   switch (t->kind) {
@@ -326,12 +335,12 @@ std::string type_str(const Type *t) {
     return "[" + std::to_string(t->count) + "]" + type_str(t->elem);
   case TY_OPT: return t->untyped ? "nil" : "?" + type_str(t->elem);
   case TY_ATOMIC: return "atomic[" + type_str(t->elem) + "]";
-  case TY_ENUM: return t->name;
+  case TY_ENUM: return shown_name(t->name);
   case TY_STRUCT:
     if (t->is_error_union) return "!" + type_str(t->elem);
     if (t->is_optional) return "?" + type_str(t->elem);
     if (t->is_shared) return "shared[" + type_str(t->elem) + "]";
-    return t->name;
+    return shown_name(t->name);
   case TY_FUNC: {
     std::string s = "func(";
     for (size_t i = 0; i < t->params.size(); i++) {

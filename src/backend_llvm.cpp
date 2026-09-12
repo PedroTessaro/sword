@@ -41,7 +41,7 @@ std::string quote(const std::string &bytes) {
 // Sword's entry point returns `int`, but the process exit status is 32 bits,
 // so the real @main is a wrapper around it.
 const char *entry_name(const std::string &name) {
-  return name == "main" ? "sword_main" : nullptr;
+  return name == "main.main" ? "sword_main" : nullptr;
 }
 
 struct Emitter {
@@ -612,7 +612,7 @@ struct Emitter {
     for (const IrFunc &f : mod.funcs) {
       if (f.is_extern) continue;
       func(f);
-      if (f.name == "main") entry = &f;
+      if (f.name == "main.main") entry = &f;
     }
     if (entry) entry_wrapper(*entry);
 

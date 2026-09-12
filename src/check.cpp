@@ -777,7 +777,7 @@ struct Checker {
     for (const Field &want : constraint->methods) {
       if (find_method(owner, want.name)) continue;
       error(at, "%s does not satisfy %s: no method '%s'",
-            type_str(arg).c_str(), constraint->name.c_str(),
+            type_str(arg).c_str(), shown_name(constraint->name).c_str(),
             want.name.c_str());
       return false;
     }
@@ -1855,7 +1855,17 @@ struct Checker {
   }
 
   Type *check_struct_lit(Node *n) {
-    Type *type = n->type_expr ? resolve(n->type_expr) : lookup_type(n->name);
+    Type *type = nullptr;
+    if (n->type_expr) {
+      type = resolve(n->type_expr);
+    } else if (!n->text.empty()) {
+      // `pkg.Type{...}`: look it up where it was declared.
+      Node probe = *n;
+      probe.kind = ND_TYPE_NAME;
+      type = lookup_type(&probe);
+    } else {
+      type = lookup_type(n->name);
+    }
     if (!type || type->kind != TY_STRUCT || type->is_interface) {
       error(n->pos, "'%s' is not a struct type", n->name.c_str());
       return nullptr;
