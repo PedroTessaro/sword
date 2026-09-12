@@ -582,6 +582,19 @@ struct Parser {
   Node *for_stmt() {
     Node *n = make(ND_FOR, advance().pos);
 
+    // `for x := optional { }` runs while there is something there, which is the
+    // shape a queue is drained with.
+    if (kind() == TK_IDENT && kind(1) == TK_DEFINE) {
+      n->name_pos = peek().pos;
+      n->name = advance().text;
+      advance(); // ':='
+      n->form = 2; // FOR_OPTIONAL
+      n->cond = header_expr();
+      if (!n->cond) return nullptr;
+      n->body = block();
+      return n->body ? n : nullptr;
+    }
+
     bool named = kind() == TK_IDENT && kind(1) == TK_IN;
     // `for off, part in xs.chunks(n)` also binds where the piece starts.
     bool pair = kind() == TK_IDENT && kind(1) == TK_COMMA &&
