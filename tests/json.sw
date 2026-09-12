@@ -18,7 +18,7 @@ func main() !int {
     mut doc := try json.Parse([]u8(src), &arena)
     root := doc.Root()
 
-    if doc.Kind(root) != json.Object {
+    if doc.Kind(root) != json.Kind.Object {
         return 1
     }
     if !strings.Equal(doc.GetText(root, "name"), "sword") {
@@ -30,7 +30,7 @@ func main() !int {
     }
 
     tags := doc.Get(root, "tags") orelse return 4
-    if doc.Kind(tags) != json.Array || doc.Len(tags) != 2 {
+    if doc.Kind(tags) != json.Kind.Array || doc.Len(tags) != 2 {
         return 5
     }
     second := doc.At(tags, 1) orelse return 6
@@ -43,7 +43,7 @@ func main() !int {
         return 9
     }
     empty := doc.Get(root, "nothing") orelse return 10
-    if doc.Kind(empty) != json.Null {
+    if doc.Kind(empty) != json.Kind.Null {
         return 11
     }
     nested := doc.Get(root, "nested") orelse return 12

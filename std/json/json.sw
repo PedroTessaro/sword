@@ -9,17 +9,21 @@ import "std/mem"
 // index rather than by pointer. That keeps everything in a single allocation
 // and sidesteps the recursive type a tree would otherwise need.
 
-const Null = 0
-const Bool = 1
-const Number = 2
-const Str = 3
-const Array = 4
-const Object = 5
+// What a node is. Naming the set is what lets a switch over it be checked for
+// completeness.
+enum Kind u8 {
+    Null
+    Bool
+    Number
+    Str
+    Array
+    Object
+}
 
 const noNode = 18446744073709551615
 
 struct Node {
-    kind   u8
+    kind   Kind
     truth  bool
     number f64
     text   string
@@ -37,7 +41,7 @@ func (d *Document) Root() u64 {
     return 0
 }
 
-func (d *Document) Kind(at u64) u8 {
+func (d *Document) Kind(at u64) Kind {
     return d.nodes.At(at).kind
 }
 
@@ -89,7 +93,7 @@ func (d *Document) Get(at u64, key string) ?u64 {
 // Convenience for the shape most callers want: a string member of an object.
 func (d *Document) GetText(at u64, key string) string {
     if found := d.Get(at, key) {
-        if d.nodes.At(found).kind == Str {
+        if d.nodes.At(found).kind == Kind.Str {
             return d.nodes.At(found).text
         }
     }
@@ -98,7 +102,7 @@ func (d *Document) GetText(at u64, key string) string {
 
 func (d *Document) GetNumber(at u64, key string, fallback f64) f64 {
     if found := d.Get(at, key) {
-        if d.nodes.At(found).kind == Number {
+        if d.nodes.At(found).kind == Kind.Number {
             return d.nodes.At(found).number
         }
     }
@@ -116,7 +120,7 @@ struct parser {
     a     mem.Allocator
 }
 
-func newNode(kind u8) Node {
+func newNode(kind Kind) Node {
     return Node{kind: kind, truth: false, number: 0.0, text: "", key: "",
                 first: noNode, next: noNode, count: 0}
 }
@@ -314,7 +318,7 @@ func parseNumber(s string) !f64 {
     return sign * whole
 }
 
-func (mut p *parser) literal(word string, kind u8, truth bool) !u64 {
+func (mut p *parser) literal(word string, kind Kind, truth bool) !u64 {
     if p.at + word.len > p.input.len {
         return error.BadJSON
     }
@@ -347,20 +351,20 @@ func (mut p *parser) value() !u64 {
         return try p.container(93, false)
     }
     if c == 34 {
-        mut node := newNode(Str)
+        mut node := newNode(Kind.Str)
         node.text = try p.text()
         return try p.add(node)
     }
     if c == 116 {
-        return try p.literal("true", Bool, true)
+        return try p.literal("true", Kind.Bool, true)
     }
     if c == 102 {
-        return try p.literal("false", Bool, false)
+        return try p.literal("false", Kind.Bool, false)
     }
     if c == 110 {
-        return try p.literal("null", Null, false)
+        return try p.literal("null", Kind.Null, false)
     }
-    mut node := newNode(Number)
+    mut node := newNode(Kind.Number)
     node.number = try p.number()
     return try p.add(node)
 }
@@ -369,9 +373,9 @@ func (mut p *parser) value() !u64 {
 // they share one loop.
 func (mut p *parser) container(closing u8, keyed bool) !u64 {
     p.at += 1
-    mut kind u8 = Array
+    mut kind := Kind.Array
     if keyed {
-        kind = Object
+        kind = Kind.Object
     }
     at := try p.add(newNode(kind))
     mut last u64 = noNode
