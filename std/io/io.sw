@@ -46,6 +46,10 @@ func (mut w *Writer) Write(p []u8) !void {
     }
 }
 
+func (mut w *Writer) WriteString(s string) !void {
+    try w.Write([]u8(s))
+}
+
 func Write(fd i32, s string) !u64 {
     n := write(fd, s.ptr, s.len)
     if n < 0 {
