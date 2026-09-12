@@ -4,10 +4,11 @@
 
 import "std/io"
 import "std/net"
+import "std/time"
 
 func silent(l *net.Listener, mut ok []u64) !void {
     mut c := try l.Accept()
-    try c.SetTimeout(300)
+    try c.SetTimeout(time.Millis(300))
     mut buf := [64]u8{}
     c.Read(buf[..]) catch |e| {
         ok[0] = 1
@@ -20,7 +21,7 @@ func silent(l *net.Listener, mut ok []u64) !void {
 func quiet(port i32) !void {
     mut c := try net.Dial("127.0.0.1", port)
     mut wait := [1]u8{}
-    c.SetTimeout(2000) catch {}
+    c.SetTimeout(time.Seconds(2)) catch {}
     c.Read(wait[..]) catch {}
     c.Close()
 }

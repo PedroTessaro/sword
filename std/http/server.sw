@@ -5,6 +5,7 @@ import "std/fmt"
 import "std/mem"
 import "std/net"
 import "std/strings"
+import "std/time"
 
 // A worker's arena. Each accept loop has its own, so no allocator is ever
 // shared between tasks — which the race checker would reject anyway.
@@ -12,7 +13,7 @@ const ArenaSize = 262144
 const DefaultWorkers = 4
 // A client that connects and then says nothing would otherwise hold an accept
 // loop for good; four such clients would be the whole server.
-const DefaultTimeout = 15000
+const DefaultTimeout = 15
 
 struct Request {
     Method, Path, Proto string
@@ -224,7 +225,7 @@ func acceptLoop(s *Server, h Handler) !void {
     mut arena := mem.NewArena(backing[..])
     for {
         mut c := s.listener.Accept() catch return
-        c.SetTimeout(DefaultTimeout) catch {}
+        c.SetTimeout(time.Seconds(DefaultTimeout)) catch {}
         handleConn(&c, h, &arena) catch {}
         c.Close()
         arena.Reset()

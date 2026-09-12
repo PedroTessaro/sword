@@ -1,5 +1,7 @@
 package net
 
+import "std/time"
+
 // The socket layer is the one place the standard library leans on C: address
 // structures are laid out differently on BSD and Linux, and Sword has no
 // conditional compilation to tell them apart. Everything above this file is
@@ -8,6 +10,8 @@ extern func sword_net_listen(port i32, backlog i32) i32
 extern func sword_net_port(fd i32) i32
 extern func sword_net_accept(fd i32) i32
 extern func sword_net_dial(host [*]u8, host_len i64, port i32) i32
+extern func sword_net_dial_timeout(host [*]u8, host_len i64, port i32,
+                                   millis i64) i32
 extern func sword_net_read(fd i32, buf [*]u8, len i64) i64
 extern func sword_net_write(fd i32, buf [*]u8, len i64) i64
 extern func sword_net_timeout(fd i32, millis i64) i32
@@ -61,10 +65,23 @@ func Dial(host string, port i32) !Conn {
     return Conn{fd: fd}
 }
 
-// A connection that goes quiet should not hold a worker forever. Zero waits
-// indefinitely, which is the default a socket comes with.
-func (c *Conn) SetTimeout(millis i64) !void {
-    if sword_net_timeout(c.fd, millis) < 0 {
+// The kernel gives up on a connection after a minute or more, which is far
+// too long for anything a person is waiting on. This bounds it.
+func DialTimeout(host string, port i32, limit time.Duration) !Conn {
+    fd := sword_net_dial_timeout(host.ptr, i64(host.len), port, limit.AsMillis())
+    if fd == -2 {
+        return error.Timeout
+    }
+    if fd < 0 {
+        return error.DialFailed
+    }
+    return Conn{fd: fd}
+}
+
+// A connection that goes quiet should not hold a task forever. A zero
+// duration waits indefinitely, which is what a socket does by default.
+func (c *Conn) SetTimeout(limit time.Duration) !void {
+    if sword_net_timeout(c.fd, limit.AsMillis()) < 0 {
         return error.TimeoutNotSet
     }
 }
