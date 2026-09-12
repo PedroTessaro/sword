@@ -438,6 +438,53 @@ try w.EndArray()
 try w.EndObject()
 ```
 
+### `std/os`
+
+```sword
+func Argc() u64                   // including the program's own name
+func Arg(i u64) string            // empty past the end
+func Args(mut into []string) []string
+func Env(name string) ?string     // nil when unset
+func EnvOr(name string, fallback string) string
+func Exit(code i32)               // no defers run, no output is flushed
+```
+
+`Args` fills an array you supply instead of allocating, and returns the part of
+it that was used:
+
+```sword
+mut room := [8]string{}
+args := os.Args(room[..])
+```
+
+### `std/time`
+
+```sword
+func Nanos(n i64) Duration
+func Micros(n i64) Duration
+func Millis(n i64) Duration
+func Seconds(n i64) Duration
+
+func (d Duration) AsNanos() i64
+func (d Duration) AsMicros() i64
+func (d Duration) AsMillis() i64
+func (d Duration) AsSeconds() f64
+func (d Duration) Add(other Duration) Duration
+func (d Duration) Less(other Duration) bool
+
+func Now() Instant                // monotonic: measure with this one
+func Since(start Instant) Duration
+func (t Instant) Add(d Duration) Instant
+func (t Instant) Until() Duration // negative once it is past
+
+func Unix() i64                   // wall clock seconds: stamp with this one
+func UnixNanos() i64
+func Sleep(d Duration)            // the scheduler is told first
+```
+
+A method needs a value with an address, so `time.Since(start).AsMillis()` does
+not compile — bind the duration first.
+
 ### `std/net`
 
 TCP over the loopback interface. Port 0 asks the operating system to choose.
@@ -449,16 +496,22 @@ func (l *Listener) Accept() !Conn
 func (l *Listener) Close()                   // wakes a blocked Accept
 
 func Dial(host string, port i32) !Conn
-func (c *Conn) SetTimeout(millis i64) !void  // 0 waits forever
+func DialTimeout(host string, port i32, limit time.Duration) !Conn
+func (c *Conn) SetTimeout(limit time.Duration) !void  // 0 waits forever
 func (c *Conn) Read(mut into []u8) !u64      // 0 means the peer is done
 func (c *Conn) Write(from []u8) !void
 func (c *Conn) WriteString(s string) !void
 func (c *Conn) Close()
 ```
 
+Every call here parks the thread in the kernel and tells the scheduler so, which
+is what lets many more connections be in flight than the machine has cores. See
+[Concurrency](concurrency.md#blocking-io).
+
 ### `std/http`
 
-HTTP/1.1 with keep-alive. No TLS and no chunked transfer encoding.
+HTTP/1.1 with keep-alive, routing and timeouts. No TLS and no chunked transfer
+encoding.
 
 ```sword
 interface Handler {
@@ -467,14 +520,42 @@ interface Handler {
 
 func Listen(port i32) !Server
 func (s *Server) Port() i32
-func (s *Server) Serve(h Handler) !void
+func (s *Server) Serve(h Handler) !void      // 32 accept loops
 func (s *Server) ServeWith(h Handler, workers int) !void
 func (s *Server) Close()                     // stops a running server
 ```
 
-A `Request` carries `Method`, `Path`, `Proto`, `Headers` and `Body`. The
-strings point into the connection's read buffer, so they are valid for as long
-as the handler runs.
+A `Request` carries `Method`, `Target`, `Path`, `RawQuery`, `Proto`, `Headers`
+and `Body`. `Target` is the request line unchanged; `Path` and `RawQuery` are
+its two halves. The strings point into the connection's read buffer, so they are
+valid for as long as the handler runs.
+
+```sword
+func (r *Request) Param(name string) string  // what a {name} route matched
+func (r *Request) Query(name string) string  // still percent-encoded
+```
+
+Routing. A `{name}` in a pattern matches one path segment; a path that matched
+under another method answers 405 rather than 404. Up to 64 routes, no
+allocation:
+
+```sword
+func NewMux() Mux
+func (mut m *Mux) Handle(method string, pattern string, h Handler) !void
+func (mut m *Mux) Get(pattern string, h Handler) !void
+func (mut m *Mux) Post(pattern string, h Handler) !void
+func (mut m *Mux) Put(pattern string, h Handler) !void
+func (mut m *Mux) Delete(pattern string, h Handler) !void
+```
+
+Targets and query strings, decoding into space you provide:
+
+```sword
+func ParseTarget(target string) Target       // { Path, RawQuery }
+func QueryValue(query string, name string) string
+func Unescape(s string, mut into []u8) !string   // %20 and + become a space
+func Escape(s string, mut into []u8) !string
+```
 
 ```sword
 func (mut r *Response) Printf(format string, args ...any) !void
@@ -493,11 +574,25 @@ its accept loop rather than holding it.
 The client returns a response whose body lives in the allocator you pass in:
 
 ```sword
-func Get(host string, port i32, path string,
+func NewClient() Client                      // 10s connect, 30s read
+func (c *Client) Get(host string, port i32, target string,
+                     mut a mem.Allocator) !ClientResponse
+func (c *Client) Post(host string, port i32, target string,
+                      contentType string, body []u8,
+                      mut a mem.Allocator) !ClientResponse
+func (c *Client) Do(host string, port i32, method string, target string,
+                    contentType string, body []u8,
+                    mut a mem.Allocator) !ClientResponse
+
+// The same through a default client.
+func Get(host string, port i32, target string,
          mut a mem.Allocator) !ClientResponse
-func Post(host string, port i32, path string, contentType string, body []u8,
+func Post(host string, port i32, target string, contentType string, body []u8,
           mut a mem.Allocator) !ClientResponse
 ```
+
+`Client` has two `time.Duration` fields, `Connect` and `Read`, either of which
+may be zero to wait as long as the kernel would.
 
 ## Command line
 
@@ -528,7 +623,8 @@ A `.sw` file compiles alone. A directory compiles as one package.
 | | |
 |---|---|
 | `SWORD_ROOT` | where the compiler looks for the standard library |
-| `SWORD_THREADS` | worker count, defaults to one per core |
+| `SWORD_THREADS` | fixed worker count, defaults to one per core |
+| `SWORD_MAX_THREADS` | how far the pool may grow to cover blocked tasks, default 512 |
 
 ## Reserved but not implemented
 

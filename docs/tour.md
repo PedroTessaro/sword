@@ -692,6 +692,66 @@ Eight tasks, each writing its own piece. The closing brace of `scope` waits for
 all of them. Nothing here is a convention you have to remember — the compiler
 rejects the versions of this program that would race.
 
+## The outside world
+
+A program that cannot be told anything is not much use. `std/os` has the
+arguments and the environment:
+
+```sword
+import "std/io"
+import "std/os"
+import "std/strings"
+
+func main() !int {
+    mut room := [8]string{}
+    args := os.Args(room[..])
+
+    mut port u64 = 8080
+    if args.len > 1 {
+        port = try strings.ParseU64(args[1])
+    }
+
+    host := os.EnvOr("HOST", "127.0.0.1")
+    try io.Printf("listening on {}:{}\n", host, port)
+    return 0
+}
+```
+
+`Args` fills an array you hand it rather than allocating one — the same rule as
+everywhere else in the standard library, and the reason `os.Args()` takes an
+argument at all. `args[0]` is the program's own name, as in C. `Env` gives back
+an optional, because a variable that is set to nothing is not the same as one
+that is not set:
+
+```sword
+if level := os.Env("LOG_LEVEL") {
+    try io.Printf("logging at {}\n", level)
+}
+```
+
+`std/time` has the clocks. Two of them: `Now` reads a clock that only counts
+forward, for measuring, and `Unix` reads the wall clock, for stamping.
+
+```sword
+import "std/time"
+
+start := time.Now()
+work()
+took := time.Since(start)
+try io.Printf("took {}ms\n", took.AsMillis())
+```
+
+A `Duration` is a length of time rather than a bare number, so a function that
+takes one cannot be handed seconds where it wanted milliseconds:
+
+```sword
+time.Sleep(time.Millis(250))
+try conn.SetTimeout(time.Seconds(5))
+```
+
+A method needs a value with an address, so `time.Since(start).AsMillis()` is
+rejected — bind the duration to a name first, as above.
+
 ## Build modes
 
 Bounds checks and overflow checks cost something, and the cost lands in the

@@ -330,6 +330,49 @@ Task arguments up to 96 bytes ride inside the task itself, and finished tasks
 go back on a per-worker free list, so spawning in a loop does not touch the
 allocator.
 
+## Blocking I/O
+
+A task cannot be suspended halfway through. So a task sitting in `read()` is a
+thread sitting in `read()` — there is no way to put the task aside and use the
+thread for something else.
+
+Taken literally that would cap a server at one connection per core. Ten cores,
+ten conversations, and the eleventh client waits for one of them to finish.
+
+What happens instead is that every call that parks in the kernel says so first:
+
+```
+sword_blocking_enter();
+n = read(fd, buf, len);
+sword_blocking_exit();
+```
+
+A parked thread stops counting as scheduler capacity. If that leaves tasks
+queued with nothing to run them, the pool hires one more thread, and the hired
+thread retires again after 200 ms of finding no work. So the pool breathes with
+the number of tasks currently waiting on something, and the limit moves from
+cores to threads — from ten to hundreds.
+
+This is the same trick the Go runtime uses on the way into a syscall. It is not
+as good as suspending the task: each waiting task still costs a thread and its
+stack. It is a great deal cheaper than the alternative, which is teaching every
+task to unwind and resume.
+
+Nothing in your program calls those two functions. Everything in `std/net` and
+`std/http` is already bracketed, and so is `time.Sleep`. If you declare an
+`extern` function of your own that blocks, wrap the call the same way.
+
+Two numbers control the shape of it:
+
+| Variable | Meaning |
+|---|---|
+| `SWORD_THREADS` | Fixed workers. Defaults to one per core. |
+| `SWORD_MAX_THREADS` | How large the pool may grow. Defaults to 512. |
+
+The ceiling is a brake rather than a wall. A pool at its limit with every
+thread parked and work still queued would be a program that has stopped, so in
+that one case the runtime goes over the limit instead.
+
 ## Shared counters
 
 `reduce` covers accumulating over a loop. For anything else — a hit counter, a
@@ -375,7 +418,9 @@ implemented.
 they come from. A slice returned straight out of a call, never bound to
 anything, is not tracked — there is nothing to compare it against.
 
-**Async I/O.** I/O is synchronous. A task blocked on a socket holds its worker.
-Making tasks suspend on I/O the way goroutines do would need segmented stacks
-or a state-machine transform in the compiler, and that is a much bigger project
-than the rest of the scheduler put together.
+**Async I/O.** I/O is synchronous. A task blocked on a socket holds a thread —
+the pool grows to cover it, which is enough for hundreds of connections but not
+for tens of thousands. Getting there means tasks that can suspend on I/O the
+way a goroutine does, which needs either segmented stacks or a state-machine
+transform in the compiler: a bigger project than the rest of the scheduler put
+together.

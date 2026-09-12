@@ -98,10 +98,16 @@ whole concurrency story with a work-stealing scheduler behind it.
 
 The standard library covers memory (`std/mem`), byte buffers (`std/bytes`),
 byte-level strings (`std/strings`), generic containers (`std/collections`),
-printing and formatting (`std/io`, `std/fmt`), JSON (`std/json`), TCP
-(`std/net`), and HTTP/1.1 with keep-alive, server and client (`std/http`).
+printing and formatting (`std/io`, `std/fmt`), JSON (`std/json`), arguments and
+environment (`std/os`), clocks and durations (`std/time`), TCP (`std/net`), and
+HTTP/1.1 with keep-alive, routing and timeouts, server and client
+(`std/http`).
 
-Not there yet: `shared[T]`, channels, and function values.
+I/O is blocking, but a task waiting on a socket tells the scheduler, which grows
+the thread pool to cover it — so a server handles far more connections at once
+than the machine has cores.
+
+Not there yet: `shared[T]`, channels, function values, file I/O, and TLS.
 
 ## License
 
