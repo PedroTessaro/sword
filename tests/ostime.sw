@@ -22,7 +22,7 @@ func main() !int {
         return 3
     }
 
-    if found := os.Env("SWORD_DEFINITELY_NOT_SET") {
+    if os.Env("SWORD_DEFINITELY_NOT_SET") != nil {
         return 4
     }
     if os.EnvOr("SWORD_DEFINITELY_NOT_SET", "fallback").len != 8 {

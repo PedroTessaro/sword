@@ -1213,6 +1213,13 @@ struct Lowerer {
 
     case ND_BINARY:
       if (n->op == TK_ANDAND || n->op == TK_OROR) return short_circuit(n);
+      if (n->form == 1) { // a test against nil, not a comparison
+        Node *box = n->lhs->kind == ND_NIL_LIT ? n->rhs : n->lhs;
+        int present = opt_present(expr(box), box->type);
+        if (n->op == TK_NE) return present;
+        return binop(IR_EQ, present, constant(0, types.bool_ty),
+                     types.bool_ty);
+      }
       if (n->lhs->type->kind == TY_STRING &&
           (n->op == TK_EQ || n->op == TK_NE)) {
         int same = string_equal(expr(n->lhs), expr(n->rhs));

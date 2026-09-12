@@ -34,10 +34,22 @@ func main() int {
     mut fallback := Node{key: 40, next: nil}
     miss := find(&a, 9) orelse &fallback
 
-    // A plain value assigned into an optional is wrapped where it is stored,
-    // so the literal itself stays a plain u64.
+    // Comparing against nil asks whether it is absent, which works for both
+    // shapes: the pointer one and the { has, value } one.
+    if find(&a, 9) != nil {
+        return 92
+    }
+    if find(&a, 3) == nil {
+        return 93
+    }
     mut count ?u64 = nil
+    if count != nil {
+        return 94
+    }
     count = 5
+    if count == nil || nil == count {
+        return 95
+    }
     if (count orelse 0) != 5 {
         return 96
     }

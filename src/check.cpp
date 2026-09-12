@@ -1040,6 +1040,14 @@ struct Checker {
     bool is_ptr = lhs->kind == TY_PTR || lhs->kind == TY_RAWPTR;
     switch (n->op) {
     case TK_EQ: case TK_NE:
+      // `opt == nil` asks whether it is absent. Two optionals cannot be
+      // compared: that would mean comparing the payloads, and the payload of an
+      // absent one does not exist.
+      if (is_optional(lhs) &&
+          (n->lhs->kind == ND_NIL_LIT || n->rhs->kind == ND_NIL_LIT)) {
+        n->form = CMP_NIL;
+        return n->type = types.bool_ty;
+      }
       // Strings compare by content, which is the only comparison here that is
       // not a single instruction. Everything else is a value or an address.
       if (!is_numeric(lhs) && lhs->kind != TY_BOOL && !is_ptr &&
@@ -2066,6 +2074,9 @@ struct Checker {
   // A `return` in a fallible function has four shapes; which one it is decides
   // what lowering writes into the { code, value } pair.
   enum ReturnForm { RET_PLAIN, RET_WRAP, RET_ERROR, RET_FORWARD, RET_OK };
+  // A comparison against `nil`, kept in `form`: it is a presence test rather
+  // than a comparison of two values.
+  enum CompareForm { CMP_VALUES, CMP_NIL };
   // How a call reaches its target, kept in `form`.
   enum CallForm {
     CALL_DIRECT, CALL_METHOD, CALL_DYNAMIC, CALL_ATOMIC, CALL_INDIRECT
