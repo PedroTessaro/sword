@@ -38,8 +38,11 @@ struct Request {
     // Target is the request line unchanged; Path and RawQuery are its two
     // halves, split at `?`.
     Method, Target, Path, RawQuery, Proto string
-    Headers Headers
-    Body    []u8
+    // Who sent it, as dotted quad. A log or a rate limiter wants this and had
+    // no way to ask; it is read once per connection rather than per request.
+    RemoteAddr string
+    Headers    Headers
+    Body       []u8
     params  [MaxParams]Param
     pcount  u64
 }
@@ -80,9 +83,9 @@ func NewHeaders() Headers {
 
 // The body starts as an empty window into the read buffer, so it always points
 // at memory that is alive.
-func newRequest(buf []u8) Request {
+func newRequest(buf []u8, from string) Request {
     return Request{Method: "", Target: "", Path: "", RawQuery: "", Proto: "",
-                   Headers: NewHeaders(), Body: buf[0..0],
+                   RemoteAddr: from, Headers: NewHeaders(), Body: buf[0..0],
                    params: [MaxParams]Param{}, pcount: 0}
 }
 
@@ -219,7 +222,7 @@ func writeResponse(mut c *net.Conn, mut res *Response, keep bool,
 }
 
 func handleConn(mut c *net.Conn, h Handler, mut a mem.Allocator,
-                s *Server) !void {
+                s *Server, from string) !void {
     mut buf := mem.Alloc[u8](a, MaxHead) orelse return error.OutOfMemory
     mut out := try bytes.New(a, 1024)
     mut body := try bytes.New(a, 1024)
@@ -230,7 +233,7 @@ func handleConn(mut c *net.Conn, h Handler, mut a mem.Allocator,
         // is what a keep-alive idle timeout is.
         c.SetDeadline(time.Now().Add(time.Seconds(RequestTimeout))) catch {}
 
-        mut req := newRequest(buf)
+        mut req := newRequest(buf, from)
         got := try readRequest(c, buf, &req)
         if got == 0 {
             return
@@ -264,10 +267,20 @@ struct Server {
     failed   atomic[u64]
 }
 
+// Loopback only, which is what a test wants and not what a server does.
 func Listen(port i32) !Server {
     return Server{listener: try net.Listen(port), live: atomic[u64](0),
                   accepted: atomic[u64](0), served: atomic[u64](0),
                   failed: atomic[u64](0)}
+}
+
+// The address to bind, empty meaning every interface. `share` lets another
+// process hold the same port, which is how one is replaced by another without
+// dropping connections in between.
+func ListenOn(host string, port i32, share bool) !Server {
+    return Server{listener: try net.ListenOn(host, port, share),
+                  live: atomic[u64](0), accepted: atomic[u64](0),
+                  served: atomic[u64](0), failed: atomic[u64](0)}
 }
 
 // Connections being served right now.
@@ -309,7 +322,14 @@ func serveConn(c net.Conn, h Handler, s *Server) !void {
     mut backing := [ArenaSize]u8{}
     mut arena := mem.NewArena(backing[..])
     conn.SetTimeout(time.Seconds(DefaultTimeout)) catch {}
-    handleConn(&conn, h, &arena, s) catch {}
+
+    // Asked once, on the task's own stack: the address does not change and the
+    // request only borrows it.
+    mut room := [24]u8{}
+    peer := conn.Peer(room[..]) catch net.Peer{Address: "", Port: 0}
+    from := peer.Address
+
+    handleConn(&conn, h, &arena, s, from) catch {}
     conn.Close()
     s.live.Sub(1)
 }
