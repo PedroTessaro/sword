@@ -213,7 +213,8 @@ func writeResponse(mut c *net.Conn, mut res *Response, keep bool,
     try c.Write(out.Bytes())
 }
 
-func handleConn(mut c *net.Conn, h Handler, mut a mem.Allocator) !void {
+func handleConn(mut c *net.Conn, h Handler, mut a mem.Allocator,
+                s *Server) !void {
     mut buf := mem.Alloc[u8](a, MaxHead) orelse return error.OutOfMemory
     mut out := try bytes.New(a, 1024)
     mut body := try bytes.New(a, 1024)
@@ -234,7 +235,9 @@ func handleConn(mut c *net.Conn, h Handler, mut a mem.Allocator) !void {
         mut res := Response{Status: 200, Headers: NewHeaders(), body: body}
         h.Serve(&req, &res) catch {
             res.Status = 500
+            s.failed.Add(1)
         }
+        s.served.Add(1)
         body = res.body
 
         keep := wantsKeepAlive(&req)
@@ -247,17 +250,39 @@ func handleConn(mut c *net.Conn, h Handler, mut a mem.Allocator) !void {
 
 struct Server {
     listener net.Listener
-    // How many connections are being served right now. An atomic because every
-    // connection is its own task and they all count themselves.
-    live atomic[u64]
+    // Counted rather than guessed: a server nobody can see inside is a server
+    // nobody can run. Atomics because every connection is its own task and they
+    // all count themselves.
+    live     atomic[u64]
+    accepted atomic[u64]
+    served   atomic[u64]
+    failed   atomic[u64]
 }
 
 func Listen(port i32) !Server {
-    return Server{listener: try net.Listen(port), live: atomic[u64](0)}
+    return Server{listener: try net.Listen(port), live: atomic[u64](0),
+                  accepted: atomic[u64](0), served: atomic[u64](0),
+                  failed: atomic[u64](0)}
 }
 
+// Connections being served right now.
 func (s *Server) Live() u64 {
     return s.live.Load()
+}
+
+// Connections taken since the server started.
+func (s *Server) Accepted() u64 {
+    return s.accepted.Load()
+}
+
+// Requests answered, and of those the ones whose handler failed and became a
+// 500. A rate worth watching.
+func (s *Server) Served() u64 {
+    return s.served.Load()
+}
+
+func (s *Server) Failed() u64 {
+    return s.failed.Load()
 }
 
 // Useful when the port was left to the operating system to choose.
@@ -279,7 +304,7 @@ func serveConn(c net.Conn, h Handler, s *Server) !void {
     mut backing := [ArenaSize]u8{}
     mut arena := mem.NewArena(backing[..])
     conn.SetTimeout(time.Seconds(DefaultTimeout)) catch {}
-    handleConn(&conn, h, &arena) catch {}
+    handleConn(&conn, h, &arena, s) catch {}
     conn.Close()
     s.live.Sub(1)
 }
@@ -302,6 +327,7 @@ func (s *Server) ServeWith(h Handler, most u64) !void {
             }
             c := s.listener.Accept() catch break
             s.live.Add(1)
+            s.accepted.Add(1)
             spawn serveConn(c, h, s)
         }
     }

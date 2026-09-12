@@ -49,4 +49,17 @@ int32_t sword_in_task(void);
 int sword_park_timer(int64_t deadline_ns);
 // Drops anything waiting on a descriptor about to be closed.
 void sword_forget_fd(int32_t fd);
+
+// What the scheduler is doing right now. Laid out to match `runtime.Stats` on
+// the Sword side field for field, which is why that one is an extern struct.
+struct sword_stats {
+  int64_t threads;  // workers, including any hired to cover a parked one
+  int64_t queued;   // spawned and not yet picked up
+  int64_t parked;   // threads stopped in the kernel
+  int64_t stacks;   // task stacks alive, in use or pooled
+  int64_t started;  // tasks begun since the program did
+  int64_t finished; // and tasks ended
+};
+
+void sword_runtime_stats(struct sword_stats *out);
 }

@@ -187,6 +187,10 @@ struct Pool {
   std::atomic<int64_t> pending{0}; // spawned and not yet picked up
   std::atomic<int64_t> parked{0};  // threads sitting in a syscall
   std::atomic<int64_t> hired{0};   // extra threads covering for them
+  // Counted for the sake of whoever has to run this in production.
+  std::atomic<int64_t> stacks{0};
+  std::atomic<int64_t> started{0};
+  std::atomic<int64_t> finished{0};
   std::mutex hire_lock;
 };
 
@@ -500,7 +504,9 @@ Fiber *fresh_fiber(Task *task) {
       fputs("sword: out of memory for a task stack\n", stderr);
       abort();
     }
+    p.stacks.fetch_add(1, std::memory_order_relaxed);
   }
+  p.started.fetch_add(1, std::memory_order_relaxed);
   f->task = task;
   prepare(f);
   return f;
@@ -511,11 +517,13 @@ Fiber *fresh_fiber(Task *task) {
 void retire_fiber(Fiber *f) {
   Pool &p = pool();
   Worker &w = *p.workers[tl_worker >= 0 ? tl_worker : 0];
+  p.finished.fetch_add(1, std::memory_order_relaxed);
   std::lock_guard<std::mutex> held(w.lock);
   if (w.stacks.size() < 64) {
     w.stacks.push_back(f);
     return;
   }
+  p.stacks.fetch_sub(1, std::memory_order_relaxed);
 #ifdef SWORD_TSAN
   if (f->tsan) __tsan_destroy_fiber(f->tsan);
 #endif
@@ -716,6 +724,18 @@ int sword_park_timer(int64_t deadline_ns) {
 }
 
 int32_t sword_in_task(void) { return tl_fiber != nullptr; }
+
+void sword_runtime_stats(struct sword_stats *out) {
+  memset(out, 0, sizeof(*out));
+  Pool *p = running.load(std::memory_order_acquire);
+  if (!p) return;
+  out->threads = p->target + p->hired.load(std::memory_order_relaxed);
+  out->queued = p->pending.load(std::memory_order_relaxed);
+  out->parked = p->parked.load(std::memory_order_relaxed);
+  out->stacks = p->stacks.load(std::memory_order_relaxed);
+  out->started = p->started.load(std::memory_order_relaxed);
+  out->finished = p->finished.load(std::memory_order_relaxed);
+}
 
 void sword_forget_fd(int32_t fd) { sword_poll_forget((int)fd); }
 

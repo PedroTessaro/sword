@@ -1,0 +1,57 @@
+// expect: 42
+// expect-output: accepted 3 served 3 failed 1 live 0
+// A server that can be looked inside while it runs: its own counters, and the
+// scheduler's, answered over HTTP like anything else.
+
+import "std/http"
+import "std/io"
+import "std/mem"
+import "std/runtime"
+
+struct Sometimes {
+    n u64
+}
+
+func (h *Sometimes) Serve(req *http.Request, mut res *http.Response) !void {
+    if req.Path == "/boom" {
+        return error.OnPurpose
+    }
+    if req.Path == "/stats" {
+        r := runtime.Read()
+        try res.Printf("threads {} stacks {} running {}\n",
+                       r.Threads, r.Stacks, r.Running())
+        res.Status = 200
+        return
+    }
+    try res.Text(200, "ok")
+}
+
+func serve(s *http.Server, h *Sometimes) !void {
+    try s.ServeWith(h, 64)
+}
+
+func drive(port i32, mut a mem.Allocator, s *http.Server) !void {
+    http.Get("127.0.0.1", port, "/", a) catch {}
+    http.Get("127.0.0.1", port, "/boom", a) catch {}
+    r := http.Get("127.0.0.1", port, "/stats", a) catch return
+    io.Printf("stats body: {}", string(r.Body)) catch {}
+    s.Close()
+}
+
+func main() !int {
+    mut backing := [262144]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut h := Sometimes{n: 0}
+    mut srv := try http.Listen(0)
+    port := srv.Port()
+    scope {
+        spawn serve(&srv, &h)
+        spawn drive(port, &arena, &srv)
+    }
+    try io.Printf("accepted {} served {} failed {} live {}\n",
+                  srv.Accepted(), srv.Served(), srv.Failed(), srv.Live())
+    if srv.Accepted() != 3 || srv.Served() != 3 || srv.Failed() != 1 {
+        return 1
+    }
+    return 42
+}
