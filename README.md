@@ -68,6 +68,8 @@ setup and what the build needs.
 - **[Concurrency](docs/concurrency.md)** — how tasks, partitions and the race
   checker fit together, and why they are shaped the way they are.
 - **[HTTP](docs/http.md)** — writing a server and a client with `std/http`.
+- **[Testing](docs/testing.md)** — `shield test`, and writing tests that sit
+  beside the code.
 - **[Reference](docs/reference.md)** — types, operators, keywords, standard
   library. For looking things up once you know the language.
 
@@ -100,9 +102,9 @@ whole concurrency story with a work-stealing scheduler behind it.
 The standard library covers memory (`std/mem`), byte buffers (`std/bytes`),
 byte-level strings (`std/strings`), generic containers (`std/collections`),
 printing and formatting (`std/io`, `std/fmt`), JSON (`std/json`), arguments and
-environment (`std/os`), clocks and durations (`std/time`), TCP (`std/net`), and
-HTTP/1.1 with keep-alive, routing and timeouts, server and client
-(`std/http`).
+environment (`std/os`), clocks and durations (`std/time`), TCP (`std/net`),
+HTTP/1.1 with keep-alive, routing and timeouts, server and client (`std/http`),
+and tests (`std/testing`, run by `shield test`).
 
 I/O is blocking, but a task waiting on a socket tells the scheduler, which grows
 the thread pool to cover it — so a server handles far more connections at once

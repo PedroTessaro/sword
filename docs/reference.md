@@ -275,7 +275,13 @@ accident:
 | `+` `<` and the rest | no |
 | `u8(k)`, `Kind(n)` | yes, and **not** checked against the members |
 
-An enum prints as the number it is: there is no table of names to print from.
+`nameof(k)` is the name of the member `k` is, and the empty string when it is not
+one. Printing an enum gives the name for the same reason, so the number takes a
+conversion:
+
+```sword
+try io.Printf("{} is {}\n", k, u8(k))    // Real is 10
+```
 
 ## Reductions
 
@@ -609,6 +615,34 @@ func Sleep(d Duration)            // the scheduler is told first
 A method needs a value with an address, so `time.Since(start).AsMillis()` does
 not compile — bind the duration first.
 
+### `std/testing`
+
+Tests live in `*_test.sw` beside the code and are found by name: `Test...`
+taking one `*T`. See [Testing](testing.md).
+
+```sword
+func (t *T) Name() string
+func (t *T) Failed() bool
+
+// These record and carry on.
+func (mut t *T) Same(got any, want any) !void
+func (mut t *T) Check(ok bool) !void
+func (mut t *T) Failf(format string, args ...any) !void
+
+// These end the test, by returning an error the `try` carries out.
+func (mut t *T) Equal(got any, want any) !void
+func (mut t *T) Require(ok bool) !void
+func (mut t *T) Fatalf(format string, args ...any) !void
+
+func (mut t *T) Logf(format string, args ...any) !void
+func (mut t *T) Skip(why string) !void
+func (mut t *T) Run(name string, body func(mut *T) !void) !void
+func (mut t *T) RunWith(name string, body func(mut *T) !void, arg any) !void
+```
+
+`t.Mem` is an arena reset before each test. `t.Arg` is what `RunWith` handed the
+subtest, since a body cannot capture anything.
+
 ### `std/net`
 
 TCP over the loopback interface. Port 0 asks the operating system to choose.
@@ -722,6 +756,7 @@ may be zero to wait as long as the kernel would.
 
 ```
 shield <file.sw | directory> [options]
+shield test <file.sw | directory> [options]
 
   -o <path>       output binary, default a.out
   -I <dir>        another directory to search for packages
@@ -734,6 +769,10 @@ shield <file.sw | directory> [options]
 ```
 
 A `.sw` file compiles alone. A directory compiles as one package.
+
+`shield test` builds the package together with its `*_test.sw` files behind a
+generated entry point, runs it, and hands back its exit status. Those files are
+left out of every other build. See [Testing](testing.md).
 
 | Mode | Bounds and overflow checks | Optimisation |
 |---|---|---|

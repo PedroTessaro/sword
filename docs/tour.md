@@ -492,8 +492,28 @@ back := Kind(9)            // Kind.Text
 
 The second one is **not** checked against the members — there is no table at run
 time to check it against — which is what makes it usable for a value that just
-came off a socket. An enum also prints as its number rather than its name, for
-the same reason.
+came off a socket.
+
+Printing one gives the member's name, because the number would tell you nothing:
+
+```sword
+import "std/io"
+
+enum Kind u8 {
+    None
+    Bool
+    Text = 9
+}
+
+func main() !int {
+    k := Kind.Text
+    try io.Printf("{} is {}, and {}\n", k, u8(k), nameof(Kind.None))
+    return 0
+}
+```
+
+`nameof(k)` asks for the name on its own, and gives the empty string for a value
+that is not a member.
 
 ## Errors
 
@@ -1023,8 +1043,31 @@ shield program.sw --emit-llvm    # what gets handed to LLVM
 `--emit-ir` is the one worth knowing about. It prints struct layouts with real
 offsets, which is the quickest way to see what the field reordering did.
 
+## Testing
+
+A file ending `_test.sw` beside your code holds its tests, and `shield test`
+finds them:
+
+```sword
+package strings
+
+import "std/testing"
+
+func TestTrimSpace(mut t *testing.T) !void {
+    try t.Equal(TrimSpace("  ada  "), "ada")
+}
+```
+
+```sh
+$ shield test std/strings
+ok    6 tests  (0ms)
+```
+
+Nothing registers a test: the name is enough. [Testing](testing.md) is the rest
+of it.
+
 ## Where to go next
 
-[Concurrency](concurrency.md) is the rest of the story. The
-[reference](reference.md) is for when you know what you want and need to
-remember how to spell it.
+[Concurrency](concurrency.md) is the rest of the story, and
+[Testing](testing.md) is how you keep it honest. The [reference](reference.md)
+is for when you know what you want and need to remember how to spell it.
