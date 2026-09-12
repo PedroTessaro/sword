@@ -1290,15 +1290,24 @@ struct Checker {
             field->name.c_str());
       return nullptr;
     }
-    if (!is_place(field->lhs) && base->kind != TY_PTR) {
-      error(field->pos,
-            "a method needs a value with an address; bind it first");
-      return nullptr;
-    }
+    // A method's receiver is always a struct, so a temporary already lives in
+    // memory by the time it is a value: `time.Since(start).AsMillis()` needs
+    // nothing but its address. Writing into one is another matter — the value
+    // is thrown away, so the write could only be a mistake.
+    bool temporary = !is_place(field->lhs) && base->kind != TY_PTR;
 
     Node *recv = sym->decl->kids[0];
-    if (recv->is_mut && !require_mutable(field->lhs, "call a mutating method on"))
-      return nullptr;
+    if (recv->is_mut) {
+      if (temporary) {
+        error(field->pos,
+              "'%s' writes through its receiver, and this value has nowhere to"
+              " keep the change; bind it first",
+              field->name.c_str());
+        return nullptr;
+      }
+      if (!require_mutable(field->lhs, "call a mutating method on"))
+        return nullptr;
+    }
 
     n->form = 1; // method: the receiver is passed ahead of the arguments
     n->name = sym->name;
