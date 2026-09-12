@@ -63,7 +63,12 @@ func TestParse(mut t *testing.T) !void {
 ```
 
 A test that returns an error it did not mean to — the `try Parse` above — is
-reported as a failure with the error's code.
+reported as a failure with the error's name:
+
+```
+--- FAIL  TestParseU64
+      returned error.NotANumber
+```
 
 `t.Equal` compares through `any`, so it takes integers, floats, bools, strings
 and enums, and prints both sides when they differ. Strings come out quoted,
@@ -202,5 +207,3 @@ operation.
 line: there is no way to ask for the caller's position. Subtest labels are the
 substitute, and they are usually enough.
 
-**Error names.** A test that returns an unexpected error reports its code, not
-its name. Errors are codes at run time and nothing maps them back.

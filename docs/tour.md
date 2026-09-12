@@ -410,6 +410,23 @@ Two ways to get at the value, and no third:
 - `if n := opt { ... }` runs the block with the unwrapped value bound
 - `opt orelse fallback` produces the value or the fallback
 
+An error's name is available too, which is what a log or a test failure wants:
+
+```sword
+import "std/io"
+
+func risky() !u64 {
+    return error.NotFound
+}
+
+func main() !int {
+    risky() catch |e| {
+        try io.Printf("gave up: error.{}\n", nameof(e))
+    }
+    return 0
+}
+```
+
 `orelse` also takes a jump, which is the shape you will write most:
 
 ```sword

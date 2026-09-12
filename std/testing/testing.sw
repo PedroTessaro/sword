@@ -211,7 +211,7 @@ func (mut t *T) RunWith(name string, body func(mut *T) !void, arg any) !void {
 
     body(t) catch |e| {
         if e != error.Failed && e != error.Skipped {
-            try t.Failf("returned error {}", u64(e))
+            try t.Failf("returned error.{}", nameof(e))
         }
     }
 
@@ -239,7 +239,7 @@ func runOne(cases []Case, at u64, tally *Tally, gate *shared[u64]) !void {
         if e == error.Skipped {
             was_skipped = true
         } else if e != error.Failed {
-            try t.Failf("returned error {}", u64(e))
+            try t.Failf("returned error.{}", nameof(e))
         }
     }
 

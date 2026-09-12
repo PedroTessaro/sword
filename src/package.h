@@ -58,6 +58,11 @@ struct Program {
   // another package.
   std::unordered_map<Type *, Symbol *> enum_names;
 
+  // `nameof` over an error resolves to this. Unlike an enum's, it cannot be
+  // written as source in advance: the set of error names is only complete once
+  // every package has been checked, so lowering builds the body.
+  Symbol *error_name = nullptr;
+
   Package *main() { return order.empty() ? nullptr : order.back(); }
 };
 

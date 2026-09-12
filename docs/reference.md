@@ -276,7 +276,7 @@ accident:
 | `u8(k)`, `Kind(n)` | yes, and **not** checked against the members |
 
 `nameof(k)` is the name of the member `k` is, and the empty string when it is not
-one. Printing an enum gives the name for the same reason, so the number takes a
+one. It works on an error too. Printing an enum gives the name for the same reason, so the number takes a
 conversion:
 
 ```sword
@@ -305,6 +305,10 @@ expr catch fallback            // substitute a value
 expr catch |e| { ... }         // handle it, naming the error
 expr catch { ... }             // handle it without naming it
 ```
+
+`nameof(e)` gives an error's name — the compiler writes the table, because at
+run time an error is a code and nothing else. A code that is not an error, zero
+among them, has no name and answers the empty string.
 
 Error names are global to the program; each gets a code, and 0 always means
 success. A `!T` cannot be discarded, and its fields cannot be reached until it

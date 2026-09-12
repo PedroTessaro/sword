@@ -1586,8 +1586,11 @@ struct Checker {
     }
     Type *arg = check_expr(n->kids[0]);
     if (!arg) return nullptr;
+    // An error is a code at run time and nothing else, so its name has to come
+    // from a table the compiler writes. Same shape as an enum's.
+    if (type_eq(arg, types.error_ty)) return check_error_name(n);
     if (arg->kind != TY_ENUM) {
-      error(n->kids[0]->pos, "'nameof' needs an enum value, got %s",
+      error(n->kids[0]->pos, "'nameof' needs an enum or an error, got %s",
             type_str(arg).c_str());
       return nullptr;
     }
@@ -1600,6 +1603,20 @@ struct Checker {
     n->sym = found->second;
     n->name = found->second->name;
     if (!check_args(n, found->second, 0, true)) return nullptr;
+    return n->type = types.string_ty;
+  }
+
+  Type *check_error_name(Node *n) {
+    if (!prog.error_name) {
+      std::vector<Type *> params{types.error_ty};
+      prog.error_name = ast.make_symbol(
+          "error.name", types.func(params, types.string_ty), false, n->pos);
+      prog.error_name->is_func = true;
+    }
+    n->form = CALL_DIRECT;
+    n->sym = prog.error_name;
+    n->name = prog.error_name->name;
+    if (!check_args(n, prog.error_name, 0, true)) return nullptr;
     return n->type = types.string_ty;
   }
 
