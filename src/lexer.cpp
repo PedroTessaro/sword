@@ -17,6 +17,7 @@ const std::unordered_map<std::string, TokKind> keywords = {
     {"break", TK_BREAK},       {"continue", TK_CONTINUE},
     {"mut", TK_MUT},           {"const", TK_CONST},
     {"struct", TK_STRUCT},     {"interface", TK_INTERFACE},
+    {"enum", TK_ENUM},
     {"extern", TK_EXTERN},     {"defer", TK_DEFER},
     {"errdefer", TK_ERRDEFER},
     {"try", TK_TRY},           {"catch", TK_CATCH},
@@ -346,6 +347,7 @@ const char *tok_name(TokKind kind) {
   case TK_REDUCE: return "reduce";
   case TK_CHAN: return "chan";
   case TK_LOCK: return "lock";
+  case TK_ENUM: return "enum";
   case TK_SWITCH: return "switch";
   case TK_CASE: return "case";
   case TK_DEFAULT: return "default";

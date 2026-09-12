@@ -1051,7 +1051,7 @@ struct Checker {
       // Strings compare by content, which is the only comparison here that is
       // not a single instruction. Everything else is a value or an address.
       if (!is_numeric(lhs) && lhs->kind != TY_BOOL && !is_ptr &&
-          lhs->kind != TY_STRING) {
+          lhs->kind != TY_STRING && lhs->kind != TY_ENUM) {
         error(n->pos, "cannot compare values of type %s",
               type_str(lhs).c_str());
         return nullptr;
@@ -1117,8 +1117,14 @@ struct Checker {
     bool from_atomic = from->kind == TY_ATOMIC &&
                        assignable(from->elem, target);
     if (into_atomic) apply_type(n->kids[0], target->elem);
+    // An enum converts to and from its width, which is how a value that came
+    // off the wire becomes one. It is not checked against the members: there is
+    // no run-time table to check it against.
+    bool enum_width = (from->kind == TY_ENUM && is_integer(target)) ||
+                      (is_integer(from) && target->kind == TY_ENUM) ||
+                      (from->kind == TY_ENUM && target->kind == TY_ENUM);
     bool ok = assignable(from, target) || same_bytes || into_atomic ||
-              from_atomic || into_shared ||
+              from_atomic || into_shared || enum_width ||
               (is_numeric(from) && is_numeric(target)) ||
               // Raw pointers are the unchecked side of the boundary, so they
               // reinterpret freely. `*T` converts out to one, never back in:
@@ -1606,6 +1612,19 @@ struct Checker {
     return n->type = sym->type->ret;
   }
 
+  // A member is a constant of its own type, so it folds away like any other.
+  Type *check_enum_member(Node *n, Type *type) {
+    const Field *member = enum_member(type, n->name);
+    if (!member) {
+      error(n->pos, "%s has no member '%s'", type_str(type).c_str(),
+            n->name.c_str());
+      return nullptr;
+    }
+    n->kind = ND_INT_LIT;
+    n->ival = (uint64_t)member->offset;
+    return n->type = type;
+  }
+
   Type *check_field(Node *n) {
     // `error.Name` parses as a field access. Nothing else is spelled that way,
     // so intercept it before the base is resolved as an expression.
@@ -1614,6 +1633,13 @@ struct Checker {
       n->kind = ND_ERROR_LIT;
       n->ival = (uint64_t)types.error_code(n->name);
       return n->type = types.error_ty;
+    }
+
+    // `Kind.Int` reads as a field access too, and the qualifier is a type.
+    if (n->lhs->kind == ND_IDENT && !lookup(n->lhs->name)) {
+      if (Type *named = lookup_type(n->lhs->name)) {
+        if (named->kind == TY_ENUM) return check_enum_member(n, named);
+      }
     }
 
     // `mem.MinCapacity` reads as a field access; the qualifier is a package.
@@ -1638,6 +1664,15 @@ struct Checker {
         error(n->pos, "package '%s' has no exported constant or function '%s'",
               other->name.c_str(), n->name.c_str());
         return nullptr;
+      }
+    }
+
+    // `json.Kind.Object`: the inner field access names the type.
+    if (n->lhs->kind == ND_FIELD && n->lhs->lhs->kind == ND_IDENT &&
+        !lookup(n->lhs->lhs->name)) {
+      if (Package *other = imported(n->lhs->lhs->name)) {
+        if (Type *named = find_in(other->type_names, n->lhs->name, false))
+          if (named->kind == TY_ENUM) return check_enum_member(n, named);
       }
     }
 
@@ -2223,9 +2258,9 @@ struct Checker {
     Type *subject = check_expr(n->cond);
     if (!subject) return;
     if (!is_integer(subject) && subject->kind != TY_BOOL &&
-        subject->kind != TY_STRING) {
+        subject->kind != TY_STRING && subject->kind != TY_ENUM) {
       error(n->cond->pos,
-            "switch needs an integer, a bool or a string, got %s",
+            "switch needs an integer, a bool, a string or an enum, got %s",
             type_str(subject).c_str());
       return;
     }
@@ -2233,6 +2268,7 @@ struct Checker {
 
     Node *fallback = nullptr;
     std::vector<Node *> values;
+    std::unordered_set<int64_t> matched;
     for (Node *arm : n->kids) {
       if (arm->kids.empty()) {
         if (fallback) {
@@ -2255,10 +2291,29 @@ struct Checker {
           break;
         }
         values.push_back(value);
+        if (value->kind == ND_INT_LIT) matched.insert((int64_t)value->ival);
       }
       push_scope();
       check_stmt(arm->body);
       pop_scope();
+    }
+
+    // An enum is a closed set, so a switch over one without a `default` has to
+    // account for every member. This is the whole reason to name the set.
+    if (subject->kind == TY_ENUM && !fallback) {
+      std::string missing;
+      int left = 0;
+      for (const Field &m : subject->fields) {
+        if (matched.count(m.offset)) continue;
+        left++;
+        if (left <= 3) missing += (missing.empty() ? "" : ", ") + m.name;
+      }
+      if (left > 0) {
+        if (left > 3) missing += ", and " + std::to_string(left - 3) + " more";
+        error(n->pos, "this switch over %s does not cover %s",
+              type_str(subject).c_str(), missing.c_str());
+        note(n->pos, "add the missing cases, or a 'default'");
+      }
     }
   }
 
@@ -2667,12 +2722,14 @@ struct Checker {
     case ND_LOCK: return always_returns(n->body);
     // Only with a `default`: without one, falling past every case is a path.
     case ND_SWITCH: {
-      bool has_default = false;
+      // An exhaustive switch over an enum needs no default: the checker has
+      // already made sure there is no path past it.
+      bool closed = n->cond->type && n->cond->type->kind == TY_ENUM;
       for (Node *arm : n->kids) {
         if (!always_returns(arm->body)) return false;
-        if (arm->kids.empty()) has_default = true;
+        if (arm->kids.empty()) closed = true;
       }
-      return has_default;
+      return closed;
     }
     default: return false;
     }
@@ -2730,6 +2787,66 @@ struct Checker {
     }
     open.pop_back();
     return false;
+  }
+
+  // An enum is a named set of integers with its own type, so nothing arithmetic
+  // reaches it by accident. A member with no value continues from the one
+  // before, starting at zero.
+  bool declare_enums() {
+    for (Node *decl : pkg.unit->kids) {
+      if (decl->kind != ND_ENUM_DECL) continue;
+      if (pkg.type_names.count(decl->name) || types.named(decl->name)) {
+        error(decl->pos, "'%s' is already a type", decl->name.c_str());
+        return false;
+      }
+      Type *width = decl->type_expr ? resolve(decl->type_expr) : types.int_ty;
+      if (!is_integer(width)) {
+        error(decl->type_expr->pos, "an enum counts in integers, not %s",
+              type_str(width).c_str());
+        return false;
+      }
+      Type *type = types.declare_enum(pkg.prefix + decl->name, width);
+      decl->type = type;
+      pkg.type_names[decl->name] = type;
+
+      std::vector<Field> members;
+      int64_t next = 0;
+      std::unordered_set<std::string> seen;
+      for (Node *m : decl->kids) {
+        if (!seen.insert(m->name).second) {
+          error(m->pos, "duplicate member '%s'", m->name.c_str());
+          return false;
+        }
+        if (m->rhs) {
+          Node *folded = fold(m->rhs);
+          if (!folded) return false;
+          if (folded->kind != ND_INT_LIT) {
+            error(m->rhs->pos, "an enum member is an integer");
+            return false;
+          }
+          next = (int64_t)folded->ival;
+        }
+        for (const Field &earlier : members) {
+          if (earlier.offset != next) continue;
+          error(m->pos, "'%s' and '%s' are the same value",
+                earlier.name.c_str(), m->name.c_str());
+          return false;
+        }
+        members.push_back(Field{m->name, type, next, (int)members.size()});
+        next++;
+      }
+      type->fields = std::move(members);
+    }
+    return true;
+  }
+
+  // A member named through its type: `Kind.Int`. Nothing else is spelled that
+  // way, so it does not collide with a field or a package.
+  const Field *enum_member(const Type *type, const std::string &name) {
+    if (!type || type->kind != TY_ENUM) return nullptr;
+    for (const Field &m : type->fields)
+      if (m.name == name) return &m;
+    return nullptr;
   }
 
   bool declare_structs() {
@@ -2815,6 +2932,8 @@ struct Checker {
     // Constants come first: a struct field may be an array whose length is
     // one of them.
     declare_constants();
+    // Enums before structs: a field may be one.
+    if (!declare_enums()) return false;
     if (!declare_structs()) return false;
 
     // Signatures first: within a package, declaration order does not matter.

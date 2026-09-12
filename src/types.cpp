@@ -263,6 +263,21 @@ int TypeTable::vtable(const std::string &key, std::vector<std::string> entries) 
   return (int)vtable_list.size() - 1;
 }
 
+// Members live in `fields`, each carrying its value in `offset`. The width is
+// `elem`, which is what the machine sees; the type itself is distinct, so an
+// enum never takes part in arithmetic by accident.
+Type *TypeTable::declare_enum(const std::string &name, Type *width) {
+  Type t;
+  t.kind = TY_ENUM;
+  t.name = name;
+  t.elem = width;
+  // Carrying the width's shape means the generic cast and compare paths in the
+  // backend need to know nothing about enums.
+  t.bits = width->bits;
+  t.is_signed = width->is_signed;
+  return by_name[name] = add(t);
+}
+
 Type *TypeTable::declare_struct(const std::string &name) {
   Type t;
   t.kind = TY_STRUCT;
@@ -311,6 +326,7 @@ std::string type_str(const Type *t) {
     return "[" + std::to_string(t->count) + "]" + type_str(t->elem);
   case TY_OPT: return t->untyped ? "nil" : "?" + type_str(t->elem);
   case TY_ATOMIC: return "atomic[" + type_str(t->elem) + "]";
+  case TY_ENUM: return t->name;
   case TY_STRUCT:
     if (t->is_error_union) return "!" + type_str(t->elem);
     if (t->is_optional) return "?" + type_str(t->elem);
@@ -344,7 +360,7 @@ bool type_eq(const Type *a, const Type *b) {
     return type_eq(a->elem, b->elem);
   case TY_ARRAY:
     return a->count == b->count && type_eq(a->elem, b->elem);
-  case TY_STRUCT: return a->name == b->name;
+  case TY_STRUCT: case TY_ENUM: return a->name == b->name;
   case TY_FUNC: {
     if (a->params.size() != b->params.size()) return false;
     if (!type_eq(a->ret, b->ret)) return false;
@@ -394,6 +410,9 @@ int any_kind_of(const Type *t) {
   switch (t->kind) {
   case TY_BOOL: return ANY_BOOL;
   case TY_INT: return t->is_signed ? ANY_INT : ANY_UINT;
+  // An enum boxes as the number it is. Printing the member's name would need a
+  // table the compiler does not build.
+  case TY_ENUM: return t->is_signed ? ANY_INT : ANY_UINT;
   case TY_FLOAT: return ANY_FLOAT;
   case TY_STRING: return ANY_STRING;
   case TY_PTR: case TY_RAWPTR: return ANY_POINTER;
@@ -425,7 +444,7 @@ int64_t size_of(const Type *t) {
   case TY_INT: case TY_FLOAT: return t->bits / 8;
   case TY_PTR: case TY_RAWPTR: case TY_FUNC: return kWord;
   case TY_OPT: return size_of(t->elem); // ?*T reuses the null pointer as tag
-  case TY_ATOMIC: return size_of(t->elem);
+  case TY_ATOMIC: case TY_ENUM: return size_of(t->elem);
   case TY_SLICE: case TY_STRING: return 2 * kWord;
   case TY_ARRAY: return t->count * size_of(t->elem);
   case TY_STRUCT: {

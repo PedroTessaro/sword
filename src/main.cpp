@@ -43,6 +43,8 @@ const char *node_name(NodeKind kind) {
   case ND_FUNC: return "func";
   case ND_PARAM: return "param";
   case ND_STRUCT_DECL: return "struct";
+  case ND_ENUM_DECL: return "enum";
+  case ND_ENUM_MEMBER: return "enum-member";
   case ND_FIELD_DECL: return "field-decl";
   case ND_BLOCK: return "block";
   case ND_VAR: return "var";

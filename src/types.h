@@ -21,6 +21,7 @@ enum TypeKind {
   TY_ATOMIC, // atomic[T]: T's representation, reached only through its
              // own operations, which is what lets it cross between tasks
   TY_STRUCT,
+  TY_ENUM, // a named set of integers: its own type, so no arithmetic on it
   TY_FUNC,
 };
 
@@ -82,6 +83,7 @@ struct TypeTable {
              std::vector<bool> param_mut = {});
 
   Type *declare_struct(const std::string &name);
+  Type *declare_enum(const std::string &name, Type *width);
   Type *declare_interface(const std::string &name);
   // Assigns offsets. Non-extern structs are reordered widest-first so padding
   // does not leak into every instance.

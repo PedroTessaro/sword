@@ -14,7 +14,7 @@ std::string ll_type(const Type *t) {
   case TY_INT: return "i" + std::to_string(t->bits);
   case TY_FLOAT: return t->bits == 32 ? "float" : "double";
   case TY_PTR: case TY_RAWPTR: case TY_FUNC: return "ptr";
-  case TY_OPT: case TY_ATOMIC: return ll_type(t->elem);
+  case TY_OPT: case TY_ATOMIC: case TY_ENUM: return ll_type(t->elem);
   case TY_SLICE: case TY_STRING: return "%slice";
   case TY_ARRAY:
     return "[" + std::to_string(t->count) + " x " + ll_type(t->elem) + "]";

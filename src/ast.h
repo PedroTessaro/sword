@@ -18,6 +18,8 @@ enum NodeKind {
   ND_PARAM,
   ND_STRUCT_DECL,
   ND_INTERFACE_DECL,
+  ND_ENUM_DECL,  // kids are the members, type_expr the width
+  ND_ENUM_MEMBER,
   ND_CONST_DECL,
   ND_FIELD_DECL,
 

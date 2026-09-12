@@ -13,3 +13,10 @@ func TotalOf(a Shape, b Shape) i64 {
 func UnitSquare() Square {
     return Square{side: 1}
 }
+
+// Exported so another package can name its members: `shapes.Corner.Round`.
+enum Corner u8 {
+    Sharp
+    Round
+    Bevelled
+}

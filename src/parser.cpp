@@ -941,6 +941,44 @@ struct Parser {
     return expect(TK_RBRACE, "to close an interface body") ? n : nullptr;
   }
 
+  // `enum Kind u8 { None; Bool = 3; Int }`. The width is optional and the
+  // values are optional: a member with no value continues from the one before.
+  Node *enum_decl() {
+    Node *n = make(ND_ENUM_DECL, advance().pos);
+    if (kind() != TK_IDENT) {
+      fail("expected an enum name");
+      return nullptr;
+    }
+    n->name_pos = peek().pos;
+    n->name = advance().text;
+    if (kind() != TK_LBRACE) {
+      n->type_expr = type_expr();
+      if (!n->type_expr) return nullptr;
+    }
+    if (!expect(TK_LBRACE, "to open an enum body")) return nullptr;
+
+    skip_terms();
+    while (kind() != TK_RBRACE && kind() != TK_EOF) {
+      Node *m = make(ND_ENUM_MEMBER, peek().pos);
+      if (kind() != TK_IDENT) {
+        fail("expected a member name");
+        return nullptr;
+      }
+      m->name_pos = peek().pos;
+      m->name = advance().text;
+      if (match(TK_ASSIGN)) {
+        m->rhs = expr();
+        if (!m->rhs) return nullptr;
+      }
+      n->kids.push_back(m);
+      // A comma between members is allowed but not required, the same way a
+      // newline is enough everywhere else.
+      match(TK_COMMA);
+      skip_terms();
+    }
+    return expect(TK_RBRACE, "to close an enum body") ? n : nullptr;
+  }
+
   Node *declaration() {
     // `package name` is documentation: the directory already decides the
     // package. `import "path"` is what actually pulls something in.
@@ -982,7 +1020,8 @@ struct Parser {
     if (kind() == TK_FUNC) return func_decl(is_extern);
     if (kind() == TK_STRUCT) return struct_decl(is_extern);
     if (kind() == TK_INTERFACE && !is_extern) return interface_decl();
-    fail("expected 'func', 'struct', 'interface' or 'const', found %s",
+    if (kind() == TK_ENUM && !is_extern) return enum_decl();
+    fail("expected 'func', 'struct', 'interface', 'enum' or 'const', found %s",
          tok_name(kind()));
     return nullptr;
   }

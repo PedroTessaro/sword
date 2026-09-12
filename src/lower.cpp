@@ -1300,6 +1300,13 @@ struct Lowerer {
       if (is_address(from) && is_address(n->type)) return value;
       if (from->kind == n->type->kind && from->bits == n->type->bits)
         return value;
+      // An enum is an integer of its width, so crossing between the two at the
+      // same width moves nothing.
+      auto counts = [](const Type *t) {
+        return t->kind == TY_INT || t->kind == TY_ENUM;
+      };
+      if (counts(from) && counts(n->type) && from->bits == n->type->bits)
+        return value;
       IrInst in{};
       in.op = IR_CAST;
       in.dst = new_value(n->type);
