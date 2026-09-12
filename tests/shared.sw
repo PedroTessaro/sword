@@ -1,0 +1,141 @@
+// expect: 42
+// expect-output: shared: all checks passed
+// A whole structure written by many tasks, which is what `shared` is for, plus
+// every way out of a `lock` block releasing it.
+
+import "std/collections"
+import "std/io"
+import "std/mem"
+
+struct Tally {
+    hits, misses u64
+}
+
+func bump(mut t *shared[Tally], n u64) {
+    for i in 0..n {
+        lock c := t {
+            c.hits += 1
+        }
+    }
+}
+
+// No `mut` on the pointer: a shared carries its own permission, the same way an
+// atomic does.
+func count(table *shared[collections.Map[u64]], keys []string) !void {
+    for i in 0..keys.len {
+        lock m := table {
+            seen := m.Get(keys[i]) orelse 0
+            try m.Set(keys[i], seen + 1)
+        }
+    }
+}
+
+func viaReturn(mut t *shared[Tally]) u64 {
+    lock c := t {
+        c.misses += 1
+        return c.misses
+    }
+    return 0
+}
+
+func viaBreak(mut t *shared[Tally]) {
+    for i in 0..3 {
+        lock c := t {
+            c.misses += 1
+            if i == 1 {
+                break
+            }
+        }
+    }
+}
+
+func fails() !u64 {
+    return error.Nope
+}
+
+func viaTry(mut t *shared[Tally]) !void {
+    lock c := t {
+        c.misses += 1
+        n := try fails()
+        c.misses += n
+    }
+}
+
+// A shared can sit in a field, and the enclosing struct stays ordinary.
+struct Server {
+    name  string
+    tally shared[Tally]
+}
+
+func serve(s *Server) {
+    lock c := &s.tally {
+        c.hits += 1
+    }
+}
+
+func main() !int {
+    mut backing := [131072]u8{}
+    mut arena := mem.NewArena(backing[..])
+
+    mut tally := shared[Tally](Tally{hits: 0, misses: 0})
+    scope {
+        for i in 0..8 {
+            spawn bump(&tally, 500)
+        }
+    }
+
+    // Nothing below this would finish if a lock had been left held.
+    if viaReturn(&tally) != 1 {
+        return 1
+    }
+    viaBreak(&tally)
+    viaTry(&tally) catch {}
+
+    lock c := &tally {
+        if c.hits != 4000 || c.misses != 4 {
+            return 2
+        }
+    }
+
+    mut table := shared[collections.Map[u64]](
+        try collections.NewMap[u64](&arena, 64))
+    mut words := [4]string{}
+    words[0] = "ada"
+    words[1] = "grace"
+    words[2] = "ada"
+    words[3] = "alan"
+
+    scope {
+        for i in 0..6 {
+            spawn count(&table, words[..])
+        }
+    }
+
+    lock m := &table {
+        if m.Len() != 3 {
+            return 3
+        }
+        if (m.Get("ada") orelse 0) != 12 {
+            return 4
+        }
+        if (m.Get("grace") orelse 0) != 6 {
+            return 5
+        }
+    }
+
+    srv := Server{name: "one", tally: shared[Tally](Tally{hits: 0,
+                                                          misses: 0})}
+    scope {
+        for i in 0..4 {
+            spawn serve(&srv)
+        }
+    }
+    lock c := &srv.tally {
+        if c.hits != 4 {
+            return 6
+        }
+    }
+
+    try io.Print("shared: all checks passed\n")
+    return 42
+}
