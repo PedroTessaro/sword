@@ -204,6 +204,30 @@ Type *TypeTable::atomic(Type *elem) {
   return atomics[elem] = add(t);
 }
 
+// A mutex beside the value it protects. All zeroes is an unlocked guard, so a
+// fresh shared needs no constructor — which is what lets one sit in an array or
+// a struct field.
+Type *TypeTable::shared(Type *elem) {
+  auto found = shareds.find(elem);
+  if (found != shareds.end()) return found->second;
+
+  Type t;
+  t.kind = TY_STRUCT;
+  t.is_shared = true;
+  t.elem = elem;
+  t.name = "shared." + std::to_string(shared_list.size());
+  Type *type = add(t);
+
+  std::vector<Field> fields;
+  fields.push_back(
+      Field{"guard", array(usize_ty, SWORD_GUARD_SIZE / 8), 0, 0});
+  fields.push_back(Field{"value", elem, 0, 0});
+  layout_struct(type, std::move(fields));
+
+  shared_list.push_back(type);
+  return shareds[elem] = type;
+}
+
 Type *TypeTable::func(std::vector<Type *> params, Type *ret) {
   Type t;
   t.kind = TY_FUNC;
@@ -286,6 +310,7 @@ std::string type_str(const Type *t) {
   case TY_STRUCT:
     if (t->is_error_union) return "!" + type_str(t->elem);
     if (t->is_optional) return "?" + type_str(t->elem);
+    if (t->is_shared) return "shared[" + type_str(t->elem) + "]";
     return t->name;
   case TY_FUNC: {
     std::string s = "func(";
@@ -347,6 +372,8 @@ bool is_integer(const Type *t) { return t && t->kind == TY_INT; }
 bool is_float(const Type *t) { return t && t->kind == TY_FLOAT; }
 
 bool is_atomic(const Type *t) { return t && t->kind == TY_ATOMIC; }
+
+bool is_shared(const Type *t) { return t && t->is_shared; }
 
 int any_kind_of(const Type *t) {
   if (!t) return -1;

@@ -50,6 +50,10 @@ struct Type {
   // `any`: what a variadic argument is boxed into. It carries the value and
   // enough of a tag to say what the value is.
   bool is_any = false;
+  // `shared[T]` is a { guard, value } pair. The guard is a mutex the runtime
+  // works in place and generated code never looks inside, and `lock` is the
+  // only way to reach the value.
+  bool is_shared = false;
   Type *elem = nullptr;
   int64_t count = 0; // TY_ARRAY length
   std::string name;  // TY_STRUCT
@@ -69,6 +73,7 @@ struct TypeTable {
   Type *array(Type *elem, int64_t count);
   Type *opt(Type *elem);
   Type *atomic(Type *elem);
+  Type *shared(Type *elem);
   Type *func(std::vector<Type *> params, Type *ret);
 
   Type *declare_struct(const std::string &name);
@@ -85,6 +90,7 @@ struct TypeTable {
   }
   // Optionals over a non-pointer payload are structs too, and need naming.
   const std::vector<Type *> &optionals_made() const { return optional_list; }
+  const std::vector<Type *> &shareds_made() const { return shared_list; }
   // Instantiated generic structs, which the backend has to name as well.
   void note_instance(Type *type) { instance_list.push_back(type); }
   const std::vector<Type *> &instances_made() const { return instance_list; }
@@ -119,11 +125,12 @@ private:
   std::deque<Type> pool;
   std::unordered_map<std::string, Type *> by_name;
   std::unordered_map<Type *, Type *> ptrs, rawptrs, slices, opts, error_unions;
-  std::unordered_map<Type *, Type *> atomics;
+  std::unordered_map<Type *, Type *> atomics, shareds;
   std::map<std::pair<Type *, int64_t>, Type *> arrays;
   std::vector<std::string> error_list;
   std::vector<Type *> error_union_list;
   std::vector<Type *> optional_list;
+  std::vector<Type *> shared_list;
   std::vector<Type *> instance_list;
   std::vector<VTable> vtable_list;
 };
@@ -136,6 +143,11 @@ bool is_numeric(const Type *t);
 bool is_integer(const Type *t);
 bool is_float(const Type *t);
 bool is_atomic(const Type *t);
+bool is_shared(const Type *t);
+
+// How much room `shared[T]` sets aside for the mutex, in bytes. Generated code
+// only ever passes its address to the runtime.
+enum { SWORD_GUARD_SIZE = 16 };
 
 // The tags an `any` can carry. std/fmt mirrors these; they are part of the
 // language rather than of that package.
