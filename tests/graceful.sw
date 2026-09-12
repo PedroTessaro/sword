@@ -1,0 +1,71 @@
+// expect: 42
+// expect-output: drained after Terminate
+// What shutting a server down actually looks like: a task waiting on a signal,
+// Close stopping the accept loop, and the scope draining whatever is still in
+// flight. Nothing is interrupted.
+
+import "std/http"
+import "std/io"
+import "std/mem"
+import "std/os"
+import "std/time"
+
+struct Slow {
+    n u64
+}
+
+func (h *Slow) Serve(req *http.Request, mut res *http.Response) !void {
+    try res.Printf("from {}\n", req.RemoteAddr)
+}
+
+func serve(s *http.Server, h *Slow) !void {
+    try s.Serve(h)
+}
+
+func shutdown(s *http.Server, mut ready *atomic[u64]) !void {
+    try os.Catch(os.Signal.Terminate)
+    ready.Store(1)
+    sig := try os.WaitSignal()
+    if i32(sig) != 15 {
+        return error.WrongSignal
+    }
+    s.Close()
+}
+
+func drive(port i32, mut a mem.Allocator, mut ready *atomic[u64],
+           mut ok *atomic[u64]) !void {
+    // Wait until the handler is in place, or the default would end the process
+    // instead of being caught.
+    for ready.Load() == 0 {
+        time.Sleep(time.Millis(1))
+    }
+    r := http.Get("127.0.0.1", port, "/", a) catch return
+    if r.Status == 200 {
+        ok.Store(1)
+    }
+    try os.Kill(os.Pid(), os.Signal.Terminate)
+}
+
+func main() !int {
+    mut backing := [262144]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut ready := atomic[u64](0)
+    mut ok := atomic[u64](0)
+
+    mut h := Slow{n: 0}
+    mut srv := try http.Listen(0)
+    port := srv.Port()
+
+    scope {
+        spawn serve(&srv, &h)
+        spawn shutdown(&srv, &ready)
+        spawn drive(port, &arena, &ready, &ok)
+    }
+
+    if ok.Load() != 1 || srv.Served() != 1 {
+        return 1
+    }
+    try io.Printf("drained after {}, served {}\n",
+                  nameof(os.Signal.Terminate), srv.Served())
+    return 42
+}

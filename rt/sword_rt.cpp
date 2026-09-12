@@ -110,7 +110,11 @@ struct Fiber {
   Fiber *waiting_next = nullptr; // next on a shared value's wait list
   int home = 0; // the worker it last ran on, where a wake puts it back
 #ifdef SWORD_ASAN
+  // The sanitizer's token for this stack while it is put down, and where it
+  // came from — which is what has to be handed back on the way out.
   void *fake_stack = nullptr;
+  const void *from_bottom = nullptr;
+  size_t from_size = 0;
 #endif
 #ifdef SWORD_TSAN
   void *tsan = nullptr;
@@ -165,6 +169,10 @@ void prepare(Fiber *f) {
 #error "sword: no stack layout for this architecture"
 #endif
   f->finished = false;
+#ifdef SWORD_ASAN
+  // A stack that has never run has no token to restore.
+  f->fake_stack = nullptr;
+#endif
 }
 
 struct Worker {
@@ -300,13 +308,14 @@ void enter(Fiber *f) {
   __tsan_switch_to_fiber(f->tsan, 0);
 #endif
 #ifdef SWORD_ASAN
-  __sanitizer_start_switch_fiber(&f->fake_stack, f->base, f->size);
+  // The token for the worker's own stack, so it can be restored when the task
+  // hands control back. The bottom and size describe where we are going.
+  void *worker_fake = nullptr;
+  __sanitizer_start_switch_fiber(&worker_fake, f->base, f->size);
 #endif
   sword_ctx_switch(&f->sched_sp, f->sp);
 #ifdef SWORD_ASAN
-  const void *bottom = nullptr;
-  size_t size = 0;
-  __sanitizer_finish_switch_fiber(f->fake_stack, &bottom, &size);
+  __sanitizer_finish_switch_fiber(worker_fake, nullptr, nullptr);
 #endif
 #ifdef SWORD_TSAN
   __tsan_switch_to_fiber(back, 0);
@@ -314,18 +323,30 @@ void enter(Fiber *f) {
   tl_fiber = nullptr;
 }
 
+// Called on the task's own stack, right after arriving on it. Records where it
+// came from, which is what `leave` has to describe on the way back.
+void arrived(Fiber *f) {
+#ifdef SWORD_ASAN
+  __sanitizer_finish_switch_fiber(f->fake_stack, &f->from_bottom,
+                                  &f->from_size);
+#else
+  (void)f;
+#endif
+}
+
 // Switching out, from inside the task. `f` comes off the task's own stack, so
 // no thread-local is read on the way out.
 void leave(Fiber *f, bool done) {
 #ifdef SWORD_ASAN
-  __sanitizer_start_switch_fiber(done ? nullptr : &f->fake_stack, nullptr, 0);
+  // A task that is finished is never coming back, so it saves no token; the
+  // destination is the stack it arrived from.
+  __sanitizer_start_switch_fiber(done ? nullptr : &f->fake_stack,
+                                 f->from_bottom, f->from_size);
+#else
+  (void)done;
 #endif
   sword_ctx_switch(&f->sp, f->sched_sp);
-#ifdef SWORD_ASAN
-  const void *bottom = nullptr;
-  size_t size = 0;
-  __sanitizer_finish_switch_fiber(f->fake_stack, &bottom, &size);
-#endif
+  arrived(f);
 }
 
 void make_runnable(Fiber *f) {
@@ -587,12 +608,8 @@ extern "C" {
 // Where a task begins. It reads the thread-local once, immediately after the
 // switch that landed here, and works from its own stack afterwards.
 void sword_fiber_entry(void) {
-#ifdef SWORD_ASAN
-  const void *bottom = nullptr;
-  size_t size = 0;
-  __sanitizer_finish_switch_fiber(nullptr, &bottom, &size);
-#endif
   Fiber *f = tl_fiber;
+  arrived(f);
   Task *task = f->task;
   void *args = task->heap_args ? task->heap_args : (void *)task->args;
   uint16_t code = task->fn(args);
