@@ -644,6 +644,33 @@ Tests run at the same time, 64 at once by default; `shield test <path> -p 1`
 puts them back in order. `t.Mem` is an arena of that test's own. `t.Arg` is what `RunWith` handed the
 subtest, since a body cannot capture anything.
 
+### `std/fs`
+
+```sword
+enum Mode i32 { Read, Write, Append }   // Write truncates or creates
+
+func Open(path string, mode Mode) !File
+func Of(fd i32) File                    // wrap one the process already has
+func (f *File) Read(mut into []u8) !u64 // 0 means the end of the file
+func (f *File) Write(from []u8) !void
+func (f *File) WriteString(s string) !void
+func (f *File) Close()
+
+func Size(path string) ?u64             // nil when absent, or a directory
+func Exists(path string) bool
+func Remove(path string) !void
+func ReadAll(path string, mut a mem.Allocator) ![]u8
+func WriteAll(path string, data []u8) !void
+func ReadStdin(mut a mem.Allocator, most u64) ![]u8
+```
+
+`Stdin`, `Stdout` and `Stderr` are the descriptors the process starts with.
+
+A file is never "not ready yet" — the wait is the disk, and no poller has
+anything to say about it. So file work really does stop a thread, and the
+scheduler hires a replacement while it is gone. Forty tasks reading at once run
+on forty-odd threads, unlike forty tasks on sockets.
+
 ### `std/runtime`
 
 What the scheduler is doing, for whoever runs the program rather than writes it.

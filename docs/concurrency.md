@@ -383,6 +383,12 @@ replacement while it is gone and retires it after 200 ms of finding no work. It
 is the fallback now rather than the main mechanism, but it is still what keeps
 one slow name lookup from stalling everything.
 
+Files are the other one, and for a different reason: a file is never "not ready
+yet". The wait is the disk, and asking a poller about a regular file tells you
+nothing. So `std/fs` stops the thread on purpose and says so, which is why forty
+tasks reading files run on forty-odd threads while forty tasks on sockets run on
+eleven.
+
 Code that is not in a task at all — the main function, before any `scope` — has
 nothing to put down, so it waits on the thread the ordinary way.
 

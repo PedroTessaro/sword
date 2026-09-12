@@ -102,8 +102,8 @@ whole concurrency story with a work-stealing scheduler behind it.
 The standard library covers memory (`std/mem`), byte buffers (`std/bytes`),
 byte-level strings (`std/strings`), generic containers (`std/collections`),
 printing and formatting (`std/io`, `std/fmt`), JSON (`std/json`), arguments and
-environment (`std/os`), clocks and durations (`std/time`), scheduler counters
-(`std/runtime`), TCP (`std/net`), HTTP/1.1 with keep-alive, routing and
+environment (`std/os`), files and standard input (`std/fs`), clocks and
+durations (`std/time`), scheduler counters (`std/runtime`), TCP (`std/net`), HTTP/1.1 with keep-alive, routing and
 timeouts, server and client (`std/http`), and tests (`std/testing`, run by
 `shield test`).
 
@@ -112,7 +112,7 @@ holding a thread: the descriptor goes to a poller and the worker moves on.
 Measured, on ten cores — 4000 concurrent keep-alive connections at 84 000
 requests a second on twelve threads, and 2000 idle ones in 65 MiB.
 
-Not there yet: channels, file I/O, and TLS.
+Not there yet: channels and TLS.
 
 ## License
 

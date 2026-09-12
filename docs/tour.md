@@ -986,6 +986,28 @@ if level := os.Env("LOG_LEVEL") {
 }
 ```
 
+`std/fs` reads and writes files:
+
+```sword
+import "std/fs"
+import "std/io"
+import "std/mem"
+
+func main() !int {
+    mut backing := [65536]u8{}
+    mut arena := mem.NewArena(backing[..])
+
+    try fs.WriteAll("/tmp/greeting", []u8("hello\n"))
+    back := try fs.ReadAll("/tmp/greeting", &arena)
+    try io.Print(string(back))
+    try fs.Remove("/tmp/greeting")
+    return 0
+}
+```
+
+`fs.Size` gives an optional, because a path that is not there has no size and a
+number would be a lie. `fs.ReadStdin` takes whatever was piped in.
+
 `std/time` has the clocks. Two of them: `Now` reads a clock that only counts
 forward, for measuring, and `Unix` reads the wall clock, for stamping.
 
