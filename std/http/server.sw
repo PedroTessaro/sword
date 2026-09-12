@@ -7,16 +7,16 @@ import "std/net"
 import "std/strings"
 import "std/time"
 
-// A worker's arena. Each accept loop has its own, so no allocator is ever
-// shared between tasks — which the race checker would reject anyway.
-const ArenaSize = 65536
-// One accept loop handles one connection at a time, so this is the number of
-// connections the server can be in the middle of. It can be far larger than
-// the core count because a task waiting on a socket tells the scheduler, which
-// covers for it — see docs/concurrency.md.
-const DefaultWorkers = 32
-// A client that connects and then says nothing would otherwise hold an accept
-// loop for good.
+// A connection's arena. One per connection rather than one per worker: a task
+// waiting on a socket is put down rather than holding a thread, so connections
+// outnumber threads by a lot and each needs its own memory.
+const ArenaSize = 32768
+// Most connections at once. Past this the server stops accepting and lets the
+// kernel's backlog hold the rest, which is what backpressure looks like from
+// the outside: a queue rather than a collapse.
+const DefaultMaxConns = 1024
+// A client that connects and then says nothing releases its connection after
+// this long.
 const DefaultTimeout = 15
 
 const MaxParams = 8
@@ -238,10 +238,17 @@ func handleConn(mut c *net.Conn, h Handler, mut a mem.Allocator) !void {
 
 struct Server {
     listener net.Listener
+    // How many connections are being served right now. An atomic because every
+    // connection is its own task and they all count themselves.
+    live atomic[u64]
 }
 
 func Listen(port i32) !Server {
-    return Server{listener: try net.Listen(port)}
+    return Server{listener: try net.Listen(port), live: atomic[u64](0)}
+}
+
+func (s *Server) Live() u64 {
+    return s.live.Load()
 }
 
 // Useful when the port was left to the operating system to choose.
@@ -255,28 +262,38 @@ func (s *Server) Close() {
     s.listener.Close()
 }
 
-// One task per accept loop, each with its own arena, all inside a scope that
-// outlives none of them. The kernel spreads incoming connections across them.
-func acceptLoop(s *Server, h Handler) !void {
+// One task per connection, with its own arena on its own stack. That is only
+// affordable because a task waiting on a socket costs a stack and not a thread:
+// it is put down, and the worker goes to whoever has data.
+func serveConn(c net.Conn, h Handler, s *Server) !void {
+    mut conn := c
     mut backing := [ArenaSize]u8{}
     mut arena := mem.NewArena(backing[..])
-    for {
-        mut c := s.listener.Accept() catch return
-        c.SetTimeout(time.Seconds(DefaultTimeout)) catch {}
-        handleConn(&c, h, &arena) catch {}
-        c.Close()
-        arena.Reset()
-    }
+    conn.SetTimeout(time.Seconds(DefaultTimeout)) catch {}
+    handleConn(&conn, h, &arena) catch {}
+    conn.Close()
+    s.live.Sub(1)
 }
 
 func (s *Server) Serve(h Handler) !void {
-    try s.ServeWith(h, DefaultWorkers)
+    try s.ServeWith(h, DefaultMaxConns)
 }
 
-func (s *Server) ServeWith(h Handler, workers int) !void {
+// The accept loop is the body of the scope rather than a task in it, because
+// only the body may spawn. Closing the listener ends it, and then the scope
+// waits for every connection still being served — which is what makes shutting
+// down graceful without anything extra.
+func (s *Server) ServeWith(h Handler, most u64) !void {
     scope {
-        for i in 0..workers {
-            spawn acceptLoop(s, h)
+        for {
+            // At the limit the server stops taking work. The backlog holds the
+            // rest, and a client that cannot wait gives up on its own.
+            for most > 0 && s.live.Load() >= most {
+                time.Sleep(time.Millis(1))
+            }
+            c := s.listener.Accept() catch break
+            s.live.Add(1)
+            spawn serveConn(c, h, s)
         }
     }
 }

@@ -83,7 +83,7 @@ func main() !int {
 }
 
 func serveUntilDone(s *http.Server, h *Router) !void {
-    try s.ServeWith(h, 2)
+    try s.ServeWith(h, 64)
 }
 
 func runClient(port i32, mut a mem.Allocator, mut out []u64,

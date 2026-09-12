@@ -1,0 +1,81 @@
+// expect: 42
+// expect-output: 64 connections served at once
+// Far more connections open at once than the machine has threads, all of them
+// held while the others arrive. Before connections were tasks rather than
+// threads, the sixty-fifth of these would have waited for a timeout.
+
+import "std/http"
+import "std/io"
+import "std/net"
+import "std/time"
+
+const Clients = 64
+
+struct Hello {
+    seen u64
+}
+
+func (h *Hello) Serve(req *http.Request, mut res *http.Response) !void {
+    try res.Text(200, "hi")
+}
+
+func serve(s *http.Server, h *Hello) !void {
+    try s.ServeWith(h, 256)
+}
+
+// One keep-alive connection, held open until every other client has one too.
+func client(port i32, mut arrived *atomic[u64], mut ok *atomic[u64]) !void {
+    mut c := net.Dial("127.0.0.1", port) catch return
+    mut buf := [1024]u8{}
+
+    try c.WriteString("GET /a HTTP/1.1\r\nHost: x\r\n\r\n")
+    first := c.Read(buf[..]) catch 0
+    if first == 0 {
+        c.Close()
+        return
+    }
+    arrived.Add(1)
+
+    // Nobody sends a second request until all of them are here, so every
+    // connection really is open at the same moment.
+    for arrived.Load() < Clients {
+        time.Sleep(time.Millis(1))
+    }
+
+    try c.WriteString("GET /b HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+    second := c.Read(buf[..]) catch 0
+    if second > 0 {
+        ok.Add(1)
+    }
+    c.Close()
+}
+
+func drive(port i32, s *http.Server, mut arrived *atomic[u64],
+           mut ok *atomic[u64]) !void {
+    scope {
+        for i in 0..Clients {
+            spawn client(port, arrived, ok)
+        }
+    }
+    s.Close()
+}
+
+func main() !int {
+    mut arrived := atomic[u64](0)
+    mut ok := atomic[u64](0)
+
+    mut h := Hello{seen: 0}
+    mut srv := try http.Listen(0)
+    port := srv.Port()
+
+    scope {
+        spawn serve(&srv, &h)
+        spawn drive(port, &srv, &arrived, &ok)
+    }
+
+    if ok.Load() != Clients {
+        return 1
+    }
+    try io.Printf("{} connections served at once\n", ok.Load())
+    return 42
+}

@@ -29,7 +29,7 @@ func (h *Health) Serve(req *http.Request, mut res *http.Response) !void {
 }
 
 func serve(s *http.Server, m *http.Mux) !void {
-    try s.ServeWith(m, 2)
+    try s.ServeWith(m, 64)
 }
 
 func drive(port i32, mut a mem.Allocator, mut out []u64,
