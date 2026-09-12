@@ -644,6 +644,25 @@ Tests run at the same time, 64 at once by default; `shield test <path> -p 1`
 puts them back in order. `t.Mem` is an arena of that test's own. `t.Arg` is what `RunWith` handed the
 subtest, since a body cannot capture anything.
 
+### `std/runtime`
+
+What the scheduler is doing, for whoever runs the program rather than writes it.
+A few relaxed loads, so it is cheap enough to read on a timer or to answer a
+request with.
+
+```sword
+func Read() Stats
+func (s Stats) Running() i64      // Started - Finished
+```
+
+| Field | |
+|---|---|
+| `Threads` | workers, including any hired to cover one stopped in the kernel |
+| `Queued` | tasks spawned and not yet picked up — a queue that keeps growing is the first sign of a server taking more than it can serve |
+| `Parked` | threads stopped inside a syscall that cannot be put down |
+| `Stacks` | task stacks alive, in use or pooled |
+| `Started` `Finished` | tasks begun and ended since the program did |
+
 ### `std/net`
 
 TCP over the loopback interface. Port 0 asks the operating system to choose.
@@ -684,6 +703,9 @@ func (s *Server) Port() i32
 func (s *Server) Serve(h Handler) !void      // up to 1024 connections at once
 func (s *Server) ServeWith(h Handler, most u64) !void
 func (s *Server) Live() u64                  // connections in flight
+func (s *Server) Accepted() u64              // connections taken, in total
+func (s *Server) Served() u64                // requests answered
+func (s *Server) Failed() u64                // of those, handlers that failed
 func (s *Server) Close()                     // stops accepting, then drains
 ```
 

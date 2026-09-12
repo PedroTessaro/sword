@@ -397,6 +397,24 @@ The ceiling is a brake rather than a wall. A pool at its limit with every thread
 parked and work still queued would be a program that has stopped, so in that one
 case the runtime goes over the limit instead.
 
+### Sleeping
+
+`time.Sleep` goes the same way. A hundred tasks waiting a second are a hundred
+timers on the poller, not a hundred threads:
+
+```
+40 tasks sleeping     11 threads
+```
+
+Before it went through the poller the same program ran 50.
+
+### Watching it run
+
+`std/runtime` reports what the scheduler is doing — threads, tasks queued, tasks
+running, stacks alive — for a few relaxed loads. `Queued` is the one worth an
+alert: a queue that only grows means the program is taking on more than it
+finishes.
+
 ### Deadlines
 
 A timeout bounds one wait. It cannot bound a client that sends a byte every

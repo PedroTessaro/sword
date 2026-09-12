@@ -114,6 +114,27 @@ A request is capped at 32 headers and 16 KiB of head. Past that the connection i
 dropped rather than grown, which keeps a hostile client from deciding how much
 memory the server uses.
 
+## Watching it run
+
+A server nobody can see inside is a server nobody can run. Four counters on the
+server, and the scheduler's own next to them:
+
+```sword
+import "std/runtime"
+
+func (h *Admin) Serve(req *http.Request, mut res *http.Response) !void {
+    r := runtime.Read()
+    try res.Printf("threads {} stacks {} running {}\n",
+                   r.Threads, r.Stacks, r.Running())
+    res.Status = 200
+}
+```
+
+`s.Live()` is connections in flight, `s.Accepted()` how many have been taken
+altogether, and `s.Served()` and `s.Failed()` requests answered and handlers that
+did not. `runtime.Queued` is the one to watch: a queue that keeps growing means
+the server is taking more than it can serve.
+
 ## Routing
 
 The `if` chain above gets old quickly. `Mux` is a handler that dispatches to
