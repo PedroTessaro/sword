@@ -12,6 +12,9 @@ int32_t sword_net_listen(int32_t port, int32_t backlog);
 int32_t sword_net_port(int32_t fd);
 int32_t sword_net_accept(int32_t fd);
 int32_t sword_net_dial(const char *host, int64_t host_len, int32_t port);
+// Same, but gives up after `millis`. Zero waits as long as the kernel would.
+int32_t sword_net_dial_timeout(const char *host, int64_t host_len, int32_t port,
+                               int64_t millis);
 int64_t sword_net_read(int32_t fd, void *buf, int64_t len);
 int64_t sword_net_write(int32_t fd, const void *buf, int64_t len);
 // Milliseconds; zero means wait forever. Applies to both directions.
