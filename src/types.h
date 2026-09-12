@@ -154,7 +154,12 @@ bool is_shared(const Type *t);
 
 // How much room `shared[T]` sets aside for the mutex, in bytes. Generated code
 // only ever passes its address to the runtime.
-enum { SWORD_GUARD_SIZE = 16 };
+//
+// **Must equal SWORD_GUARD_SIZE in rt/sword_rt.h.** The runtime builds a mutex
+// and a wait list in this space; too little here and it writes past the end,
+// which is a segfault a long way from the cause. The static_assert over there
+// only catches the runtime growing, not this shrinking.
+enum { SWORD_GUARD_SIZE = 32 };
 
 // The tags an `any` can carry. std/fmt mirrors these; they are part of the
 // language rather than of that package.

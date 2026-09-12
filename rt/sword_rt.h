@@ -34,10 +34,19 @@ void sword_blocking_exit(void);
 // The guard inside a `shared[T]`, which generated code only ever passes the
 // address of. All-zero bytes are an unlocked guard, so a shared needs no
 // constructor and can sit in an array or a struct field.
-enum { SWORD_GUARD_SIZE = 16 };
+// Must equal SWORD_GUARD_SIZE in src/types.h, which is what decides how much
+// room the generated code actually leaves.
+enum { SWORD_GUARD_SIZE = 32 };
 
 void sword_mutex_lock(void *guard);
 void sword_mutex_unlock(void *guard);
+
+// A condition to wait on, which is what turns a mutex into something you can
+// build a queue out of. All three must be called with the guard held.
+// `wait` releases it, puts the task down, and takes it back on the way out.
+void sword_mutex_wait(void *guard);
+void sword_mutex_notify(void *guard);
+void sword_mutex_notify_all(void *guard);
 
 // Waits for a descriptor without holding the thread. Only a task can be put
 // down, so this answers -1 when there is none and the caller waits the old way.

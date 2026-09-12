@@ -107,6 +107,7 @@ struct Fiber {
   bool finished = false;
   std::atomic<int> state{FIBER_RUNNING};
   int wake_result = 0;
+  Fiber *waiting_next = nullptr; // next on a shared value's wait list
   int home = 0; // the worker it last ran on, where a wake puts it back
 #ifdef SWORD_ASAN
   void *fake_stack = nullptr;
@@ -554,6 +555,9 @@ Task *fresh_task() {
 struct Guard {
   int32_t held;
   uint64_t owner; // which thread, so locking twice is a diagnostic not a hang
+  // Tasks waiting for this value to change, newest first. Only ever touched
+  // with the guard held, so the list needs no atomics of its own.
+  Fiber *waiters;
 };
 
 static_assert(sizeof(Guard) <= SWORD_GUARD_SIZE, "guard blob too small");
@@ -636,6 +640,55 @@ void sword_mutex_unlock(void *blob) {
   Guard *g = (Guard *)blob;
   __atomic_store_n(&g->owner, (uint64_t)0, __ATOMIC_RELEASE);
   __atomic_store_n(&g->held, 0, __ATOMIC_RELEASE);
+}
+
+// Waits for somebody else to change the value. The guard is released while the
+// task is down and taken back before this returns, so the caller sees the same
+// invariants it had — except that they may have changed, which is why a caller
+// loops rather than testing once.
+void sword_mutex_wait(void *blob) {
+  Guard *g = (Guard *)blob;
+  Fiber *f = tl_fiber;
+  if (!f) {
+    // Nothing to put down: let go, wait a moment, take it back. Coarse, but
+    // only code outside any task ends up here.
+    sword_mutex_unlock(blob);
+    std::this_thread::sleep_for(std::chrono::microseconds(200));
+    sword_mutex_lock(blob);
+    return;
+  }
+
+  f->waiting_next = g->waiters;
+  g->waiters = f;
+  f->state.store(FIBER_PARKING, std::memory_order_release);
+  sword_mutex_unlock(blob);
+  leave(f, false);
+  // Woken, possibly on another thread, and the guard is somebody else's now.
+  sword_mutex_lock(blob);
+}
+
+void sword_mutex_notify(void *blob) {
+  Guard *g = (Guard *)blob;
+  Fiber *f = g->waiters;
+  if (!f) return;
+  g->waiters = f->waiting_next;
+  f->waiting_next = nullptr;
+  if (f->state.exchange(FIBER_READY, std::memory_order_acq_rel) == FIBER_PARKED)
+    make_runnable(f);
+}
+
+void sword_mutex_notify_all(void *blob) {
+  Guard *g = (Guard *)blob;
+  Fiber *f = g->waiters;
+  g->waiters = nullptr;
+  while (f) {
+    Fiber *next = f->waiting_next;
+    f->waiting_next = nullptr;
+    if (f->state.exchange(FIBER_READY, std::memory_order_acq_rel) ==
+        FIBER_PARKED)
+      make_runnable(f);
+    f = next;
+  }
 }
 }
 
