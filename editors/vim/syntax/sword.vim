@@ -6,12 +6,14 @@ endif
 
 syn keyword swordKeyword package import func return if else for in break continue
 syn keyword swordKeyword struct interface extern defer errdefer scope spawn
-syn keyword swordKeyword parallel reduce chan shared const
+syn keyword swordKeyword parallel reduce chan lock const
+syn keyword swordKeyword switch case default
 syn keyword swordKeyword try catch orelse
 syn keyword swordStorage mut
 syn keyword swordBoolean true false nil
 
-syn keyword swordType void bool string error int uint
+syn keyword swordType void bool string error int uint any
+syn keyword swordType atomic shared
 syn keyword swordType i8 i16 i32 i64 u8 u16 u32 u64 f32 f64
 
 syn match swordFunction "\<\h\w*\>\ze\s*("

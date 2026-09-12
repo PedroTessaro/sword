@@ -34,11 +34,11 @@
       "patterns": [
         {
           "name": "keyword.control.sword",
-          "match": "\\b(if|else|for|in|return|break|continue|try|catch|orelse|defer|errdefer|scope|spawn|parallel|reduce)\\b"
+          "match": "\\b(if|else|for|in|switch|case|default|return|break|continue|try|catch|orelse|defer|errdefer|scope|spawn|lock|parallel|reduce)\\b"
         },
         {
           "name": "keyword.declaration.sword",
-          "match": "\\b(package|import|func|struct|interface|extern|const|chan|shared)\\b"
+          "match": "\\b(package|import|func|struct|interface|extern|const|chan)\\b"
         },
         { "name": "storage.modifier.sword", "match": "\\bmut\\b" },
         { "name": "constant.language.sword", "match": "\\b(true|false|nil)\\b" }
@@ -46,7 +46,7 @@
     },
     "types": {
       "name": "support.type.primitive.sword",
-      "match": "\\b(void|bool|string|error|int|uint|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64)\\b"
+      "match": "\\b(void|bool|string|error|int|uint|any|atomic|shared|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64)\\b"
     },
     "errors": {
       "name": "variable.other.enummember.sword",
