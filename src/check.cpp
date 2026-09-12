@@ -35,10 +35,21 @@ struct Checker {
     // A spawn inside a loop happens once per iteration, so its accesses have
     // to be compared against themselves.
     bool repeated = false;
-    bool is_atomic = false;
+    // Reaching an atomic or a shared is safe however many tasks do it: the
+    // one goes through single instructions, the other through a mutex.
+    bool is_synced = false;
     Pos at;
   };
   std::vector<std::vector<Access>> scope_uses;
+
+  // The `lock` blocks that are open, innermost last, and the lock depth each
+  // open `scope` was entered at.
+  struct HeldLock {
+    Symbol *root;
+    Pos at;
+  };
+  std::vector<HeldLock> held_locks;
+  std::vector<size_t> scope_lock_base;
 
   // Tasks borrow the frame the scope sits in, so control may not leave the
   // block while they are still running. The join is the closing brace.
@@ -168,6 +179,19 @@ struct Checker {
           return types.void_ty;
         }
         return types.atomic(inner);
+      }
+      if (base->text.empty() && base->name == "shared" &&
+          !pkg.generic_types.count("shared")) {
+        if (n->kids.size() != 1) {
+          error(n->pos, "shared[T] takes one type argument");
+          return types.void_ty;
+        }
+        Type *inner = resolve(n->kids[0]);
+        if (inner->kind == TY_VOID) {
+          error(n->pos, "shared[void] has nothing to protect");
+          return types.void_ty;
+        }
+        return types.shared(inner);
       }
       Package *owner = &pkg;
       Node *decl = nullptr;
@@ -517,11 +541,10 @@ struct Checker {
     use.at = value->pos;
     Symbol *root = share_root(value);
     if (!root) return use;
-    // Reaching an atomic is safe however many tasks do it.
     const Type *reached = root->type;
     while (reached && (reached->kind == TY_PTR || reached->kind == TY_RAWPTR))
       reached = reached->elem;
-    use.is_atomic = ::is_atomic(reached);
+    use.is_synced = ::is_atomic(reached) || ::is_shared(reached);
     if (root->chunk_of) {
       use.chunk = root;
       use.root = root->chunk_of;
@@ -533,7 +556,7 @@ struct Checker {
 
   static bool clashes(const Access &a, const Access &b) {
     if (!a.root || a.root != b.root) return false;
-    if (a.is_atomic || b.is_atomic) return false;
+    if (a.is_synced || b.is_synced) return false;
     if (!a.writes && !b.writes) return false;
     // Two pieces of the same partition never overlap.
     if (a.chunk && a.chunk == b.chunk) return false;
@@ -1061,11 +1084,14 @@ struct Checker {
          target->kind == TY_STRING);
     bool into_atomic = target->kind == TY_ATOMIC &&
                        assignable(from, target->elem);
+    // `shared[T](v)` is the only way to make one, and it starts unlocked.
+    bool into_shared = target->is_shared && assignable(from, target->elem);
+    if (into_shared) apply_type(n->kids[0], target->elem);
     bool from_atomic = from->kind == TY_ATOMIC &&
                        assignable(from->elem, target);
     if (into_atomic) apply_type(n->kids[0], target->elem);
     bool ok = assignable(from, target) || same_bytes || into_atomic ||
-              from_atomic ||
+              from_atomic || into_shared ||
               (is_numeric(from) && is_numeric(target)) ||
               // Raw pointers are the unchecked side of the boundary, so they
               // reinterpret freely. `*T` converts out to one, never back in:
@@ -1426,30 +1452,32 @@ struct Checker {
     std::string shown;
     if (callee->kind == ND_IDENT) {
       shown = callee->name;
-      if (callee->name == "atomic" && !lookup("atomic") &&
-          !pkg.generic_types.count("atomic")) {
+      bool builtin_box =
+          (callee->name == "atomic" && !lookup("atomic") &&
+           !pkg.generic_types.count("atomic")) ||
+          (callee->name == "shared" && !lookup("shared") &&
+           !pkg.generic_types.count("shared"));
+      if (builtin_box) {
         if (arg_exprs.size() != 1) {
-          error(n->pos, "atomic[T] takes one type argument");
+          error(n->pos, "%s[T] takes one type argument",
+                callee->name.c_str());
           return nullptr;
         }
-        Node spec = *index;
-        spec.kind = ND_TYPE_INST;
-        Node base = *callee;
-        base.kind = ND_TYPE_NAME;
-        spec.lhs = &base;
-        spec.kids.clear();
-        std::vector<Node *> args;
-        for (Node *e : arg_exprs) {
-          Node *as_type = ast.make(ND_TYPE_NAME, e->pos);
-          as_type->name = e->kind == ND_IDENT ? e->name : "";
-          if (e->kind == ND_FIELD && e->lhs->kind == ND_IDENT) {
-            as_type->text = e->lhs->name;
-            as_type->name = e->name;
+        Type *inner = type_from_expr(arg_exprs[0]);
+        if (!inner) return nullptr;
+        if (callee->name == "shared") {
+          if (inner->kind == TY_VOID) {
+            error(n->pos, "shared[void] has nothing to protect");
+            return nullptr;
           }
-          args.push_back(as_type);
+          return check_convert(n, types.shared(inner));
         }
-        spec.kids = args;
-        return check_convert(n, resolve(&spec));
+        if (inner->kind != TY_INT && inner->kind != TY_BOOL) {
+          error(n->pos, "atomic[%s] is not supported; use an integer or bool",
+                type_str(inner).c_str());
+          return nullptr;
+        }
+        return check_convert(n, types.atomic(inner));
       }
       sym = lookup(callee->name);
       if (!sym) {
@@ -1994,11 +2022,51 @@ struct Checker {
     }
   }
 
+  // `lock c := table { ... }` holds the mutex for exactly the block. The
+  // binding is a mutable pointer to the value inside, and there is no other way
+  // to reach it — which is what makes the race checker's exemption safe.
+  void check_lock(Node *n) {
+    Type *t = check_expr(n->lhs);
+    if (!t) return;
+    Type *owner = t->kind == TY_PTR ? t->elem : t;
+    if (!is_shared(owner)) {
+      error(n->lhs->pos, "'lock' needs a shared value, got %s",
+            type_str(t).c_str());
+      return;
+    }
+    // No `mut` is asked for, the same way an atomic does not ask: the type
+    // itself says it will be written by whoever holds the lock, and there is no
+    // way to reach the value except by holding it.
+    Symbol *root = share_root(n->lhs);
+    for (const HeldLock &open : held_locks) {
+      if (open.root != root || !root) continue;
+      error(n->pos, "'%s' is already locked here", root->name.c_str());
+      note(open.at, "the outer 'lock' on it is still open");
+      return;
+    }
+
+    push_scope();
+    n->sym = declare(n->name, types.ptr(owner->elem), true, n->name_pos);
+    held_locks.push_back({root, n->pos});
+    check_stmt(n->body);
+    held_locks.pop_back();
+    pop_scope();
+  }
+
   // A task is a call and nothing else: everything it can reach is written on
   // the spawn line, which is what makes the sharing rules checkable.
   void check_spawn(Node *n) {
     if (open_scopes.empty() || open_scopes.back()->kind != ND_SCOPE) {
       error(n->pos, "'spawn' only exists directly inside a 'scope'");
+      return;
+    }
+    // A task started under a lock the scope does not sit inside would still be
+    // running after the lock is released.
+    if (held_locks.size() > scope_lock_base.back()) {
+      error(n->pos, "this task would outlive the 'lock' it starts under");
+      note(held_locks.back().at,
+           "put the 'scope' inside the 'lock' block, or the 'lock' inside the"
+           " task");
       return;
     }
     if (n->lhs->kind != ND_CALL) {
@@ -2226,10 +2294,12 @@ struct Checker {
     case ND_SCOPE:
       open_scopes.push_back(n);
       scope_loop_base.push_back(loop_depth);
+      scope_lock_base.push_back(held_locks.size());
       scope_uses.emplace_back();
       check_stmt(n->body);
       check_parent_uses(n->body);
       scope_uses.pop_back();
+      scope_lock_base.pop_back();
       scope_loop_base.pop_back();
       open_scopes.pop_back();
       // A scope that can observe a failure has to have somewhere to report it.
@@ -2240,6 +2310,10 @@ struct Checker {
 
     case ND_SPAWN:
       check_spawn(n);
+      break;
+
+    case ND_LOCK:
+      check_lock(n);
       break;
 
     case ND_DEFER:
@@ -2316,7 +2390,9 @@ struct Checker {
         // control out of the loop any more than a task body may.
         open_scopes.push_back(n);
         scope_loop_base.push_back(loop_depth);
+        scope_lock_base.push_back(held_locks.size());
         if (!n->text.empty() && !check_reduction(n)) {
+          scope_lock_base.pop_back();
           scope_loop_base.pop_back();
           open_scopes.pop_back();
           pop_scope();
@@ -2328,6 +2404,7 @@ struct Checker {
       loop_depth--;
       if (n->is_parallel) {
         check_parallel_body(n);
+        scope_lock_base.pop_back();
         scope_loop_base.pop_back();
         open_scopes.pop_back();
       }
@@ -2382,6 +2459,9 @@ struct Checker {
       return n->els && always_returns(n->body) && always_returns(n->els);
     case ND_FOR:
       return !n->is_range && !n->cond; // `for {}` only exits via return
+    // Leaving a `lock` releases it on the way out, so a `return` inside one
+    // counts the same as a `return` in a plain block.
+    case ND_LOCK: return always_returns(n->body);
     default: return false;
     }
   }
@@ -2399,6 +2479,8 @@ struct Checker {
       return false;
     case ND_IF:
       return n->els && always_leaves(n->body) && always_leaves(n->els);
+    case ND_LOCK:
+      return always_leaves(n->body);
     default:
       return always_returns(n);
     }
