@@ -336,6 +336,10 @@ int64_t sword_net_write(int32_t fd, const void *buf, int64_t len) {
   return sent;
 }
 
+int32_t sword_net_await(int32_t fd, int32_t writable) {
+  return (int32_t)await((int)fd, writable != 0);
+}
+
 int32_t sword_net_close(int32_t fd) {
   sword_forget_fd(fd);
   forget_limits(fd);

@@ -9,6 +9,9 @@ CLAUDE.md
 docs/design.md
 editors/vscode/node_modules/
 libsword_rt.a
+libsword_rt.flags
+rt/.tls-off
+rt/.tls-on
 shield
 swordls
 tests/*.out

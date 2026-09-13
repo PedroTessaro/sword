@@ -13,11 +13,33 @@ LSP      := swordls
 RT       := libsword_rt.a
 # What a compiled program has to be linked against beyond the archive. Written
 # at build time and read by the compiler, so the archive and its link line travel
-# together: only the build knows what it was built against, and only on this
-# machine.
+# together — a program that uses TLS needs libssl, and only the build knows where
+# that is on this machine.
 RTFLAGS  := libsword_rt.flags
 RTOBJ    := rt/sword_rt.o rt/sword_net.o rt/sword_os.o rt/sword_poll.o \
-            rt/sword_fs.o rt/sword_ctx.o
+            rt/sword_fs.o rt/sword_tls.o rt/sword_ctx.o
+
+# TLS is optional: the protocol is not something to write by hand, so it is
+# OpenSSL or nothing. Found here, or the runtime answers "built without TLS" and
+# everything else works as before. SWORD_OPENSSL=<prefix> overrides the search;
+# SWORD_NO_TLS=1 skips it.
+OPENSSL_PREFIX := $(strip $(SWORD_OPENSSL))
+ifeq ($(OPENSSL_PREFIX),)
+OPENSSL_PREFIX := $(firstword $(wildcard \
+    /opt/homebrew/opt/openssl@3 /usr/local/opt/openssl@3 \
+    /opt/homebrew/opt/openssl /usr/local/opt/openssl \
+    /usr/include/openssl/..))
+endif
+ifeq ($(SWORD_NO_TLS),1)
+OPENSSL_PREFIX :=
+endif
+ifneq ($(strip $(wildcard $(OPENSSL_PREFIX)/include/openssl/ssl.h)),)
+TLS_CXXFLAGS := -DSWORD_HAVE_TLS=1 -I$(OPENSSL_PREFIX)/include
+TLS_LDFLAGS  := -L$(OPENSSL_PREFIX)/lib -lssl -lcrypto
+TLS_STAMP    := rt/.tls-on
+else
+TLS_STAMP    := rt/.tls-off
+endif
 
 all: $(BIN) $(LSP) $(RT) $(RTFLAGS)
 
@@ -36,9 +58,20 @@ $(RT): $(RTOBJ)
 # it changes, so that the TLS object below is rebuilt exactly when the decision
 # does.
 $(RTFLAGS): FORCE
-	@echo '$(RT_LDFLAGS)' > $@
+	@echo '$(TLS_LDFLAGS)' > $@
+
+# The decision is in the file's name, so flipping it leaves a prerequisite that
+# does not exist and the object is rebuilt. Comparing timestamps would not do:
+# make 3.81, which is what macOS ships, dates files to the second, and a rewrite
+# in the same second as the build it should invalidate is invisible to it.
+$(TLS_STAMP):
+	@rm -f rt/.tls-on rt/.tls-off rt/sword_tls.o
+	@touch $@
 
 FORCE:
+
+rt/sword_tls.o: rt/sword_tls.cpp $(TLS_STAMP)
+	$(CXX) $(CXXFLAGS) $(TLS_CXXFLAGS) -MMD -MP -c $< -o $@
 
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
@@ -75,6 +108,6 @@ uninstall:
 
 clean:
 	rm -f $(OBJ) $(OBJ:.o=.d) $(RTOBJ) $(RTOBJ:.o=.d) $(BIN) $(LSP) $(RT) \
-	      $(RTFLAGS)
+	      $(RTFLAGS) rt/.tls-on rt/.tls-off
 
 .PHONY: all test install uninstall clean FORCE

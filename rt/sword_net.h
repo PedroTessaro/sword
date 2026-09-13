@@ -29,6 +29,10 @@ int32_t sword_net_timeout(int32_t fd, int64_t millis);
 // An absolute point on the monotonic clock, after which nothing on this socket
 // waits any longer. Zero clears it.
 int32_t sword_net_deadline(int32_t fd, int64_t at_ns);
+// Waits for a socket to be readable or writable, honouring whatever deadline it
+// carries: 0 ready, -2 out of time, -1 failed. Exported for the TLS layer, which
+// drives the same sockets and has to wait the same way.
+int32_t sword_net_await(int32_t fd, int32_t writable);
 int32_t sword_net_close(int32_t fd);
 // Closing a listener has to wake whoever is blocked in accept on it.
 int32_t sword_net_stop(int32_t fd);
