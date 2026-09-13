@@ -43,6 +43,22 @@ func pair(left chan[u64], right chan[u64], mut cases *atomic[u64],
     }
 }
 
+// A select with one way forward: the other case is on a channel nobody will ever
+// touch, so the send into the handover is the only thing that can fire. It parks
+// until a receiver turns up, and a receiver turning up is a change no `Wait` on
+// the channel is looking for — only a selector is. Getting that wrong is a hang,
+// and it was one.
+func push(out chan[u64], idle chan[u64], mut sent *atomic[u64]) !void {
+    for i in 0..5 {
+        select {
+        case <-idle:
+            return
+        case out <- 7:
+            sent.Add(1)
+        }
+    }
+}
+
 // Three values and no close: once they are taken, that case is simply never
 // ready again, which is what leaves the send case as the only way forward.
 func feed(c chan[u64], count u64) !void {
@@ -154,6 +170,23 @@ func main() !int {
         return 6
     }
 
+    // The same handover, with nothing else to rescue it. Above, three values on
+    // `left` keep waking the select up, which hides a lost wake; here the only case
+    // that will ever fire is the send, so if the receiver's arrival is not reported
+    // the whole thing stops. It used to, about once in seventy runs.
+    mut only := try chan[u64](&arena, 0)
+    mut idle := try chan[u64](&arena, 1)
+    mut sent := atomic[u64](0)
+    mut got := atomic[u64](0)
+    scope {
+        spawn push(only, idle, &sent)
+        spawn drain(only, 5, &got)
+    }
+    if sent.Load() != 5 || got.Load() != 35 {
+        try io.Printf("sent {} got {}\n", sent.Load(), got.Load())
+        return 7
+    }
+
     // Fairness: one channel always has something, the other rarely does. Both
     // have to get a turn, which is what the rotating start is for.
     // Both filled in advance, so nothing in here can wait on anything: what is
@@ -173,7 +206,7 @@ func main() !int {
     }
     if from_fast.Load() == 0 || from_slow.Load() == 0 {
         try io.Printf("fast {} slow {}\n", from_fast.Load(), from_slow.Load())
-        return 7
+        return 8
     }
 
     try io.Printf("select works: {} of {} cases came from the quiet side\n",
