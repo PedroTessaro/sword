@@ -124,11 +124,19 @@ struct Loader {
       }
       std::vector<Token> tokens = lex(id);
       if (error_count() > 0) return false;
+      // `chan[T]` is written like a type and implemented like a package, and
+      // nobody should have to import it to use a language feature. Noticing the
+      // word here is enough: the import is added below, and an extra one for a
+      // file that only mentions `chan` in passing costs a package nobody calls.
+      for (const Token &t : tokens)
+        if (t.kind == TK_IDENT && t.text == "chan") pkg.needs_chan = true;
       if (!parse(tokens, prog.ast, pkg.unit)) return false;
     }
 
     for (Node *decl : pkg.unit->kids)
       if (decl->kind == ND_IMPORT) pkg.imports.push_back(decl->text);
+    if (pkg.needs_chan && pkg.import_path != "std/chan")
+      pkg.imports.push_back("std/chan");
     return true;
   }
 
@@ -173,14 +181,16 @@ struct Loader {
       return nullptr;
     if (tests && import_path.empty() && !add_test_main(pkg)) return nullptr;
 
-    for (Node *decl : pkg.unit->kids) {
-      if (decl->kind != ND_IMPORT) continue;
-      std::string found_dir = locate(decl->text);
+    for (const std::string &path : pkg.imports) {
+      std::string found_dir = locate(path);
       if (found_dir.empty()) {
-        error(decl->pos, "cannot find package '%s'", decl->text.c_str());
+        Pos at = pkg.unit->kids.empty() ? Pos{} : pkg.unit->kids.front()->pos;
+        for (Node *decl : pkg.unit->kids)
+          if (decl->kind == ND_IMPORT && decl->text == path) at = decl->pos;
+        error(at, "cannot find package '%s'", path.c_str());
         return nullptr;
       }
-      if (!load(decl->text, found_dir, decl->pos)) return nullptr;
+      if (!load(path, found_dir, Pos{})) return nullptr;
     }
 
     visiting.pop_back();
@@ -220,14 +230,16 @@ bool load_program(const std::string &input,
   if (!loader.parse_files(pkg, {input})) return false;
   if (with_tests && !loader.add_test_main(pkg)) return false;
 
-  for (Node *decl : pkg.unit->kids) {
-    if (decl->kind != ND_IMPORT) continue;
-    std::string dir = loader.locate(decl->text);
+  for (const std::string &path : pkg.imports) {
+    std::string dir = loader.locate(path);
     if (dir.empty()) {
-      error(decl->pos, "cannot find package '%s'", decl->text.c_str());
+      Pos at{};
+      for (Node *decl : pkg.unit->kids)
+        if (decl->kind == ND_IMPORT && decl->text == path) at = decl->pos;
+      error(at, "cannot find package '%s'", path.c_str());
       return false;
     }
-    if (!loader.load(decl->text, dir, decl->pos)) return false;
+    if (!loader.load(path, dir, Pos{})) return false;
   }
 
   out.by_path[""] = &pkg;

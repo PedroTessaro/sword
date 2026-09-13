@@ -211,6 +211,19 @@ struct Checker {
         }
         return types.atomic(inner);
       }
+      // `chan[T]` is a type of the language spelled like a generic, and the
+      // generic it becomes lives in the package the compiler imported for it.
+      // Rewriting the node is all it takes: everything below already knows how
+      // to instantiate another package's generic struct.
+      if (base->text.empty() && base->name == "chan" &&
+          !pkg.generic_types.count("chan") && imported("chan")) {
+        if (n->kids.size() != 1) {
+          error(n->pos, "chan[T] takes one type argument");
+          return types.void_ty;
+        }
+        base->text = "chan";
+        base->name = "Chan";
+      }
       if (base->text.empty() && base->name == "shared" &&
           !pkg.generic_types.count("shared")) {
         if (n->kids.size() != 1) {
@@ -1583,6 +1596,19 @@ struct Checker {
     std::string shown;
     if (callee->kind == ND_IDENT) {
       shown = callee->name;
+      // `chan[T](&arena, 8)`: the same rewrite as the type, into the call that
+      // builds one. The allocator is explicit because everything here is —
+      // which is the reason `make` from Go has no equivalent.
+      if (callee->name == "chan" && !lookup("chan") &&
+          !pkg.generic_types.count("chan") && imported("chan")) {
+        Node *qualified = ast.make(ND_FIELD, callee->pos);
+        Node *owner_name = ast.make(ND_IDENT, callee->pos);
+        owner_name->name = "chan";
+        qualified->lhs = owner_name;
+        qualified->name = "New";
+        index->lhs = qualified;
+        return check_indexed_call(n);
+      }
       bool builtin_box =
           (callee->name == "atomic" && !lookup("atomic") &&
            !pkg.generic_types.count("atomic")) ||
@@ -1702,6 +1728,54 @@ struct Checker {
     return n->type = types.string_ty;
   }
 
+  // `<-ch` and `ch <- v`. Rewritten into the calls that do the work, so that
+  // `try`, `catch` and everything downstream see what they already understand.
+  Node *channel_call(Node *n, Node *channel, const char *method) {
+    Node *call = ast.make(ND_CALL, n->pos);
+    Node *field = ast.make(ND_FIELD, n->pos);
+    field->lhs = channel;
+    field->name = method;
+    field->name_pos = n->pos;
+    call->lhs = field;
+    return call;
+  }
+
+  // A channel is an instance of one generic struct, so this is what it is named.
+  // Asked before the rewrite, so that a mistake reads as what was written rather
+  // than as what it turns into.
+  bool is_channel(const Type *t) {
+    if (!t) return false;
+    const Type *owner = t->kind == TY_PTR ? t->elem : t;
+    const std::string mark = "std.chan.Chan$";
+    return owner->name.compare(0, mark.size(), mark) == 0;
+  }
+
+  Type *check_recv(Node *n) {
+    Type *from = check_expr(n->lhs);
+    if (!from) return nullptr;
+    if (!is_channel(from)) {
+      error(n->pos, "'<-' takes a channel, not %s", type_str(from).c_str());
+      return nullptr;
+    }
+    Node *call = channel_call(n, n->lhs, "Recv");
+    *n = *call;
+    return check_expr(n);
+  }
+
+  Type *check_send(Node *n) {
+    Type *into = check_expr(n->lhs);
+    if (!into) return nullptr;
+    if (!is_channel(into)) {
+      error(n->pos, "'<-' sends into a channel, not %s",
+            type_str(into).c_str());
+      return nullptr;
+    }
+    Node *call = channel_call(n, n->lhs, "Send");
+    call->kids.push_back(n->rhs);
+    *n = *call;
+    return check_expr(n);
+  }
+
   Type *check_call(Node *n) {
     if (n->lhs->kind == ND_INDEX) return check_indexed_call(n);
     if (n->lhs->kind == ND_FIELD) {
@@ -1716,6 +1790,19 @@ struct Checker {
       return nullptr;
     }
     if (n->lhs->name == "nameof" && !lookup("nameof")) return check_nameof(n);
+    // `close(ch)`, the third of the three things a channel needs a word for.
+    if (n->lhs->name == "close" && !lookup("close") && n->kids.size() == 1) {
+      Type *what = check_expr(n->kids[0]);
+      if (!what) return nullptr;
+      if (!is_channel(what)) {
+        error(n->pos, "'close' takes a channel, not %s",
+              type_str(what).c_str());
+        return nullptr;
+      }
+      Node *call = channel_call(n, n->kids[0], "Close");
+      *n = *call;
+      return check_expr(n);
+    }
     if (!lookup(n->lhs->name))
       if (Type *target = lookup_type(n->lhs->name))
         return check_convert(n, target);
@@ -2191,6 +2278,8 @@ struct Checker {
     case ND_NIL_LIT: return n->type = types.untyped_nil;
     case ND_CONVERT: return check_convert(n, resolve(n->type_expr));
     case ND_ORELSE: return check_orelse(n);
+    case ND_RECV: return check_recv(n);
+    case ND_SEND: return check_send(n);
     case ND_TRY: return check_try(n);
     case ND_CATCH: return check_catch(n);
     case ND_INT_LIT: return n->type = types.untyped_int;

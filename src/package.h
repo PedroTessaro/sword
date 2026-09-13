@@ -18,6 +18,10 @@ struct Package {
   Node *unit = nullptr;
   std::vector<std::string> imports;
 
+  // Set when a file in this package mentions `chan`, which is what pulls in the
+  // package that implements one.
+  bool needs_chan = false;
+
   // Errors this package declares, by name, so a diagnostic can say where one
   // came from.
   std::unordered_map<std::string, int> error_codes;

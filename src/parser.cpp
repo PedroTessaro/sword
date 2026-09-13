@@ -441,11 +441,27 @@ struct Parser {
     case TK_TRY: {
       Node *n = make(ND_TRY, advance().pos);
       n->lhs = unary();
-      return n->lhs ? n : nullptr;
+      if (!n->lhs) return nullptr;
+      // `try ch <- v`: what may fail is the send, so that is what `try` covers.
+      // Everywhere else `try` takes the tightest thing it can, and this is the
+      // one form where that would be the wrong half.
+      if (kind() == TK_RECV) {
+        Node *send = make(ND_SEND, advance().pos);
+        send->lhs = n->lhs;
+        send->rhs = binary(1);
+        if (!send->rhs) return nullptr;
+        n->lhs = send;
+      }
+      return n;
     }
     case TK_MINUS: case TK_BANG: case TK_AMP: case TK_STAR: {
       Node *n = make(ND_UNARY, pos);
       n->op = advance().kind;
+      n->lhs = unary();
+      return n->lhs ? n : nullptr;
+    }
+    case TK_RECV: {
+      Node *n = make(ND_RECV, advance().pos);
       n->lhs = unary();
       return n->lhs ? n : nullptr;
     }
@@ -475,7 +491,19 @@ struct Parser {
   // catches the whole sum rather than just `b`.
   Node *expr() {
     Node *lhs = binary(1);
-    if (!lhs || (kind() != TK_CATCH && kind() != TK_ORELSE)) return lhs;
+    if (!lhs) return nullptr;
+
+    // `ch <- v` is an expression that can fail, which is what lets `try` cover
+    // it and `catch` handle it the way they do any other call.
+    if (kind() == TK_RECV) {
+      Node *send = make(ND_SEND, advance().pos);
+      send->lhs = lhs;
+      send->rhs = binary(1);
+      if (!send->rhs) return nullptr;
+      lhs = send;
+    }
+
+    if (kind() != TK_CATCH && kind() != TK_ORELSE) return lhs;
 
     NodeKind form = kind() == TK_CATCH ? ND_CATCH : ND_ORELSE;
     Node *n = make(form, advance().pos);

@@ -260,7 +260,10 @@ struct Lexer {
       break;
     case '/': kind = match('=') ? TK_DIV_ASSIGN : TK_SLASH; break;
     case '<':
+      // `<-` is one token, so `a < -b` needs the space it reads better with —
+      // the same rule Go has, and the same reason.
       kind = match('=')   ? TK_LE
+             : match('-') ? TK_RECV
              : !match('<') ? TK_LT
              : match('=')  ? TK_SHL_ASSIGN
                            : TK_SHL;
@@ -365,6 +368,7 @@ const char *tok_name(TokKind kind) {
   case TK_DOTDOT: return "..";
   case TK_ELLIPSIS: return "...";
   case TK_ARROW: return "->";
+  case TK_RECV: return "<-";
   case TK_QUESTION: return "?";
   case TK_DEFINE: return ":=";
   case TK_ASSIGN: return "=";
