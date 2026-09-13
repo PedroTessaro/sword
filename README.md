@@ -104,9 +104,9 @@ The standard library covers memory (`std/mem`), byte buffers (`std/bytes`),
 byte-level strings (`std/strings`), generic containers (`std/collections`),
 printing and formatting (`std/io`, `std/fmt`), JSON (`std/json`), arguments and
 environment (`std/os`), files and standard input (`std/fs`), clocks and
-durations (`std/time`), scheduler counters (`std/runtime`), TCP (`std/net`), HTTP/1.1 with keep-alive, routing and
-timeouts, server and client (`std/http`), and tests (`std/testing`, run by
-`shield test`).
+durations (`std/time`), scheduler counters (`std/runtime`), TCP (`std/net`), TLS
+(`std/tls`), HTTP/1.1 with keep-alive, routing, timeouts, static files and HTTPS,
+server and client (`std/http`), and tests (`std/testing`, run by `shield test`).
 
 A task has its own stack, so a task waiting on a socket is put down rather than
 holding a thread: the descriptor goes to a poller and the worker moves on.
