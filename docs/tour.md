@@ -916,6 +916,59 @@ the interface works with either. Because an `Allocator` is a parameter and
 never a global, a signature without one is a promise that the function does not
 touch the heap — and the compiler has no way to break that promise.
 
+### Memory that has gone away
+
+Two of the ways to read memory that is no longer yours are the compiler's problem,
+and it takes them:
+
+- **A task cannot outlive the memory it borrowed.** `scope`'s closing brace joins,
+  so lending a task a slice of your own stack is safe by construction.
+- **A function cannot hand back its own frame.** `return &local`, `return local[..]`,
+  `return &local[i]` and `return &local.field` are compile errors, because the
+  frame is gone before the caller can look.
+
+```sword
+func leak() []u64 {
+    mut room := [4]u64{}
+    return room[..]        // error: memory that lives in this function's frame
+}
+```
+
+The third way is yours: **freeing something and then reading it.** Nothing here
+tracks that — it would take the ownership machinery this language deliberately does
+not have — so what the standard library offers instead is a way to make the mistake
+loud instead of plausible.
+
+```sword
+mut arena := mem.NewArena(backing[..])
+arena.Watch = true          // Reset writes 0xDE over everything it takes back
+
+mut xs := mem.Alloc[u64](&arena, 2) orelse return error.OutOfMemory
+xs[0] = 7
+arena.Reset()
+// xs[0] is now 0xDEDEDEDEDEDEDEDE rather than whatever came next
+```
+
+`mem.NewWatched(&other)` does the same for an allocator you release through one
+piece at a time. Both cost a write per byte, which is why they are a choice rather
+than the default — turn them on in a build you are debugging. `shield test` turns
+`Watch` on for every test's arena already, so a test is where this catches you.
+
+Three habits make the difference in practice, and they are worth more than any
+checking:
+
+1. **An arena per phase, and nothing crosses the reset.** A server gives each
+   request an arena and resets between requests; a response body read out of it is
+   valid until that reset and not one line longer. If you need something to outlive
+   the phase, copy it into memory that does.
+2. **Borrowed memory is spelled out in the signature.** `func (r *Request) Query(name string) string` hands back
+   a piece of the connection's read buffer, and `std/http` says so where it is
+   documented. When you write something similar, say it in the same place.
+3. **Free where you allocated.** A function that takes an allocator and returns
+   memory from it leaves the freeing to its caller; a function that allocates for
+   its own working space frees it with `defer` on the way out. Splitting those two
+   roles between different functions is how a double free gets written.
+
 ## Packages
 
 A package is a directory. Every `.sw` file in it shares one scope, so there are

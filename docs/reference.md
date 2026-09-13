@@ -451,6 +451,20 @@ func (mut a *Arena) Reset()
 func (a *Arena) Used() u64
 ```
 
+`Arena.Watch` is a field: set it and `Reset` writes `mem.Poison` (0xDE) over
+everything it takes back, so anything still holding memory from before the reset
+reads something obviously wrong. `shield test` sets it on every test's arena.
+`Watched` does the same for memory released one piece at a time:
+
+```sword
+func NewWatched(a Allocator) Watched            // { inner, Written }
+func (mut w *Watched) Alloc(n u64, align u64) ?[*]u8
+func (mut w *Watched) Release(p [*]u8, n u64)   // writes over it first
+```
+
+Both cost a write per byte released, so neither is on by default. See [the tour on
+memory that has gone away](tour.md#memory-that-has-gone-away).
+
 `System` — over C `malloc` and `free`:
 
 ```sword

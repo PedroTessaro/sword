@@ -181,10 +181,15 @@ Said plainly, because a page like this is worthless otherwise:
   library is `std/mem`, `std/io`, `std/fmt`, `std/bytes`, `std/strings`,
   `std/collections`, `std/json`, `std/os`, `std/fs`, `std/time`, `std/runtime`,
   `std/net`, `std/tls`, `std/http`, `std/chan` and `std/testing`. That is the list.
-- **Not memory-safe in Rust's sense.** Sword stops data races and stops a task from
-  outliving the memory it borrowed. It does not stop you from freeing something and
-  using it afterwards. Bounds and integer overflow are checked in the default build
-  mode; lifetimes across data structures are yours to get right.
+- **Not memory-safe in Rust's sense.** Sword stops data races, stops a task from
+  outliving the memory it borrowed, and refuses a function that hands back its own
+  frame. It does not stop you from freeing something and reading it afterwards:
+  that would take the ownership machinery this language deliberately does not have.
+  Bounds and integer overflow are checked in the default build mode, `mem.Watch`
+  and `mem.NewWatched` make released memory read as obviously wrong rather than
+  plausible, and `shield test` turns the first of those on for you — but the
+  discipline is yours. [The tour says what that discipline
+  is](tour.md#memory-that-has-gone-away).
 - **No closures.** Function values carry no captured state, by design — it is part
   of what makes `spawn` checkable. State goes in an interface.
 - **Tens of thousands of tasks, not millions.** A stack each, and the kernel counts
