@@ -990,11 +990,31 @@ namespace {
 
 // Instead of idling, a thread waiting on a scope runs whatever work it can
 // find. That is what makes nested scopes safe from deadlock.
+//
+// When there is nothing to run it yields for a while and then starts sleeping. A
+// join that waits on something slow — a task on a two-second timer, a server
+// shutting down — used to spin a whole core for as long as it took, which is a core
+// nobody was using for anything. The cap is a millisecond, so the join answers
+// promptly once work appears.
 void drain_until(Scope *scope) {
+  int idle = 0;
+  int64_t nap = 50000; // nanoseconds, doubling to a millisecond
   while (scope->outstanding.load(std::memory_order_acquire) > 0) {
-    if (Fiber *f = find_ready(tl_worker)) resume_fiber(f);
-    else if (Task *task = find_task(tl_worker)) run_task(task);
-    else std::this_thread::yield();
+    if (Fiber *f = find_ready(tl_worker)) {
+      resume_fiber(f);
+    } else if (Task *task = find_task(tl_worker)) {
+      run_task(task);
+    } else if (idle++ < 64) {
+      std::this_thread::yield();
+      continue;
+    } else {
+      std::this_thread::sleep_for(std::chrono::nanoseconds(nap));
+      if (nap < 1000000) nap *= 2;
+      continue;
+    }
+    // Something ran, so whatever this was waiting for may be closer now.
+    idle = 0;
+    nap = 50000;
   }
 }
 
