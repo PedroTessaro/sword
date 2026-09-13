@@ -283,6 +283,26 @@ void on_fault(int sig, siginfo_t *info, void *) {
   sigaction(sig, sig == SIGBUS ? &g_was_bus : &g_was_segv, nullptr);
 }
 
+// Where the handler runs, one per thread, from mmap rather than the allocator: a
+// signal stack should not depend on the heap, least of all when what went wrong
+// might be the heap. Given back when the thread ends, which is the last moment
+// it could fault.
+struct AltStack {
+  void *base = nullptr;
+  size_t size = 0;
+
+  ~AltStack() {
+    if (!base) return;
+    stack_t off;
+    memset(&off, 0, sizeof(off));
+    off.ss_flags = SS_DISABLE;
+    sigaltstack(&off, nullptr);
+    munmap(base, size);
+  }
+};
+
+thread_local AltStack tl_alt;
+
 // Called by every thread that may run a task, before it runs one.
 void watch_for_overflow() {
   static std::once_flag once;
@@ -295,15 +315,19 @@ void watch_for_overflow() {
     sigaction(SIGSEGV, &sa, &g_was_segv);
     sigaction(SIGBUS, &sa, &g_was_bus);
   });
-  // Freed when the thread ends, which is the last moment it could fault.
-  static thread_local std::vector<char> alt;
-  if (!alt.empty()) return;
-  size_t size = SIGSTKSZ < 64 * 1024 ? 64 * 1024 : (size_t)SIGSTKSZ;
-  alt.resize(size);
+  if (tl_alt.base) return;
+  // The handler writes one short line and leaves, so this is roomy already.
+  size_t want = MINSIGSTKSZ > 32 * 1024 ? (size_t)MINSIGSTKSZ : 32 * 1024;
+  size_t size = round_up(want, page_size());
+  void *mem = mmap(nullptr, size, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (mem == MAP_FAILED) return; // no room to report, so report nothing
+  tl_alt.base = mem;
+  tl_alt.size = size;
   stack_t s;
   memset(&s, 0, sizeof(s));
-  s.ss_sp = alt.data();
-  s.ss_size = alt.size();
+  s.ss_sp = mem;
+  s.ss_size = size;
   sigaltstack(&s, nullptr);
 }
 
