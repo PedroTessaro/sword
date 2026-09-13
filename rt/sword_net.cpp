@@ -27,6 +27,18 @@ struct Parked {
   ~Parked() { sword_blocking_exit(); }
 };
 
+struct Resolve {
+  const char *name;
+  const char *service;
+  const addrinfo *hints;
+  addrinfo **found;
+};
+
+int64_t do_resolve(void *p) {
+  Resolve *r = (Resolve *)p;
+  return getaddrinfo(r->name, r->service, r->hints, r->found);
+}
+
 // Every socket is non-blocking underneath; waiting is the runtime's job rather
 // than the kernel's. Inside a task that means putting the task down and letting
 // the worker go elsewhere; outside one — the main thread before any scope —
@@ -246,9 +258,14 @@ int32_t sword_net_dial_timeout(const char *host, int64_t host_len, int32_t port,
   snprintf(service, sizeof(service), "%d", port);
 
   sword_os_ignore_sigpipe();
-  Parked parked; // name resolution blocks too, often for longer than connect
   addrinfo *found = nullptr;
-  if (getaddrinfo(name, service, &hints, &found) != 0) return -1;
+  Resolve call{name, service, &hints, &found};
+  // Name resolution is one library call with no way into the middle of it, and
+  // often the longest part of a dial. It goes to the pool that file I/O uses:
+  // the task is put down, and the worker is free meanwhile. Bracketing the whole
+  // dial in blocking hints was worse than slow — the hint is counted per thread,
+  // and a task that came back on another one never gave it back.
+  if (sword_offload(do_resolve, &call) != 0) return -1;
 
   int fd = -1;
   bool timed_out = false;
