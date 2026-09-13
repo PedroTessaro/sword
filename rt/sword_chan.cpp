@@ -100,6 +100,10 @@ int32_t sword_chan_recv(void *chan, void *into) {
   Chan *c = (Chan *)chan;
   sword_mutex_lock(c->guard);
   c->waiting++;
+  // A handover becomes sendable only once somebody is waiting for it, so a
+  // `select` with a send case on this channel is waiting for exactly this and
+  // nothing else will tell it.
+  if (c->direct) sword_mutex_notify_watchers(c->guard);
   while (c->count == 0 && !c->closed) sword_mutex_wait(c->guard);
   c->waiting--;
   if (c->count == 0) {
@@ -201,6 +205,9 @@ int64_t sword_chan_select(void **chans, const int32_t *ops, void **values,
       Chan *c = (Chan *)chans[i];
       sword_mutex_lock(c->guard);
       c->waiting++;
+      // The other side of the same coin: another task's select may be sitting on
+      // a send case for this handover, and this is the change it is waiting for.
+      if (c->direct) sword_mutex_notify_watchers(c->guard);
       sword_mutex_unlock(c->guard);
     }
 

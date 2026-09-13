@@ -94,4 +94,8 @@ int64_t sword_mutex_watch_bytes(void);
 void sword_mutex_watch(void **blobs, int64_t n, void *nodes);
 void sword_mutex_park(void);
 void sword_mutex_unwatch(void **blobs, int64_t n, void *nodes);
+// Wakes everything watching this guard except the caller, for a change that no
+// `wait` is looking for but a `select` on another task might be. Held, like the
+// rest of them.
+void sword_mutex_notify_watchers(void *blob);
 }

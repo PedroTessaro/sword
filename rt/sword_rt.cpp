@@ -970,6 +970,18 @@ void sword_mutex_park(void) {
   leave(f, false);
 }
 
+// Everything watching this guard *but the caller*. A task that has just made
+// itself a receiver has changed what somebody else's `select` can do, and there
+// is no `wait` on the other side to notify — only a selector. Skipping the caller
+// is not an optimisation: a select registers its own node before it looks, so
+// waking itself here would turn the park that follows into a spin.
+void sword_mutex_notify_watchers(void *blob) {
+  Guard *g = (Guard *)blob;
+  Fiber *me = tl_fiber;
+  for (Selector *s = g->selectors; s; s = s->next)
+    if (s->f != me) wake_one(s->f);
+}
+
 void sword_mutex_unwatch(void **blobs, int64_t n, void *nodes) {
   Fiber *f = tl_fiber;
   if (!f || n <= 0) return;
