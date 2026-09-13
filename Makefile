@@ -17,7 +17,7 @@ RT       := libsword_rt.a
 # that is on this machine.
 RTFLAGS  := libsword_rt.flags
 RTOBJ    := rt/sword_rt.o rt/sword_net.o rt/sword_os.o rt/sword_poll.o \
-            rt/sword_fs.o rt/sword_tls.o rt/sword_ctx.o
+            rt/sword_fs.o rt/sword_chan.o rt/sword_tls.o rt/sword_ctx.o
 
 # TLS is optional: the protocol is not something to write by hand, so it is
 # OpenSSL or nothing. Found here, or the runtime answers "built without TLS" and
