@@ -358,6 +358,11 @@ func handle(c net.Conn) !void {
 }
 ```
 
+The same is true of a TLS handshake, which is several round trips rather than one:
+OpenSSL says it needs more bytes, the task goes down, the poller brings it back.
+Twenty clients arriving at once are twenty tasks on however many threads you have,
+not twenty threads waiting on twenty handshakes.
+
 ### What a stack costs
 
 A stack is reserved rather than committed, so what a waiting task actually costs
