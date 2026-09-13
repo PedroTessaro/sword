@@ -180,6 +180,76 @@ A handshake that fails costs that one connection and nothing is written back.
 There is no HTTP yet to answer with, and a client that offered a protocol from
 2011 would not read a 400 anyway. TLS 1.2 is the floor.
 
+### Asking who is calling
+
+A server can require a certificate from the client as well, which is what people mean
+by mutual TLS. `tls.ServerConfig` says what to present and what to ask for:
+
+```sword
+import "std/http"
+import "std/tls"
+
+func main() !int {
+    mut conf := tls.NewServerConfig("chain.pem", "key.pem")
+    conf.ClientCA = "clients.pem"        // the authority their certificates come from
+    conf.Clients = tls.Ask.Required      // and a connection without one is refused
+
+    mut mux := http.NewMux()
+    mut server := try http.ListenWith(8443, conf)
+    try server.Serve(&mux)
+    return 0
+}
+```
+
+`Ask` has three settings and the middle one is where accidents happen:
+
+| | |
+|---|---|
+| `Ask.Nobody` | the default: anybody connects, and the server learns nothing about them |
+| `Ask.Required` | a certificate signed by `ClientCA`, or the connection is refused |
+| `Ask.Optional` | a certificate if they have one, and a connection either way |
+
+Under `Required`, a handler may believe what the certificate says. Under `Optional`
+it may not — both kinds of connection get through, so the handler has to look:
+
+```sword
+func (h *Site) Serve(req *http.Request, mut res *http.Response) !void {
+    if req.PeerName.len == 0 {
+        try res.Text(401, "who are you\n")
+        return
+    }
+    try res.Printf("hello {}\n", req.PeerName)
+}
+```
+
+`req.PeerName` is the subject of the certificate the client presented —
+`/CN=worker-7` — and empty when there was none. It is read once per connection, not
+per request, because a certificate cannot change while a connection lasts.
+
+Asking for a certificate without an authority to check it against fails at startup
+rather than being quietly ignored. That combination reads like security and is not.
+
+For the client half, `Client.TLS` carries the certificate to present:
+
+```sword
+mut client := http.NewClient()
+client.TLS.CAFile = "ca.pem"
+client.TLS.CertFile = "worker.pem"
+client.TLS.KeyFile = "worker-key.pem"
+```
+
+And to make the pair to test against, `tls.SignedBy` signs with an authority instead
+of with itself:
+
+```sword
+try tls.SelfSigned("my-authority", "ca.pem", "ca-key.pem")
+try tls.SignedBy("api.internal", "ca.pem", "ca-key.pem", "api.pem", "api-key.pem", false)
+try tls.SignedBy("worker-7", "ca.pem", "ca-key.pem", "worker.pem", "worker-key.pem", true)
+```
+
+The last argument marks the certificate for client authentication. A strict peer
+refuses one issued for the other job, and the message it gives will not help you.
+
 `Free()` gives the certificate back, and it is separate from `Close()` on purpose:
 `Close` stops the accept loop and is normally called from inside a task, at which
 moment other connections are still handshaking against the certificate. Free it
@@ -576,6 +646,4 @@ writing the same thing".
 There is no cookie or form parsing and no range requests, and the client does not
 send chunked itself — the server reads chunked requests but the client does not
 write them. The client keeps one connection rather than a pool, so calls to several
-services in a row still pay for a handshake each time. Client certificates are not
-wired up either: TLS here authenticates the server to the client and not the other
-way round.
+services in a row still pay for a handshake each time.

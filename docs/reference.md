@@ -867,9 +867,13 @@ here rather than failing to link.
 ```sword
 func Available() bool
 
-func NewConfig() Config                      // { CAFile, Verify }
+func NewConfig() Config              // { CAFile, Verify, CertFile, KeyFile }
 func ClientContext(c Config) !Context        // one context, any number of conns
 func ServerContext(certFile string, keyFile string) !Context
+
+enum Ask u8 { Nobody, Required, Optional }   // what a server asks of a client
+func NewServerConfig(certFile string, keyFile string) ServerConfig
+func ServerContextWith(c ServerConfig) !Context   // { CertFile, KeyFile, ClientCA, Clients }
 func (c *Context) Free()
 
 func Dial(ctx *Context, host string, port i32) !Conn
@@ -884,11 +888,23 @@ func (c *Conn) SetDeadline(at time.Instant) !void
 func (c *Conn) Peer(mut into []u8) !net.Peer
 func (c *Conn) Version() string              // "TLSv1.3"
 func (c *Conn) Cipher() string
+func (c *Conn) PeerName(mut into []u8) ?string  // the peer's certificate subject
+func (c *Conn) Verified() bool               // it presented one and it checked out
 func (c *Conn) Close()
 
-// A certificate signed by its own key, valid for a day. Development and tests.
+// A certificate signed by its own key, valid for a day, and marked as an authority
+// so it can sign others. Development and tests.
 func SelfSigned(host string, certFile string, keyFile string) !void
+// One signed by that authority instead of by itself, so two of them can check each
+// other. `forClient` marks it for client authentication.
+func SignedBy(name string, caCert string, caKey string, certFile string,
+              keyFile string, forClient bool) !void
 ```
+
+`Ask.Required` refuses a client without a certificate signed by `ClientCA`, and is
+the only setting under which a handler may believe `PeerName`. `Ask.Optional` lets
+both kinds through and leaves the checking to the handler. Asking for a certificate
+with no `ClientCA` to check it against is an error, not a default.
 
 A `Conn` keeps the socket it took over in `Socket`, so deadlines and the peer's
 address stay where they were, and it is a `net.Stream`. The handshake and every
@@ -913,6 +929,8 @@ func ListenOn(host string, port i32, share bool) !Server
 func ListenTLS(port i32, certFile string, keyFile string) !Server
 func ListenOnTLS(host string, port i32, share bool, certFile string,
                  keyFile string) !Server
+func ListenWith(port i32, conf tls.ServerConfig) !Server      // asks for a client cert
+func ListenOnWith(host string, port i32, share bool, conf tls.ServerConfig) !Server
 func (s *Server) Secure() bool               // whether it handshakes first
 func (mut s *Server) Free()                  // gives the certificate back
 func (s *Server) Port() i32
@@ -926,7 +944,9 @@ func (s *Server) Close()                     // stops accepting, then drains
 ```
 
 A `Request` carries `Method`, `Target`, `Path`, `RawQuery`, `Proto`,
-`RemoteAddr`, `Headers` and `Body`. A body sent with `Transfer-Encoding:
+`RemoteAddr`, `PeerName`, `Headers` and `Body`. `PeerName` is the subject of the
+client's certificate when the server asked for one and got a valid one, and empty
+otherwise — including every request under `Ask.Optional` that arrived without one. A body sent with `Transfer-Encoding:
 chunked` is decoded before the handler sees it. `Target` is the request line unchanged; `Path` and `RawQuery` are
 its two halves. The strings point into the connection's read buffer, so they are
 valid for as long as the handler runs.
