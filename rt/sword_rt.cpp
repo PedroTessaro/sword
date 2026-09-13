@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <signal.h>
 #include <sys/mman.h>
 #include <thread>
 #include <unistd.h>
@@ -94,7 +95,9 @@ const size_t kStackReserve = 1024 * 1024;
 // Stacks are handed out from slabs: one mapping holds many of them, which is
 // one syscall per slab instead of one per task, and — because a slab is
 // contiguous and every stack in it is the same size — turns a fault address
-// into "which stack, how far down" with arithmetic alone.
+// into "which stack, how far down" with arithmetic alone. That is what lets an
+// overflow be reported from inside a signal handler, where a lock would be a
+// deadlock waiting to happen.
 const size_t kStacksPerSlab = 32;
 // Enough slabs for sixty-five thousand live tasks. Past that the kernel's limit
 // on mappings arrives first, and no arrangement of ours moves it.
@@ -144,9 +147,9 @@ size_t page_size() {
 size_t round_up(size_t bytes, size_t to) { return (bytes + to - 1) / to * to; }
 
 // Every slab ever mapped, and the stacks in them that nobody is using. The
-// bases are published rather than kept private, which is why they are atomic
-// and why nothing is ever taken out of the array: a slab lives as long as the
-// process, and an address in one can be recognised without the lock.
+// bases are published for the fault handler to read, which is why they are
+// atomic and why nothing is ever taken out of the array: a slab lives as long
+// as the process, so an address in one can be recognised without the lock.
 struct Slabs {
   std::mutex lock;
   std::vector<char *> spare; // the low end of each free stack's guard
@@ -223,6 +226,85 @@ void unmap_stack(Fiber *f) {
 #endif
   std::lock_guard<std::mutex> held(s.lock);
   s.spare.push_back(f->base);
+}
+
+// --- running out of stack ------------------------------------------------
+
+// Without this a task that runs off the bottom of its stack takes the process
+// with it and leaves behind a fault address, which says nothing about what
+// happened. The handler cannot run on the stack that overflowed, so every
+// thread that runs tasks gets a small one of its own for it.
+struct sigaction g_was_segv;
+struct sigaction g_was_bus;
+
+// Only reads published atomics and writes to a descriptor, which is all a
+// handler may safely do.
+bool fault_in_guard(const void *addr) {
+  size_t stride = g_slabs.stride.load(std::memory_order_acquire);
+  if (stride == 0) return false;
+  const char *at = (const char *)addr;
+  int slabs = g_slabs.count.load(std::memory_order_acquire);
+  for (int i = 0; i < slabs; i++) {
+    const char *base = g_slabs.base[i].load(std::memory_order_acquire);
+    if (!base || at < base || at >= base + stride * kStacksPerSlab) continue;
+    return (size_t)(at - base) % stride < g_slabs.guard;
+  }
+  return false;
+}
+
+// Digits by hand: a handler may not call into stdio.
+char *put_number(char *out, size_t value) {
+  char digits[24];
+  int n = 0;
+  do {
+    digits[n++] = (char)('0' + value % 10);
+    value /= 10;
+  } while (value > 0);
+  while (n > 0) *out++ = digits[--n];
+  return out;
+}
+
+void on_fault(int sig, siginfo_t *info, void *) {
+  if (fault_in_guard(info->si_addr)) {
+    char text[128];
+    char *end = text;
+    const char *head = "sword: a task ran out of stack. It had ";
+    while (*head) *end++ = *head++;
+    end = put_number(end, g_slabs.stack / 1024);
+    const char *tail = " KiB; SWORD_STACK_KB sets that.\n";
+    while (*tail) *end++ = *tail++;
+    ssize_t wrote = write(2, text, (size_t)(end - text));
+    (void)wrote;
+    _exit(134); // what a shell reports for a process killed by abort
+  }
+  // Somebody else's fault. Put back whatever was handling it and return: the
+  // instruction runs again and the process dies the way it would have, with a
+  // sanitizer's report if one is watching.
+  sigaction(sig, sig == SIGBUS ? &g_was_bus : &g_was_segv, nullptr);
+}
+
+// Called by every thread that may run a task, before it runs one.
+void watch_for_overflow() {
+  static std::once_flag once;
+  std::call_once(once, [] {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = on_fault;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, &g_was_segv);
+    sigaction(SIGBUS, &sa, &g_was_bus);
+  });
+  // Freed when the thread ends, which is the last moment it could fault.
+  static thread_local std::vector<char> alt;
+  if (!alt.empty()) return;
+  size_t size = SIGSTKSZ < 64 * 1024 ? 64 * 1024 : (size_t)SIGSTKSZ;
+  alt.resize(size);
+  stack_t s;
+  memset(&s, 0, sizeof(s));
+  s.ss_sp = alt.data();
+  s.ss_size = alt.size();
+  sigaltstack(&s, nullptr);
 }
 
 // Lays out a frame the context switch can resume into: zeroed callee-saved
@@ -481,6 +563,7 @@ void resume_fiber(Fiber *f) {
 
 void worker_loop(int me) {
   tl_worker = me;
+  watch_for_overflow();
   Pool &p = pool();
   while (!p.stopping.load(std::memory_order_acquire)) {
     if (Fiber *f = find_ready(me)) {
@@ -501,6 +584,7 @@ void worker_loop(int me) {
 // owns a queue, and retires once the work it was hired for has dried up.
 void helper_loop() {
   tl_worker = -1;
+  watch_for_overflow();
   Pool &p = pool();
   int idle = 0;
   while (!p.stopping.load(std::memory_order_acquire)) {
@@ -568,6 +652,7 @@ Pool &pool() {
     for (int i = 0; i < n; i++) p->workers.push_back(new Worker());
     for (int i = 1; i < n; i++) p->threads.emplace_back(worker_loop, i);
     tl_worker = 0; // the thread that starts the pool owns queue 0
+    watch_for_overflow();
     atexit(stop_pool);
     running.store(p, std::memory_order_release);
     return p;
