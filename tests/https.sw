@@ -4,6 +4,7 @@
 // that knows is the one that listens, which is the point of the server reading a
 // stream rather than a socket.
 
+import "std/bytes"
 import "std/fs"
 import "std/http"
 import "std/io"
@@ -17,6 +18,17 @@ const keyPath = "/tmp/sword_https_key.pem"
 
 struct Site {
     n u64
+}
+
+// Answers every path with a redirect to wherever it was told, which for this test
+// is an `https` URL on the other server.
+struct Moved {
+    to string
+}
+
+func (h *Moved) Serve(req *http.Request, mut res *http.Response) !void {
+    res.Status = 302
+    try res.SetHeader("Location", h.to)
 }
 
 func (h *Site) Serve(req *http.Request, mut res *http.Response) !void {
@@ -34,6 +46,10 @@ func serve(s *http.Server, m *http.Mux) !void {
     try s.ServeWith(m, 32)
 }
 
+func servePlain(s *http.Server, h *Moved) !void {
+    try s.ServeWith(h, 8)
+}
+
 // A request by hand over TLS, because the client in std/http speaks plain HTTP.
 func ask(ctx *tls.Context, port i32, request string, mut into []u8) !u64 {
     mut c := try tls.Dial(ctx, "127.0.0.1", port)
@@ -48,6 +64,28 @@ func ask(ctx *tls.Context, port i32, request string, mut into []u8) !u64 {
     }
     c.Close()
     return have
+}
+
+// Follows a redirect from plain HTTP to HTTPS, which needs the hop to carry the
+// scheme with it.
+func crossScheme(url string, mut score *atomic[u64], plain *http.Server,
+                 secure *http.Server) !void {
+    mut backing := [131072]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut client := http.NewClient()
+    client.TLS.CAFile = certPath
+
+    res := client.Fetch(url, &arena) catch {
+        plain.Close()
+        secure.Close()
+        return
+    }
+    if res.Status == 200 &&
+       strings.Contains(string(res.Body), "hello moved") {
+        score.Add(1)
+    }
+    plain.Close()
+    secure.Close()
 }
 
 func drive(port i32, mut score *atomic[u64], s *http.Server) !void {
@@ -154,6 +192,8 @@ func main() !int {
 
     try tls.SelfSigned("127.0.0.1", certPath, keyPath)
 
+    mut room := [4096]u8{}
+    mut scratch := mem.NewArena(room[..])
     mut site := Site{n: 0}
     mut mux := http.NewMux()
     try mux.Get("/hello/{name}", &site)
@@ -172,9 +212,6 @@ func main() !int {
     }
     srv.Free()
 
-    fs.Remove(certPath) catch {}
-    fs.Remove(keyPath) catch {}
-
     if score.Load() != 31 {
         try io.Printf("score {}\n", score.Load())
         return 3
@@ -184,6 +221,35 @@ func main() !int {
     if srv.Served() < 5 || srv.Accepted() < 4 {
         return 4
     }
-    try io.Print("https checked: plain, chunked, kept alive and refused\n")
+    // http → https, followed. Two servers, and a Location built where there is
+    // somewhere to build it: a handler has no allocator.
+    mut secure := try http.ListenTLS(0, certPath, keyPath)
+    mut location := try bytes.New(&scratch, 64)
+    try location.WriteString("https://127.0.0.1:")
+    try location.WriteU64(u64(secure.Port()))
+    try location.WriteString("/hello/moved")
+    mut moved := Moved{to: string(location.Bytes())}
+
+    mut plain := try http.Listen(0)
+    mut target := try bytes.New(&scratch, 64)
+    try target.WriteString("http://127.0.0.1:")
+    try target.WriteU64(u64(plain.Port()))
+    try target.WriteString("/go")
+
+    mut hopped := atomic[u64](0)
+    scope {
+        spawn serve(&secure, &mux)
+        spawn servePlain(&plain, &moved)
+        spawn crossScheme(string(target.Bytes()), &hopped, &plain, &secure)
+    }
+    secure.Free()
+    if hopped.Load() != 1 {
+        return 5
+    }
+
+    fs.Remove(certPath) catch {}
+    fs.Remove(keyPath) catch {}
+
+    try io.Print("https checked: plain, chunked, kept alive, refused and redirected\n")
     return 42
 }
