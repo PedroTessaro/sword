@@ -5,6 +5,7 @@ import "std/mem"
 import "std/net"
 import "std/strings"
 import "std/time"
+import "std/tls"
 
 // A request that hangs is worse than one that fails, so the package-level
 // helpers come with a limit rather than none.
@@ -32,12 +33,15 @@ struct Client {
     // How many redirects to follow before giving up. Zero hands the 3xx back as
     // the answer, which is what a client that wants to decide for itself needs.
     Redirects u64
+    // How an `https` URL is trusted. Ignored for plain HTTP.
+    TLS tls.Config
 }
 
 func NewClient() Client {
     return Client{Connect: time.Seconds(DefaultConnectTimeout),
                   Read: time.Seconds(DefaultReadTimeout),
-                  Redirects: DefaultRedirects}
+                  Redirects: DefaultRedirects,
+                  TLS: tls.NewConfig()}
 }
 
 // `HTTP/1.1 200 OK`
@@ -53,7 +57,7 @@ func parseStatusLine(text string) !u64 {
     return try strings.ParseU64(rest[0..end])
 }
 
-func readResponse(mut c *net.Conn, mut buf []u8) !ClientResponse {
+func readResponse(c net.Stream, mut buf []u8) !ClientResponse {
     mut have u64 = 0
     mut head u64 = 0
     for {
@@ -137,18 +141,32 @@ func followable(status u64) bool {
 func (c *Client) Do(host string, port i32, method string, target string,
                     contentType string, body []u8,
                     mut a mem.Allocator) !ClientResponse {
+    return try c.send(host, port, method, target, contentType, body, false, a)
+}
+
+// The same, over TLS, which is what an `https` URL means.
+func (c *Client) DoTLS(host string, port i32, method string, target string,
+                       contentType string, body []u8,
+                       mut a mem.Allocator) !ClientResponse {
+    return try c.send(host, port, method, target, contentType, body, true, a)
+}
+
+func (c *Client) send(host string, port i32, method string, target string,
+                      contentType string, body []u8, secure bool,
+                      mut a mem.Allocator) !ClientResponse {
     mut useHost := host
     mut usePort := port
     mut useMethod := method
     mut useTarget := target
     mut useBody := body
+    mut useTLS := secure
     // Out here rather than in the loop: `useBody` outlives an iteration.
     mut empty := [0]u8{}
 
     mut hop u64 = 0
     for {
         res := try c.once(useHost, usePort, useMethod, useTarget, contentType,
-                          useBody, a)
+                          useBody, useTLS, a)
         if hop >= c.Redirects || !followable(res.Status) {
             return res
         }
@@ -157,9 +175,7 @@ func (c *Client) Do(host string, port i32, method string, target string,
             return res
         }
         next := try ParseURL(where, useHost, usePort)
-        if next.TLS {
-            return error.NoTLS
-        }
+        useTLS = next.TLS
         useMethod = redirectsAs(res.Status, useMethod)
         if useMethod == "GET" {
             useBody = empty[..]
@@ -173,7 +189,7 @@ func (c *Client) Do(host string, port i32, method string, target string,
 
 // One request, one connection, one answer.
 func (c *Client) once(host string, port i32, method string, target string,
-                      contentType string, body []u8,
+                      contentType string, body []u8, secure bool,
                       mut a mem.Allocator) !ClientResponse {
     mut req := try bytes.New(a, 512)
     try req.WriteString(method)
@@ -192,19 +208,43 @@ func (c *Client) once(host string, port i32, method string, target string,
     try req.WriteString("\r\n")
     try req.Write(body)
 
-    mut conn := try net.DialTimeout(host, port, c.Connect)
+    mut buf := mem.Alloc[u8](a, MaxHead) orelse return error.OutOfMemory
+    mut socket := try net.DialTimeout(host, port, c.Connect)
+    socket.SetTimeout(c.Read) catch {}
+
+    if !secure {
+        socket.Write(req.Bytes()) catch |e| {
+            socket.Close()
+            return e
+        }
+        res := readResponse(&socket, buf) catch |e| {
+            socket.Close()
+            return e
+        }
+        socket.Close()
+        return res
+    }
+
+    // A context per request: this client keeps nothing between calls, and one
+    // shared across tasks would be state two of them could reach.
+    mut ctx := try tls.ClientContext(c.TLS)
+    mut conn := tls.Client(&ctx, socket, host) catch |e| {
+        ctx.Free()
+        return e
+    }
     conn.SetTimeout(c.Read) catch {}
     conn.Write(req.Bytes()) catch |e| {
         conn.Close()
+        ctx.Free()
         return e
     }
-
-    mut buf := mem.Alloc[u8](a, MaxHead) orelse return error.OutOfMemory
     res := readResponse(&conn, buf) catch |e| {
         conn.Close()
+        ctx.Free()
         return e
     }
     conn.Close()
+    ctx.Free()
     return res
 }
 
@@ -218,6 +258,41 @@ func (c *Client) Post(host string, port i32, target string,
                       contentType string, body []u8,
                       mut a mem.Allocator) !ClientResponse {
     return try c.Do(host, port, "POST", target, contentType, body, a)
+}
+
+// The same two over TLS, for a host and port already known — `Fetch` is the one
+// to reach for when what you have is a URL.
+func (c *Client) GetTLS(host string, port i32, target string,
+                        mut a mem.Allocator) !ClientResponse {
+    mut empty := [0]u8{}
+    return try c.DoTLS(host, port, "GET", target, "", empty[..], a)
+}
+
+func (c *Client) PostTLS(host string, port i32, target string,
+                         contentType string, body []u8,
+                         mut a mem.Allocator) !ClientResponse {
+    return try c.DoTLS(host, port, "POST", target, contentType, body, a)
+}
+
+// A whole URL rather than its pieces, which is the only way to say `https` and
+// the only shape a redirect comes in. `http://` and `https://` both work; the
+// second needs a build with TLS.
+//
+//     res := try http.Fetch("https://example.com/health", &arena)
+func (c *Client) Fetch(url string, mut a mem.Allocator) !ClientResponse {
+    where := try ParseURL(url, "", 0)
+    mut empty := [0]u8{}
+    if where.TLS {
+        return try c.DoTLS(where.Host, where.Port, "GET", where.Target, "",
+                           empty[..], a)
+    }
+    return try c.Do(where.Host, where.Port, "GET", where.Target, "", empty[..],
+                    a)
+}
+
+func Fetch(url string, mut a mem.Allocator) !ClientResponse {
+    client := NewClient()
+    return try client.Fetch(url, a)
 }
 
 // The same request through a default client, which is what most calls want.

@@ -7,6 +7,7 @@
 import "std/fs"
 import "std/http"
 import "std/io"
+import "std/mem"
 import "std/net"
 import "std/strings"
 import "std/tls"
@@ -99,6 +100,21 @@ func drive(port i32, mut score *atomic[u64], s *http.Server) !void {
         score.Add(4)
     }
 
+    // The client in std/http, over TLS, against this server.
+    mut backing := [131072]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut client := http.NewClient()
+    client.TLS.CAFile = certPath
+    fetched := client.GetTLS("127.0.0.1", port, "/hello/client", &arena) catch {
+        ctx.Free()
+        s.Close()
+        return
+    }
+    if fetched.Status == 200 &&
+       strings.Contains(string(fetched.Body), "hello client") {
+        score.Add(8)
+    }
+
     // And a client that will not trust it gets nowhere, which is the same
     // certificate and a different answer.
     mut strict := tls.NewConfig()
@@ -108,7 +124,7 @@ func drive(port i32, mut score *atomic[u64], s *http.Server) !void {
         return
     }
     refused := tls.Dial(&plain, "127.0.0.1", port) catch {
-        score.Add(8)
+        score.Add(16)
         plain.Free()
         ctx.Free()
         s.Close()
@@ -159,13 +175,13 @@ func main() !int {
     fs.Remove(certPath) catch {}
     fs.Remove(keyPath) catch {}
 
-    if score.Load() != 15 {
+    if score.Load() != 31 {
         try io.Printf("score {}\n", score.Load())
         return 3
     }
     // Two of those were served on one connection, so more requests than
     // connections is the shape to expect.
-    if srv.Served() < 4 || srv.Accepted() < 3 {
+    if srv.Served() < 5 || srv.Accepted() < 4 {
         return 4
     }
     try io.Print("https checked: plain, chunked, kept alive and refused\n")

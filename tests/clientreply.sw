@@ -4,6 +4,7 @@
 // with chunks came back empty, because only Content-Length was understood. And a
 // redirect was handed back as the answer rather than followed.
 
+import "std/bytes"
 import "std/http"
 import "std/io"
 import "std/mem"
@@ -77,6 +78,23 @@ func drive(port i32, mut score *atomic[u64], s *http.Server) !void {
         score.Add(4)
     }
 
+    // A whole URL rather than its pieces, which is the only way to say a scheme.
+    arena.Reset()
+    mut url := bytes.New(&arena, 64) catch {
+        s.Close()
+        return
+    }
+    url.WriteString("http://127.0.0.1:") catch {}
+    url.WriteU64(u64(port)) catch {}
+    url.WriteString("/here") catch {}
+    fetched := http.Fetch(string(url.Bytes()), &arena) catch {
+        s.Close()
+        return
+    }
+    if fetched.Status == 200 && strings.Contains(string(fetched.Body), "piece1") {
+        score.Add(16)
+    }
+
     // And a client told not to follow hands the 3xx straight back.
     arena.Reset()
     mut plain := http.NewClient()
@@ -103,7 +121,7 @@ func main() !int {
         spawn drive(port, &score, &srv)
     }
 
-    if score.Load() != 15 {
+    if score.Load() != 31 {
         try io.Printf("score {}\n", score.Load())
         return 1
     }
