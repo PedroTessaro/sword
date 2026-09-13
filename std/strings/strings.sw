@@ -18,10 +18,30 @@ func HasPrefix(s string, prefix string) bool {
 
 // Position of the first `c`, or the length of `s` when it is not there. A
 // sentinel rather than an optional keeps the parsing loops readable.
+func HasSuffix(s string, suffix string) bool {
+    if suffix.len > s.len {
+        return false
+    }
+    return Equal(s[s.len-suffix.len..s.len], suffix)
+}
+
 func IndexByte(s string, c u8) u64 {
     for i in 0..s.len {
         if s[i] == c {
             return i
+        }
+    }
+    return s.len
+}
+
+// The length of the haystack when the byte is not there, the same as IndexByte,
+// so the result reads as "where it is or nowhere".
+func LastIndexByte(s string, c u8) u64 {
+    mut at := s.len
+    for at > 0 {
+        at -= 1
+        if s[at] == c {
+            return at
         }
     }
     return s.len
