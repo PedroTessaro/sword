@@ -1,5 +1,6 @@
 #include "paths.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -67,4 +68,22 @@ std::string runtime_archive() {
   // Nothing to link is not a failure: a program that never spawns a task does
   // not reference the scheduler at all.
   return "";
+}
+
+// The runtime may have been built against a library only the build knew how to
+// find — OpenSSL, for TLS. The archive carries its own link line in a file
+// beside it rather than having the compiler guess at prefixes.
+std::string runtime_link_flags() {
+  std::string archive = runtime_archive();
+  if (archive.empty()) return "";
+  std::string path = archive.substr(0, archive.size() - 2) + ".flags";
+  FILE *file = fopen(path.c_str(), "r");
+  if (!file) return "";
+  std::string flags;
+  char chunk[512];
+  while (fgets(chunk, sizeof(chunk), file)) flags += chunk;
+  fclose(file);
+  while (!flags.empty() && (flags.back() == '\n' || flags.back() == ' '))
+    flags.pop_back();
+  return flags;
 }

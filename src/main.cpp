@@ -110,7 +110,8 @@ void dump_ast(Node *n, int depth) {
 // Hands the generated LLVM IR to clang, which assembles and links it. This is
 // also where LLVM's own optimization pipeline runs.
 bool assemble(const std::string &ll_path, const std::string &out_path,
-              const std::string &opt_level, const std::string &runtime) {
+              const std::string &opt_level, const std::string &runtime,
+              const std::string &extra) {
   // The archive only contributes objects the program actually references, so
   // a program that never spawns links nothing from it.
   // `-x none` puts clang back into guess-by-extension mode, so the archive is
@@ -120,6 +121,8 @@ bool assemble(const std::string &ll_path, const std::string &out_path,
   // -pthread because the scheduler runs threads, and on older Linux they are
   // not in libc; on Darwin it is accepted and does nothing.
   if (!runtime.empty()) cmd += " -x none " + runtime + " -lc++ -pthread";
+  // Whatever the runtime was built against, from the file beside the archive.
+  if (!runtime.empty() && !extra.empty()) cmd += " " + extra;
   cmd += " -o " + out_path;
   int status = system(cmd.c_str());
   if (status != 0) {
@@ -244,7 +247,8 @@ int main(int argc, char **argv) {
   emit_llvm(mod, ll);
   fclose(ll);
 
-  bool ok = assemble(ll_path, output, opt_level, runtime_archive());
+  bool ok = assemble(ll_path, output, opt_level, runtime_archive(),
+                     runtime_link_flags());
   unlink(ll_path.c_str());
   if (!ok) return 1;
   if (!testing) return 0;

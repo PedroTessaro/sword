@@ -14,3 +14,6 @@ std::vector<std::string> package_roots();
 
 // The runtime archive linked into every compiled program.
 std::string runtime_archive();
+// What else a program has to be linked against, written next to the archive at
+// build time. Empty when there is nothing, which is the usual case.
+std::string runtime_link_flags();

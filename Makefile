@@ -11,10 +11,15 @@ OBJ      := $(COREOBJ) src/main.o $(LSPOBJ)
 BIN      := shield
 LSP      := swordls
 RT       := libsword_rt.a
+# What a compiled program has to be linked against beyond the archive. Written
+# at build time and read by the compiler, so the archive and its link line travel
+# together: only the build knows what it was built against, and only on this
+# machine.
+RTFLAGS  := libsword_rt.flags
 RTOBJ    := rt/sword_rt.o rt/sword_net.o rt/sword_os.o rt/sword_poll.o \
             rt/sword_fs.o rt/sword_ctx.o
 
-all: $(BIN) $(LSP) $(RT)
+all: $(BIN) $(LSP) $(RT) $(RTFLAGS)
 
 $(BIN): $(COREOBJ) src/main.o
 	$(CXX) $(CXXFLAGS) $^ -o $@
@@ -26,6 +31,15 @@ $(LSP): $(COREOBJ) $(LSPOBJ)
 $(RT): $(RTOBJ)
 	ar rcs $@ $^
 
+# Checked every build, because the answer depends on what is installed on the
+# machine rather than on any file make can date it against — but only written when
+# it changes, so that the TLS object below is rebuilt exactly when the decision
+# does.
+$(RTFLAGS): FORCE
+	@echo '$(RT_LDFLAGS)' > $@
+
+FORCE:
+
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
@@ -34,7 +48,7 @@ $(RT): $(RTOBJ)
 
 -include $(OBJ:.o=.d) $(RTOBJ:.o=.d)
 
-test: $(BIN) $(LSP) $(RT)
+test: $(BIN) $(LSP) $(RT) $(RTFLAGS)
 	@./tests/run.sh
 	@./tests/lsp.sh
 	@./tests/std.sh
@@ -48,6 +62,7 @@ install: all
 	install -m 755 $(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
 	install -m 755 $(LSP) $(DESTDIR)$(PREFIX)/bin/$(LSP)
 	install -m 644 $(RT) $(DESTDIR)$(PREFIX)/lib/sword/$(RT)
+	install -m 644 $(RTFLAGS) $(DESTDIR)$(PREFIX)/lib/sword/$(RTFLAGS)
 	cp -R std/. $(DESTDIR)$(PREFIX)/share/sword/std/
 	cp -R editors $(DESTDIR)$(PREFIX)/share/sword/
 	@echo
@@ -59,6 +74,7 @@ uninstall:
 	rm -rf $(DESTDIR)$(PREFIX)/lib/sword $(DESTDIR)$(PREFIX)/share/sword
 
 clean:
-	rm -f $(OBJ) $(OBJ:.o=.d) $(RTOBJ) $(RTOBJ:.o=.d) $(BIN) $(LSP) $(RT)
+	rm -f $(OBJ) $(OBJ:.o=.d) $(RTOBJ) $(RTOBJ:.o=.d) $(BIN) $(LSP) $(RT) \
+	      $(RTFLAGS)
 
-.PHONY: all test install uninstall clean
+.PHONY: all test install uninstall clean FORCE
