@@ -135,9 +135,73 @@ handler returning ends the body. Nothing else about writing changes — `Write`,
 `WriteString` and `Printf` do what they always did, they just leave rather than
 accumulate.
 
+When the length *is* known before the body exists — a file, a blob out of a
+database — `Send(status, length)` is the better half of the same idea. It puts the
+head out with that length and writes straight through after it, so the client
+learns how much is coming and nothing has to be held in memory to be measured:
+
+```sword
+func (h *Download) Serve(req *http.Request, mut res *http.Response) !void {
+    try res.SetHeader("Content-Type", "application/octet-stream")
+    try res.Send(200, h.size)
+    for part in h.pieces() {
+        try res.Write(part)
+    }
+}
+```
+
+Write exactly that many bytes. Fewer leaves the client waiting for the rest; more
+is a response that says one thing and does another.
+
 A request arriving with `Transfer-Encoding: chunked` is decoded before the
 handler sees it, in place in the read buffer: a chunk's bytes always sit further
 along than where they end up, so no second buffer is needed.
+
+## Serving files
+
+```sword
+import "std/http"
+
+func main() !int {
+    mut site := http.NewFiles("public")
+
+    mut mux := http.NewMux()
+    try mux.Get("/static/{path...}", &site)
+    try mux.Handle("HEAD", "/static/{path...}", &site)
+
+    mut server := try http.Listen(8080)
+    try server.Serve(&mux)
+    return 0
+}
+```
+
+`{path...}` catches the rest of the path — see the routing section — and `Files`
+looks that up under its root. So the route decides what the URL looks like and the
+handler decides what is on disk, and the two are free to differ.
+
+A file goes out a piece at a time against the length the operating system already
+knows, so a hundred-megabyte download costs one buffer rather than a hundred
+megabytes. The Content-Type is guessed from the extension. A directory gets
+`Index`, which is `index.html` unless you change it, and setting `Index` to an
+empty string turns directories into 404s instead.
+
+For one file rather than a tree:
+
+```sword
+func (h *Site) Serve(req *http.Request, mut res *http.Response) !void {
+    try http.ServeFile(res, "public/index.html")
+}
+```
+
+**A path with `..` in it is refused, not resolved.** So are paths holding a NUL or
+a backslash, and paths too long for the buffer they would be built in. Resolving
+first and checking afterwards is where every traversal bug comes from, so this
+never resolves at all.
+
+Reading the file puts the task down like any other wait — the thread it borrows
+comes from [the pool the runtime keeps](concurrency.md#what-cannot-be-put-down)
+for calls no poller can answer. A hundred clients downloading do not cost a
+hundred threads.
 
 ## Shutting down on a signal
 
@@ -256,6 +320,12 @@ for `req.Param("name")`. So `/users/{id}` matches `/users/7` and not
 `/users/7/posts`. Routes are tried in the order you added them, trailing
 slashes are ignored, and there are `Get`, `Post`, `Put`, `Delete` and the
 general `Handle(method, pattern, h)`.
+
+A `{name...}` at the end of a pattern matches the rest of the path instead,
+slashes and all, which is how a whole subtree goes to one handler:
+`/static/{path...}` matches `/static/css/app.css` and leaves `css/app.css` in
+`req.Param("path")`. It matches `/static/` too, with nothing in the parameter —
+which is the request that wants an index page.
 
 Two answers come from the mux itself. A path no route matched is a 404. A path
 that matched under a different method is a **405**, which is the more useful
@@ -379,6 +449,6 @@ writing the same thing".
 
 ## What is missing
 
-No TLS. There is no cookie or form parsing, and the client does not follow
-redirects, keep connections alive between calls, or send chunked itself — the
-server reads chunked requests but the client does not write them.
+No TLS. There is no cookie or form parsing, no range requests, and the client does
+not follow redirects, keep connections alive between calls, or send chunked itself
+— the server reads chunked requests but the client does not write them.

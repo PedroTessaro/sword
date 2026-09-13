@@ -471,7 +471,9 @@ return the length of the haystack when there is no match.
 func Equal(a string, b string) bool
 func EqualFold(a string, b string) bool      // case-insensitive
 func HasPrefix(s string, prefix string) bool
+func HasSuffix(s string, suffix string) bool
 func IndexByte(s string, c u8) u64
+func LastIndexByte(s string, c u8) u64
 func Index(s string, needle string) u64
 func Contains(s string, needle string) bool
 func TrimSpace(s string) string
@@ -713,6 +715,8 @@ func (f *File) Close()
 func Size(path string) ?u64             // nil when absent, or a directory
 func Exists(path string) bool
 func Remove(path string) !void
+func MakeDir(path string) !void               // content if it already exists
+func RemoveDir(path string) !void             // an empty one only
 func ReadAll(path string, mut a mem.Allocator) ![]u8
 func WriteAll(path string, data []u8) !void
 func ReadStdin(mut a mem.Allocator, most u64) ![]u8
@@ -807,9 +811,10 @@ func (r *Request) Param(name string) string  // what a {name} route matched
 func (r *Request) Query(name string) string  // still percent-encoded
 ```
 
-Routing. A `{name}` in a pattern matches one path segment; a path that matched
-under another method answers 405 rather than 404. Up to 64 routes, no
-allocation:
+Routing. A `{name}` in a pattern matches one path segment and a `{name...}` at the
+end matches the rest of the path, slashes and all — including none of it, so
+`/files/{path...}` routes `/files/` too. A path that matched under another method
+answers 405 rather than 404. Up to 64 routes, no allocation:
 
 ```sword
 func NewMux() Mux
@@ -831,6 +836,7 @@ func Escape(s string, mut into []u8) !string
 
 ```sword
 func (mut r *Response) Stream(status u64) !void   // switch to chunked
+func (mut r *Response) Send(status u64, length u64) !void  // a length you know
 func (mut r *Response) Printf(format string, args ...any) !void
 func (mut r *Response) Text(status u64, s string) !void
 func (mut r *Response) JSON(status u64, s string) !void
@@ -838,6 +844,25 @@ func (mut r *Response) SetHeader(name string, value string) !void
 func (mut r *Response) Write(p []u8) !void
 func (mut r *Response) WriteString(s string) !void
 ```
+
+Both `Stream` and `Send` put the head out at once, so headers set after either are
+too late, and every write from then on goes to the connection rather than into a
+buffer. After `Send`, write exactly `length` bytes.
+
+Files. A piece at a time against the length the file already has, so a large
+download costs one buffer:
+
+```sword
+func ServeFile(mut res *Response, path string) !void
+func NewFiles(root string) Files             // { Root, Index, Param }
+func (f *Files) Serve(req *Request, mut res *Response) !void
+func MimeType(path string) string            // by extension
+```
+
+`Files` serves what a `{path...}` route caught, under its root. A path containing
+`..`, a NUL or a backslash is refused rather than resolved. A directory gets
+`Index` — `index.html` by default, and an empty `Index` makes directories 404.
+Only GET and HEAD; anything else is a 405.
 
 Header lookup is case-insensitive. A request carries at most 32 headers and
 16 KiB of head; beyond that the connection is rejected. An accepted connection
