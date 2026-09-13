@@ -129,11 +129,22 @@ Conn *wrap(void *ctx, int fd, const char *host, int64_t host_len,
   if (as_client && host_len > 0) {
     char name[256];
     if (as_path(host, host_len, name, sizeof(name))) {
-      // SNI, so a server with several certificates knows which to send, and the
-      // name the certificate is checked against. Both, or verification passes on
-      // a certificate for somebody else.
-      SSL_set_tlsext_host_name(ssl, name);
-      SSL_set1_host(ssl, name);
+      bool numeric = true;
+      for (const char *at = name; *at; at++)
+        if ((*at < '0' || *at > '9') && *at != '.' && *at != ':')
+          numeric = false;
+      if (numeric) {
+        // An address is checked against the certificate's IP entries, and SNI
+        // must not carry one — a server that gets an address there is entitled
+        // to ignore it.
+        X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl), name);
+      } else {
+        // SNI, so a server holding several certificates knows which to send, and
+        // the name to check the certificate against. Both, or verification is
+        // happy with a certificate issued to somebody else.
+        SSL_set_tlsext_host_name(ssl, name);
+        SSL_set1_host(ssl, name);
+      }
     }
   }
 

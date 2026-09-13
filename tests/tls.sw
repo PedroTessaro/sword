@@ -151,6 +151,28 @@ func main() !int {
         return 6
     }
 
+    // A certificate for somebody else, trusted as its own authority: the chain
+    // checks out and the name does not, which has to be a refusal. Without this
+    // check, "verify" would only mean "signed by someone I know".
+    elsewherePath := "/tmp/sword_tls_other_cert.pem"
+    elsewhereKey := "/tmp/sword_tls_other_key.pem"
+    try tls.SelfSigned("example.test", elsewherePath, elsewhereKey)
+    mut other := try tls.ServerContext(elsewherePath, elsewhereKey)
+    mut wrongName := try net.Listen(0)
+    mut mismatched := atomic[u64](0)
+    mut ignored := atomic[u64](0)
+    scope {
+        spawn echo(&wrongName, &other, &ignored, &modern)
+        spawn speak(wrongName.Port(), true, elsewherePath, &mismatched)
+    }
+    wrongName.Close()
+    other.Free()
+    fs.Remove(elsewherePath) catch {}
+    fs.Remove(elsewhereKey) catch {}
+    if mismatched.Load() != 0 {
+        return 8
+    }
+
     // The same certificate, now named as the one to trust: accepted.
     mut trusting := try net.Listen(0)
     mut trusted := atomic[u64](0)
@@ -161,13 +183,13 @@ func main() !int {
     }
     trusting.Close()
     if trusted.Load() != 1 {
-        return 7
+        return 9
     }
 
     server.Free()
     fs.Remove(certPath) catch {}
     fs.Remove(keyPath) catch {}
 
-    try io.Print("tls checked: 22 handshakes, one refused on purpose\n")
+    try io.Print("tls checked: 23 handshakes, two refused on purpose\n")
     return 42
 }
