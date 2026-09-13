@@ -23,13 +23,16 @@ extern struct Stats {
     Finished i64
     // What one task's stack reserves, which SWORD_STACK_KB sets.
     StackBytes i64
+    // Threads kept for calls that cannot be put down — file I/O, name
+    // resolution. SWORD_IO_THREADS caps them.
+    IoThreads i64
 }
 
 extern func sword_runtime_stats(out *Stats)
 
 func Read() Stats {
     mut out := Stats{Threads: 0, Queued: 0, Parked: 0, Stacks: 0, Started: 0,
-                     Finished: 0, StackBytes: 0}
+                     Finished: 0, StackBytes: 0, IoThreads: 0}
     sword_runtime_stats(&out)
     return out
 }

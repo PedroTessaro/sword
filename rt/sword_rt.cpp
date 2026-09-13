@@ -914,6 +914,95 @@ void drain_until(Scope *scope) {
   }
 }
 
+// --- work that cannot be put down ----------------------------------------
+
+// A file read is never "not ready yet" — the wait is the disk, and no poller has
+// anything to say about it. The blocking hints answer that by letting the thread
+// stop and hiring a replacement, which works but costs a thread per call in
+// flight: forty tasks reading files meant forty threads.
+//
+// These threads are the other answer. They are not scheduler capacity and never
+// run Sword code, so a task handing one a call is put down like any other wait,
+// and the worker goes on to something else. What it costs is bounded by the pool
+// rather than by how many tasks are reading at once.
+struct Job {
+  int64_t (*fn)(void *);
+  void *arg;
+  int64_t result;
+  Fiber *waiter;
+};
+
+struct Offload {
+  std::mutex lock;
+  std::condition_variable wake;
+  std::vector<Job *> queue;
+  int64_t threads = 0; // started and not yet retired
+  int64_t idle = 0;    // of those, waiting for something to do
+  int64_t ceiling = 0; // 0 until the first call decides it
+};
+
+Offload &offload_pool() {
+  static Offload *instance = new Offload();
+  return *instance;
+}
+
+// Long enough that a program reading a directory of files keeps its threads,
+// short enough that one that read a config file at startup gives them back.
+const int kOffloadIdleMillis = 1000;
+
+void offload_loop() {
+  Offload &o = offload_pool();
+  while (true) {
+    Job *job = nullptr;
+    {
+      std::unique_lock<std::mutex> held(o.lock);
+      o.idle++;
+      bool got = o.wake.wait_for(held,
+                                 std::chrono::milliseconds(kOffloadIdleMillis),
+                                 [&o] { return !o.queue.empty(); });
+      o.idle--;
+      if (!got) {
+        o.threads--;
+        return; // nothing came; give the thread back
+      }
+      job = o.queue.back();
+      o.queue.pop_back();
+    }
+    job->result = job->fn(job->arg);
+    // The job lives on the waiting task's stack, so nothing may touch it after
+    // the handoff: read what is needed first.
+    Fiber *f = job->waiter;
+    if (f->state.exchange(FIBER_READY, std::memory_order_acq_rel) ==
+        FIBER_PARKED)
+      make_runnable(f);
+  }
+}
+
+void submit(Job *job) {
+  Offload &o = offload_pool();
+  std::lock_guard<std::mutex> held(o.lock);
+  if (o.ceiling == 0) {
+    unsigned cores = std::thread::hardware_concurrency();
+    int64_t fallback = cores > 4 ? (int64_t)cores : 4;
+    o.ceiling = env_count("SWORD_IO_THREADS", fallback);
+    if (o.ceiling > 256) o.ceiling = 256;
+  }
+  o.queue.push_back(job);
+  // Another thread only while every one there is busy: a queue behind a busy
+  // disk is cheaper than a thread nobody needed.
+  if (o.idle == 0 && o.threads < o.ceiling) {
+    o.threads++;
+    std::thread(offload_loop).detach();
+  }
+  o.wake.notify_one();
+}
+
+int64_t offload_threads() {
+  Offload &o = offload_pool();
+  std::lock_guard<std::mutex> held(o.lock);
+  return o.threads;
+}
+
 } // namespace
 
 extern "C" {
@@ -1000,9 +1089,30 @@ void sword_runtime_stats(struct sword_stats *out) {
   out->stacks = p->stacks.load(std::memory_order_relaxed);
   out->started = p->started.load(std::memory_order_relaxed);
   out->finished = p->finished.load(std::memory_order_relaxed);
+  out->io_threads = offload_threads();
 }
 
 void sword_forget_fd(int32_t fd) { sword_poll_forget((int)fd); }
+
+// Hands one call to a thread set aside for calls that cannot be put down, and
+// puts the calling task down until it comes back. Outside a task there is
+// nothing to put down, so it runs here and the blocking hints cover for it — the
+// same as before this existed.
+int64_t sword_offload(int64_t (*fn)(void *), void *arg) {
+  Fiber *f = tl_fiber;
+  if (!f) {
+    sword_blocking_enter();
+    int64_t result = fn(arg);
+    sword_blocking_exit();
+    return result;
+  }
+  // On this task's own stack, which stays where it is while the task is down.
+  Job job{fn, arg, 0, f};
+  f->state.store(FIBER_PARKING, std::memory_order_release);
+  submit(&job);
+  leave(f, false);
+  return job.result;
+}
 
 void sword_blocking_enter(void) {
   Pool *p = running.load(std::memory_order_acquire);

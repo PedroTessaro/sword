@@ -59,6 +59,11 @@ int sword_park_timer(int64_t deadline_ns);
 // Drops anything waiting on a descriptor about to be closed.
 void sword_forget_fd(int32_t fd);
 
+// Runs one call on a thread kept for calls that cannot be put down — file I/O,
+// name resolution — and puts the calling task down meanwhile. Outside a task it
+// runs the call here, behind the blocking hints.
+int64_t sword_offload(int64_t (*fn)(void *), void *arg);
+
 // What the scheduler is doing right now. Laid out to match `runtime.Stats` on
 // the Sword side field for field, which is why that one is an extern struct.
 struct sword_stats {
@@ -69,6 +74,7 @@ struct sword_stats {
   int64_t started;  // tasks begun since the program did
   int64_t finished; // and tasks ended
   int64_t stack_bytes; // how much stack each task gets
+  int64_t io_threads;  // threads set aside for calls that cannot be put down
 };
 
 void sword_runtime_stats(struct sword_stats *out);

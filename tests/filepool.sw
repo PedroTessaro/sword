@@ -1,0 +1,53 @@
+// expect: 42
+// expect-output: reads on a pool
+// A file read cannot be put down — the wait is the disk, and no poller knows
+// anything about it. Forty of them at once used to mean forty threads, one per
+// read in flight. Now they go to a pool, and what it costs is the pool.
+
+import "std/fs"
+import "std/io"
+import "std/runtime"
+
+func read(path string, mut ok *atomic[u64]) !void {
+    mut buf := [256]u8{}
+    mut f := fs.Open(path, fs.Mode.Read) catch return
+    n := f.Read(buf[..]) catch 0
+    f.Close()
+    if n == 2 {
+        ok.Add(1)
+    }
+}
+
+func main() !int {
+    path := "/tmp/sword_filepool.txt"
+    try fs.WriteAll(path, []u8("ok"))
+
+    mut ok := atomic[u64](0)
+    scope {
+        for i in 0..40 {
+            spawn read(path, &ok)
+        }
+    }
+    try fs.Remove(path)
+
+    if ok.Load() != 40 {
+        return 1
+    }
+
+    r := runtime.Read()
+    // The pool is capped at the core count or four, whichever is larger, so
+    // forty reads at once cannot have gone one thread each.
+    if r.IoThreads < 1 || r.IoThreads > 256 {
+        return 2
+    }
+    if r.IoThreads >= 40 {
+        return 3
+    }
+    // And the workers are still the workers: none was hired to cover a read.
+    if r.Threads > r.IoThreads + 64 {
+        return 4
+    }
+
+    try io.Printf("40 reads on a pool of {}\n", r.IoThreads)
+    return 42
+}
