@@ -719,13 +719,55 @@ that takes five milliseconds per value holds the producer to the consumer's pace
 eats the machine. `TrySend` and `TryRecv` are there for when waiting is not
 wanted.
 
-Underneath, a channel is written in Sword on two things the language already has:
-a `shared` value for the state, and `Wait` and `Notify` on it. `chan[T]`, `<-` and
-`close` are the compiler's way of saying so without making you import it.
+### Waiting on several at once
 
-What is missing: `select`, for waiting on several channels at once. It needs the
-channel to be able to lock all of them and enqueue on all of them, which is a
-runtime job rather than a library one — see the design notes.
+A server does two things at the same time: take work, and notice when somebody
+says stop. `select` waits until one of its cases can go, and runs that one:
+
+```sword
+func work(jobs chan[u64], quit chan[u64]) !void {
+    for {
+        select {
+        case job := <-jobs:
+            j := job orelse return      // the channel closed: no more work
+            try handle(j)
+        case <-quit:
+            return
+        case idle <- 1:                 // a send case: when there is room
+            continue
+        }
+    }
+}
+```
+
+A **receive** case binds `?T`, the same thing `<-ch` gives you, because a closed
+channel is an answer and the body has to be able to see it. That is what `orelse
+return` is doing above, and it is the line to remember: a closed channel makes its
+case ready *every time*, so a loop that ignores the nil spins instead of ending.
+
+A **send** case goes when there is room. If its channel is closed it can never go,
+and is skipped — a select that has nothing left but closed send channels stops the
+program and says so, which is better than waiting for something that cannot happen.
+
+**`default` never waits.** With one, a select that finds nothing ready runs the
+default instead; without one, it waits. That is the whole difference between
+"check" and "wait".
+
+Cases are tried from a **rotating start**, so a channel that always has something
+cannot starve the others. Waiting costs a stack rather than a thread here too: the
+task registers on every channel in the select and is put down until any one of them
+moves.
+
+### How it is built
+
+A channel's state lives in the runtime, and the type-aware part — `chan[T]`, the
+allocation, the values going in and out — is written in Sword, in a package the
+compiler imports when a program mentions `chan`. Nobody writes that import.
+
+The split is where it is because of `select`: waiting on several channels means
+holding all of them and registering a waiter on each, and `lock` is lexical while
+the number of cases is not. Everything else could have stayed in Sword, and did,
+for as long as there was no `select`.
 
 ### Wait and Notify
 

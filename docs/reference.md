@@ -711,7 +711,25 @@ for v := <-ch { }                        // until it closes
 close(ch)                                // twice is harmless
 ```
 
-`<-` is one token, so `a < -b` needs the space. The rest are ordinary methods:
+`<-` is one token, so `a < -b` needs the space.
+
+```sword
+select {
+case v := <-ch:      // v is ?T — nil when the channel closed
+case <-ch:           // the same, thrown away
+case ch <- value:    // when there is room
+default:             // when none of them could go
+}
+```
+
+At most one `default`, and a select with no cases at all is a compile error. A
+receive case is ready when the channel has a value *or* is closed; a send case is
+ready when there is room, and never on a closed channel. Cases are tried from a
+rotating start, so one that is always ready cannot starve the rest. A select whose
+only remaining cases send into closed channels stops the program rather than
+waiting for what cannot happen.
+
+The rest are ordinary methods:
 
 ```sword
 func (c Chan[T]) TrySend(v T) bool      // false rather than a wait

@@ -1067,6 +1067,28 @@ queue: the sender waits until a receiver has taken the value.
 A send waits while the channel is full, which is how a fast producer is held to a
 slow consumer's pace rather than filling memory.
 
+`select` waits on several channels and runs whichever case can go — take work, or
+notice that somebody said stop:
+
+```sword
+func work(jobs chan[u64], quit chan[u64], mut sum *atomic[u64]) !void {
+    for {
+        select {
+        case job := <-jobs:
+            j := job orelse return
+            sum.Add(j)
+        case <-quit:
+            return
+        }
+    }
+}
+```
+
+A receive case binds `?T`, so a closed channel is something the body can see
+rather than a wait that never ends. `default` makes a select that does not wait at
+all. There is [more in the concurrency
+chapter](concurrency.md#waiting-on-several-at-once).
+
 ## The outside world
 
 A program that cannot be told anything is not much use. `std/os` has the
