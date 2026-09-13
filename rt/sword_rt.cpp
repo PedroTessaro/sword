@@ -91,6 +91,21 @@ struct Task {
 // connection's arena lives there — so this is roomy on purpose.
 const size_t kStackReserve = 1024 * 1024;
 
+// Stacks are handed out from slabs: one mapping holds many of them, which is
+// one syscall per slab instead of one per task, and — because a slab is
+// contiguous and every stack in it is the same size — turns a fault address
+// into "which stack, how far down" with arithmetic alone.
+const size_t kStacksPerSlab = 32;
+// Enough slabs for sixty-five thousand live tasks. Past that the kernel's limit
+// on mappings arrives first, and no arrangement of ours moves it.
+const int kMaxSlabs = 2048;
+
+// Wider than a page on purpose. A single guard page catches a function that
+// walks down its frame, but not one that reserves a large buffer and writes
+// into the middle of it — that write can step clean over the guard, and on the
+// other side of it is another task's stack.
+const size_t kGuardBytes = 64 * 1024;
+
 // A task and the stack it runs on. It outlives any one worker: a task that
 // stops for I/O is resumed by whichever worker picks it up next.
 // Where a task is between leaving a worker and coming back. The handoff
@@ -126,21 +141,88 @@ size_t page_size() {
   return size;
 }
 
-// A guard page at the low end turns a stack overflow into a fault at the point
-// of overflow, rather than into a quiet write through somebody else's memory.
-bool map_stack(Fiber *f) {
-  size_t guard = page_size();
-  size_t total = kStackReserve + guard;
-  void *base = mmap(nullptr, total, PROT_READ | PROT_WRITE,
-                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+size_t round_up(size_t bytes, size_t to) { return (bytes + to - 1) / to * to; }
+
+// Every slab ever mapped, and the stacks in them that nobody is using. The
+// bases are published rather than kept private, which is why they are atomic
+// and why nothing is ever taken out of the array: a slab lives as long as the
+// process, and an address in one can be recognised without the lock.
+struct Slabs {
+  std::mutex lock;
+  std::vector<char *> spare; // the low end of each free stack's guard
+  std::atomic<char *> base[kMaxSlabs];
+  std::atomic<int> count{0};
+  std::atomic<size_t> stride{0}; // guard plus stack, set before the first slab
+  size_t guard = 0;
+  size_t stack = 0;
+};
+
+Slabs g_slabs; // not a local static: the fault handler cannot run an initialiser
+
+int64_t env_count(const char *name, int64_t fallback);
+
+// How much stack a task gets. Held to a page multiple and to something a
+// 64-bit address space can afford a great many of.
+size_t stack_bytes() {
+  int64_t kb = env_count("SWORD_STACK_KB", (int64_t)(kStackReserve / 1024));
+  size_t want = (size_t)kb * 1024;
+  if (want < 64 * 1024) want = 64 * 1024;
+  if (want > 256u * 1024 * 1024) want = 256u * 1024 * 1024;
+  return round_up(want, page_size());
+}
+
+// Carves one mapping into stacks, each with its guard below it. Called with the
+// lock held and only when nothing is spare.
+bool add_slab(Slabs &s) {
+  if (s.stride.load(std::memory_order_relaxed) == 0) {
+    s.guard = round_up(kGuardBytes, page_size());
+    s.stack = stack_bytes();
+    s.stride.store(s.guard + s.stack, std::memory_order_release);
+  }
+  int at = s.count.load(std::memory_order_relaxed);
+  if (at >= kMaxSlabs) return false;
+  size_t stride = s.stride.load(std::memory_order_relaxed);
+  size_t total = stride * kStacksPerSlab;
+  char *base = (char *)mmap(nullptr, total, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (base == MAP_FAILED) return false;
-  if (mprotect(base, guard, PROT_NONE) != 0) {
+  for (size_t i = 0; i < kStacksPerSlab; i++) {
+    if (mprotect(base + i * stride, s.guard, PROT_NONE) == 0) continue;
     munmap(base, total);
     return false;
   }
-  f->base = (char *)base;
-  f->size = total;
+  for (size_t i = 0; i < kStacksPerSlab; i++)
+    s.spare.push_back(base + i * stride);
+  // Last, so the handler never sees a slab whose guards are still writable.
+  s.base[at].store(base, std::memory_order_release);
+  s.count.store(at + 1, std::memory_order_release);
   return true;
+}
+
+bool map_stack(Fiber *f) {
+  Slabs &s = g_slabs;
+  std::lock_guard<std::mutex> held(s.lock);
+  if (s.spare.empty() && !add_slab(s)) return false;
+  f->base = s.spare.back();
+  f->size = s.stride.load(std::memory_order_relaxed);
+  s.spare.pop_back();
+  return true;
+}
+
+// A slab is never given back, so the way to stop paying for a spike of ten
+// thousand connections is to drop the pages the stacks touched. The next task
+// to land here gets them back zeroed, which a stack about to be written over
+// does not mind.
+void unmap_stack(Fiber *f) {
+  Slabs &s = g_slabs;
+  char *stack = f->base + s.guard;
+#ifdef MADV_FREE
+  madvise(stack, s.stack, MADV_FREE);
+#else
+  madvise(stack, s.stack, MADV_DONTNEED);
+#endif
+  std::lock_guard<std::mutex> held(s.lock);
+  s.spare.push_back(f->base);
 }
 
 // Lays out a frame the context switch can resume into: zeroed callee-saved
@@ -523,7 +605,9 @@ Fiber *fresh_fiber(Task *task) {
   if (!f) {
     f = new Fiber();
     if (!map_stack(f)) {
-      fputs("sword: out of memory for a task stack\n", stderr);
+      fprintf(stderr, "sword: no room for another task stack. The limit is %zu"
+                      " live tasks, or the kernel refused the mapping.\n",
+              kMaxSlabs * kStacksPerSlab);
       abort();
     }
     p.stacks.fetch_add(1, std::memory_order_relaxed);
@@ -549,7 +633,7 @@ void retire_fiber(Fiber *f) {
 #ifdef SWORD_TSAN
   if (f->tsan) __tsan_destroy_fiber(f->tsan);
 #endif
-  munmap(f->base, f->size);
+  unmap_stack(f);
   delete f;
 }
 
@@ -797,6 +881,8 @@ int32_t sword_in_task(void) { return tl_fiber != nullptr; }
 
 void sword_runtime_stats(struct sword_stats *out) {
   memset(out, 0, sizeof(*out));
+  // Settings first: they are answerable before a single task has run.
+  out->stack_bytes = (int64_t)stack_bytes();
   Pool *p = running.load(std::memory_order_acquire);
   if (!p) return;
   out->threads = p->target + p->hired.load(std::memory_order_relaxed);

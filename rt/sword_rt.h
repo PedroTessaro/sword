@@ -68,6 +68,7 @@ struct sword_stats {
   int64_t stacks;   // task stacks alive, in use or pooled
   int64_t started;  // tasks begun since the program did
   int64_t finished; // and tasks ended
+  int64_t stack_bytes; // how much stack each task gets
 };
 
 void sword_runtime_stats(struct sword_stats *out);

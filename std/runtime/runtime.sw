@@ -15,19 +15,21 @@ extern struct Stats {
     // Threads stopped inside a syscall that cannot be put down — name
     // resolution, mostly.
     Parked i64
-    // Task stacks alive, in use or waiting on a worker's pile. Each is a
-    // megabyte reserved and rather less touched.
+    // Task stacks alive, in use or waiting on a worker's pile. Each reserves
+    // StackBytes and touches rather less.
     Stacks i64
     // Tasks begun and ended since the program started.
     Started  i64
     Finished i64
+    // What one task's stack reserves, which SWORD_STACK_KB sets.
+    StackBytes i64
 }
 
 extern func sword_runtime_stats(out *Stats)
 
 func Read() Stats {
     mut out := Stats{Threads: 0, Queued: 0, Parked: 0, Stacks: 0, Started: 0,
-                     Finished: 0}
+                     Finished: 0, StackBytes: 0}
     sword_runtime_stats(&out)
     return out
 }
