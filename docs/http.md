@@ -467,8 +467,34 @@ func main() !int {
 ```
 
 The response body lives in the allocator you pass in, so it stays valid until
-you reset or free that allocator. The client sends `Connection: close` and does
-not reuse sockets.
+you reset or free that allocator.
+
+**A client keeps the connection it used.** The next request to the same host and
+port goes down the same socket, which over TLS saves the handshake — most of what a
+request costs. Five requests to one place is one connection.
+
+```sword
+mut client := http.NewClient()
+defer client.Close()
+
+for i in 0..3 {
+    res := try client.Get("127.0.0.1", 8080, "/health", &arena)
+}
+```
+
+`Close()` is not optional housekeeping: a kept connection holds a task on the
+server for as long as it is open. The one-shot `http.Get`, `http.Post` and
+`http.Fetch` own their client and close it for you.
+
+Keeping state is why the client's methods take `mut`, and why a client belongs to
+one task. Two tasks sharing one would be a race, and the checker says so.
+
+A socket that has been sitting idle may have been closed by the far end without a
+word, and the only way to find out is to use it. A request that fails on the kept
+connection is retried on a fresh one — but only `GET` and `HEAD`, because anything
+else may already have happened at the other end even though the answer never
+arrived. For those, the failure comes back as `error.Interrupted` and retrying is
+your decision.
 
 A reply framed with `Transfer-Encoding: chunked` is decoded for you, and one with
 no framing at all — no length, no chunks — is read until the connection closes.
@@ -548,7 +574,8 @@ writing the same thing".
 ## What is missing
 
 There is no cookie or form parsing and no range requests, and the client does not
-keep connections alive between calls or send chunked itself — the server reads
-chunked requests but the client does not write them. Client certificates are not
+send chunked itself — the server reads chunked requests but the client does not
+write them. The client keeps one connection rather than a pool, so calls to several
+services in a row still pay for a handshake each time. Client certificates are not
 wired up either: TLS here authenticates the server to the client and not the other
 way round.

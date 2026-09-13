@@ -1018,9 +1018,20 @@ may be zero to wait as long as the kernel would, and `Redirects`, how many to
 follow — five by default, zero to hand the 3xx back. 301, 302 and 303 become a
 GET; 307 and 308 keep the method and body.
 
+```sword
+func (mut c *Client) Close()            // lets go of the kept connection
+```
+
 A chunked reply is decoded, and a reply with no framing at all is read until the
 connection closes. `Client.TLS` is a `tls.Config` and decides how an `https` URL is
-trusted; the context is built per request, so a client keeps nothing between calls.
+trusted.
+
+A client **keeps the connection it used**, with its TLS session, and uses it again
+for the next request to the same host and port. That is why the methods take `mut`
+and why a client belongs to one task. `Close()` matters: a kept connection holds a
+task on the server. A request that fails on the kept connection is retried on a
+fresh one for `GET` and `HEAD`, and comes back as `error.Interrupted` otherwise —
+the request may already have been carried out.
 
 ## Command line
 
