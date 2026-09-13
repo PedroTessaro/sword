@@ -99,6 +99,11 @@ def main():
     reply = client.send("initialize", {"processId": None, "rootUri": None}) or client.read()
     caps = reply["result"]["capabilities"]
     check("initialize advertises semantic tokens", "semanticTokensProvider" in caps)
+    # Without this an editor never wires completion up at all — it is what sets
+    # omnifunc in vim and Neovim.
+    check("initialize advertises completion", "completionProvider" in caps)
+    check("a dot triggers completion",
+          "." in caps.get("completionProvider", {}).get("triggerCharacters", []))
     legend = caps.get("semanticTokensProvider", {}).get("legend", {})
     check("legend has token types", "keyword" in legend.get("tokenTypes", []))
     check("legend has modifiers", "declaration" in legend.get("tokenModifiers", []))
@@ -137,6 +142,26 @@ def main():
     note = client.until(lambda m: m.get("method") == "textDocument/publishDiagnostics")
     diags = note["params"]["diagnostics"] if note else []
     check("a sibling file's names are not undefined", not diags, str(diags))
+
+    def complete(uri, line, character):
+        client.send("textDocument/completion",
+                    {"textDocument": {"uri": "file://" + uri},
+                     "position": {"line": line, "character": character}})
+        reply = client.until(lambda m: "result" in m and "items" in m.get("result", {}))
+        return [i["label"] for i in reply["result"]["items"]] if reply else []
+
+    lines = open(together).read().split("\n")
+    at = lines.index("    return int(twice(p.X) + p.Y)")
+
+    names = complete(together, at, len("    return int(twice(p."))
+    check("a value's fields are offered", names == ["X", "Y"], str(names))
+
+    names = complete(together, at, len("    return int("))
+    check("a sibling file's function is offered", "twice" in names, str(names[:8]))
+    check("a sibling file's type is offered", "Point" in names)
+    check("a local is offered", "p" in names)
+    check("a keyword is offered", "return" in names)
+    check("a builtin type is offered", "u64" in names)
 
     client.send("textDocument/semanticTokens/full",
                 {"textDocument": {"uri": "file://" + good}})

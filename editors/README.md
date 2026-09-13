@@ -1,10 +1,16 @@
 # Editor support
 
 The server is `swordls`, built by `make` alongside the compiler. It speaks LSP
-over stdin and stdout and gives you two things: **diagnostics**, the same errors
-`shield` reports, underlined as you type, and **semantic tokens** — the real
+over stdin and stdout and gives you three things: **diagnostics**, the same errors
+`shield` reports, underlined as you type; **semantic tokens** — the real
 classification of every token, which the editor paints using your own colour
-scheme.
+scheme; and **completion**, which knows the difference between a package, a
+value's fields and the errors your program declares.
+
+The server analyses the whole **package**, not the open file. A name declared in a
+sibling file of the same directory is a name, not an error — and a file you have
+not saved is read from the editor's buffer, so it is what you are typing that gets
+checked.
 
 The difference between semantic tokens and a regex grammar is that the server
 knows what a regex cannot:
@@ -31,13 +37,19 @@ sword.setup{}           -- finds swordls on PATH or beside the repository
 If you installed with `make install`, the paths are
 `~/.local/share/sword/editors/vim` and `~/.local/share/sword/editors/nvim`.
 
-Neovim's built-in LSP client already handles semantic tokens, so no plugin is
-needed. To check it is on, with a `.sw` file open:
+Neovim's built-in LSP client already handles semantic tokens and completion, so no
+plugin is needed. To check both are on, with a `.sw` file open:
 
 ```
 :lua =vim.lsp.get_clients({ bufnr = 0 })[1].server_capabilities.semanticTokensProvider
+:lua =vim.lsp.get_clients({ bufnr = 0 })[1].server_capabilities.completionProvider
 :Inspect      " shows which group painted the token under the cursor
+:set omnifunc?
 ```
+
+`setup{}` sets `omnifunc` on attach, so `<C-x><C-o>` completes. For completion as
+you type, point whichever completion plugin you use at the LSP source — the server
+answers `textDocument/completion` and asks to be triggered on `.`.
 
 ## Vim
 
@@ -66,6 +78,10 @@ au User lsp_setup call lsp#register_server({
     \ 'cmd': {server_info->['/path/to/swordls']},
     \ 'allowlist': ['sword'],
     \ })
+
+" vim-lsp does not set omnifunc for you, which is why <C-x><C-o> does nothing
+" until you say this.
+autocmd FileType sword setlocal omnifunc=lsp#complete
 ```
 
 vim-lsp links most semantic groups to standard highlight groups by itself, but
@@ -134,6 +150,25 @@ server sent; *textmate scopes* is the fallback.
 | `property` | struct fields and `.len` / `.ptr` |
 | `enumMember` | the name after `error.` |
 | `keyword`, `string`, `number` | straight from the lexer |
+
+## What the server completes
+
+Typing `.` asks; so does `<C-x><C-o>` in vim, or whatever your completion plugin
+is bound to.
+
+| After | You get |
+|---|---|
+| `mem.` | what that package exports — functions, types, constants |
+| `error.` | every error your program declares, with the sentence it says |
+| `conn.` | that value's fields and methods, and nothing unexported from another package |
+| `b.items.` | `len` and `ptr`, walking the chain a field at a time |
+| `Kind.` | the enum's members |
+| nothing | keywords, the builtin types, this package's own names, the packages it imports, and the locals of the function you are in |
+
+A buffer being typed into rarely parses — `conn.` is a field access with no field
+yet — so completion analyses a patched copy with a placeholder where the cursor
+is, and puts your text back afterwards. That is why it answers while the file is
+still broken.
 
 Punctuation and comments are left to the editor's own grammar — the server does
 not send them, because a regex gets those right without help.

@@ -32,6 +32,12 @@ function M.setup(opts)
         name = 'swordls',
         cmd = { cmd },
         root_dir = vim.fs.dirname(args.file),
+        on_attach = function(_, bufnr)
+          -- Neovim sets omnifunc itself when the server offers completion, but
+          -- only from 0.8 on and only if nothing else claimed it. Setting it
+          -- here means <C-x><C-o> works either way.
+          vim.bo[bufnr].omnifunc = 'v:lua.vim.lsp.omnifunc'
+        end,
       }, { bufnr = args.buf })
     end,
   })

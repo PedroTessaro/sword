@@ -3,11 +3,13 @@
 #include "../src/package.h"
 #include "../src/paths.h"
 #include "../src/types.h"
+#include "complete.h"
 #include "json.h"
 #include "semantic.h"
 
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -44,6 +46,10 @@ struct Server {
   std::string cached_uri;
   long long cached_version = -1;
   bool running = true;
+  // What the editor last sent for each open file. Completion needs it, because
+  // it analyses a patched copy and has to put the real one back.
+  std::map<std::string, std::string> open_text;
+  long long scratch_version = -2; // never collides with a real one
 
   void send(const Json &message) {
     std::string body = message.dump();
@@ -156,9 +162,18 @@ struct Server {
     semantic.set("legend", legend());
     semantic.set("full", Json::of(true));
 
+    // Completion has to be advertised or an editor will not wire it up: this is
+    // what sets `omnifunc` in vim and Neovim.
+    Json triggers = Json::array();
+    triggers.push(Json::of("."));
+    Json completion = Json::object();
+    completion.set("triggerCharacters", triggers);
+    completion.set("resolveProvider", Json::of(false));
+
     Json caps = Json::object();
     caps.set("textDocumentSync", Json::of((long long)1)); // full text each time
     caps.set("semanticTokensProvider", semantic);
+    caps.set("completionProvider", completion);
 
     Json info = Json::object();
     info.set("name", Json::of("swordls"));
@@ -196,6 +211,87 @@ struct Server {
     reply(id, result);
   }
 
+  // The protocol counts characters in UTF-16 units; this file is bytes.
+  static size_t byte_offset(const std::string &line, long long utf16) {
+    size_t i = 0;
+    long long units = 0;
+    while (i < line.size() && units < utf16) {
+      unsigned char c = (unsigned char)line[i];
+      int width = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+      units += width == 4 ? 2 : 1;
+      i += width;
+    }
+    return i;
+  }
+
+  // The line the cursor is on, and where in it the cursor is, as bytes.
+  static size_t offset_in(const std::string &text, long long line,
+                          long long character, std::string *line_text) {
+    size_t at = 0;
+    for (long long n = 0; n < line; n++) {
+      size_t eol = text.find('\n', at);
+      if (eol == std::string::npos) return text.size();
+      at = eol + 1;
+    }
+    size_t eol = text.find('\n', at);
+    if (eol == std::string::npos) eol = text.size();
+    *line_text = text.substr(at, eol - at);
+    return at + byte_offset(*line_text, character);
+  }
+
+  void on_completion(const Json &id, const Json &params) {
+    std::string uri = params.at("textDocument").at("uri").as_string();
+    std::string path = path_of(uri);
+    const Json &at = params.at("position");
+    long long line = at.at("line").as_int();
+    long long character = at.at("character").as_int();
+
+    std::string text = open_text.count(path) ? open_text[path] : std::string();
+    std::string line_text;
+    size_t cursor = offset_in(text, line, character, &line_text);
+
+    // At the moment somebody asks, the buffer almost never parses: `c.` is a
+    // field access with no field yet, and a failed parse has no types in it to
+    // answer from. So a placeholder goes in where the cursor is, the patched
+    // copy is what gets analysed, and the real text goes back afterwards.
+    bool patched = cursor > 0 && cursor <= text.size() && text[cursor - 1] == '.';
+    if (patched) {
+      std::string copy = text;
+      copy.insert(cursor, "zz_hole");
+      set_overlay(path, copy);
+    }
+
+    Analysis *analysis = analyze(uri, scratch_version--);
+
+    Json items = Json::array();
+    if (analysis->file >= 0) {
+      std::string before = line_text.substr(0, byte_offset(line_text, character));
+      for (const Completion &c :
+           completions(before, analysis->file, (int)line + 1, analysis->prog,
+                       analysis->types)) {
+        Json entry = Json::object();
+        entry.set("label", Json::of(c.label));
+        entry.set("kind", Json::of((long long)c.kind));
+        if (!c.detail.empty()) entry.set("detail", Json::of(c.detail));
+        items.push(entry);
+      }
+    }
+
+    if (patched) {
+      set_overlay(path, text);
+      // The analysis that answered this is of a file nobody wrote, so it must
+      // not be the one a later request finds.
+      cached.reset();
+      cached_uri.clear();
+      cached_version = -1;
+    }
+
+    Json result = Json::object();
+    result.set("isIncomplete", Json::of(false));
+    result.set("items", items);
+    reply(id, result);
+  }
+
   void handle(const Json &message) {
     std::string method = message.at("method").as_string();
     const Json &params = message.at("params");
@@ -210,19 +306,24 @@ struct Server {
     } else if (method == "textDocument/didOpen") {
       const Json &doc = params.at("textDocument");
       std::string uri = doc.at("uri").as_string();
+      open_text[path_of(uri)] = doc.at("text").as_string();
       set_overlay(path_of(uri), doc.at("text").as_string());
       publish(uri, doc.at("version").as_int());
     } else if (method == "textDocument/didChange") {
       const Json &doc = params.at("textDocument");
       std::string uri = doc.at("uri").as_string();
       const Json &changes = params.at("contentChanges");
-      if (!changes.items.empty())
-        set_overlay(path_of(uri), changes.items.back().at("text").as_string());
+      if (!changes.items.empty()) {
+        std::string text = changes.items.back().at("text").as_string();
+        open_text[path_of(uri)] = text;
+        set_overlay(path_of(uri), text);
+      }
       publish(uri, doc.at("version").as_int());
     } else if (method == "textDocument/didSave") {
       publish(params.at("textDocument").at("uri").as_string(), -1);
     } else if (method == "textDocument/didClose") {
       std::string uri = params.at("textDocument").at("uri").as_string();
+      open_text.erase(path_of(uri));
       clear_overlay(path_of(uri));
       // Clearing the list is how the editor is told the squiggles are gone.
       Json empty = Json::object();
@@ -233,6 +334,8 @@ struct Server {
       note.set("method", Json::of("textDocument/publishDiagnostics"));
       note.set("params", empty);
       send(note);
+    } else if (method == "textDocument/completion") {
+      on_completion(id ? *id : Json::null(), params);
     } else if (method == "textDocument/semanticTokens/full") {
       on_semantic_tokens(id ? *id : Json::null(), params);
     } else if (id) {
