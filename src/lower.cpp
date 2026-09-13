@@ -1405,6 +1405,16 @@ struct Lowerer {
       box_any(at, value, type);
       return;
     }
+    // An optional first, then whatever the payload needs: a `?Interface` taking a
+    // pointer to a struct has both a flag to set and a pair to build, and doing
+    // the pair against the optional's own layout would write over the flag.
+    if (type->is_optional && !type_eq(value->type, type)) {
+      Type *payload = const_cast<Type *>(opt_payload(type));
+      store(constant(1, types.bool_ty), gep_named(at, type, "has"),
+            types.bool_ty);
+      assign_into(gep_named(at, type, "value"), value, payload);
+      return;
+    }
     if (value->vtable >= 0) {
       // The node still has its own pointer type; the vtable the checker picked
       // is what turns the pair into an interface value.
@@ -1418,16 +1428,6 @@ struct Lowerer {
       table.type = opaque;
       emit(table);
       store(table.dst, gep_named(at, type, "vtable"), opaque);
-      return;
-    }
-    if (type->is_optional && !type_eq(value->type, type)) {
-      Type *payload = const_cast<Type *>(opt_payload(type));
-      store(constant(1, types.bool_ty), gep_named(at, type, "has"),
-            types.bool_ty);
-      int inner = gep_named(at, type, "value");
-      int v = expr(value);
-      if (is_aggregate(payload)) copy(inner, v, payload);
-      else store(v, inner, payload);
       return;
     }
     int v = expr(value);

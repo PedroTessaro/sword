@@ -1025,6 +1025,13 @@ struct Checker {
       if (!value->type->is_any) value->bind_to = to;
       return true;
     }
+    // `?Interface` taking a pointer to a struct: the pair is built for the
+    // payload and the wrapping happens where it is stored, the same as for any
+    // other optional.
+    if (is_optional(to)) {
+      Type *payload = const_cast<Type *>(opt_payload(to));
+      if (payload && payload->is_interface) return bind_interface(value, payload);
+    }
     return to->is_interface && bind_interface(value, to);
   }
 
