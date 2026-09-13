@@ -2458,12 +2458,69 @@ struct Checker {
     CALL_SHARED
   };
 
+  // Whether a place lives in this function's frame. The walk stops at the first
+  // indirection: `local[i]` on an array is the frame, `local[i]` on a slice is
+  // wherever the slice points, and `*p` is never here.
+  bool in_this_frame(Node *place) {
+    if (!place || !place->type) return false;
+    switch (place->kind) {
+    case ND_IDENT: {
+      if (!place->sym || place->sym->is_func) return false;
+      Type *t = place->sym->type;
+      if (!t) return false;
+      // A binding whose own value is a reference holds the reference here and
+      // the thing itself elsewhere.
+      return t->kind != TY_PTR && t->kind != TY_RAWPTR && t->kind != TY_SLICE &&
+             t->kind != TY_STRING && t->kind != TY_FUNC;
+    }
+    case ND_FIELD:
+      // Reaching a field through a pointer crosses out of the frame.
+      if (place->lhs && place->lhs->type &&
+          (place->lhs->type->kind == TY_PTR ||
+           place->lhs->type->kind == TY_RAWPTR))
+        return false;
+      return in_this_frame(place->lhs);
+    case ND_INDEX: case ND_SLICE_EXPR:
+      if (place->lhs && place->lhs->type &&
+          place->lhs->type->kind != TY_ARRAY)
+        return false; // a slice, a string or a raw pointer: not this frame
+      return in_this_frame(place->lhs);
+    case ND_UNARY:
+      return false; // `*p`: the frame holds the pointer, not what it points at
+    default:
+      return false;
+    }
+  }
+
+  // A function may not hand back memory that lives in its own frame: the frame is
+  // gone before the caller can look. Catches the direct shapes — `&local`,
+  // `local[..]`, `&local[i]`, `&local.field` — which is where this mistake
+  // actually gets made. A pointer laundered through another binding first is not
+  // caught, and the documentation says so.
+  bool escapes_frame(Node *value) {
+    if (!value) return false;
+    if (value->kind == ND_UNARY && value->op == TK_AMP)
+      return in_this_frame(value->lhs);
+    if (value->kind == ND_SLICE_EXPR) return in_this_frame(value);
+    return false;
+  }
+
+  bool refuse_escape(Node *value) {
+    if (!escapes_frame(value)) return false;
+    error(value->pos, "this returns memory that lives in this function's frame");
+    note(value->pos,
+         "the frame is gone before the caller can read it; take the memory from"
+         " an allocator, or write into something the caller gave you");
+    return true;
+  }
+
   void check_return(Node *n) {
     if (!ret_type->is_error_union) {
       n->form = RET_PLAIN;
       if (n->lhs) {
         Type *t = check_expr(n->lhs);
         if (!t) return;
+        if (refuse_escape(n->lhs)) return;
         if (!convert(n->lhs, ret_type)) {
           error(n->lhs->pos,
                 "cannot return %s from a function returning %s",
@@ -2488,6 +2545,7 @@ struct Checker {
 
     Type *t = check_expr(n->lhs);
     if (!t) return;
+    if (refuse_escape(n->lhs)) return;
     if (type_eq(t, types.error_ty)) {
       n->form = RET_ERROR;
     } else if (type_eq(t, ret_type)) {
