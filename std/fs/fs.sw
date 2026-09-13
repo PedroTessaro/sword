@@ -2,6 +2,12 @@ package fs
 
 import "std/mem"
 
+error CannotOpen   = "the file could not be opened"
+error CannotRemove = "it could not be removed"
+error CannotMakeDir = "the directory could not be made"
+error ReadFailed   = "the read failed"
+error WriteFailed  = "the write failed"
+
 // Files. Unlike a socket, a file is never "not ready yet" — the wait is the
 // disk, and no poller has anything to say about it. So a read here really does
 // stop the thread, and the scheduler hires a replacement while it is gone.

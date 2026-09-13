@@ -8,6 +8,8 @@ import "std/tls"
 import "std/strings"
 import "std/time"
 
+error NotStreamable = "this response has no connection to stream to"
+
 // A connection's arena, on its own stack. One per connection rather than one
 // per worker: a task waiting on a socket is put down rather than holding a
 // thread, so connections outnumber threads by a lot and each needs its own.

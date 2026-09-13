@@ -1366,6 +1366,10 @@ struct Checker {
 
     if (owner->kind == TY_ATOMIC) return check_atomic_call(n, owner);
     if (is_shared(owner)) return check_shared_call(n, owner);
+    // An error is a code at run time, so its message comes from a table the
+    // compiler writes, the same way its name does.
+    if (type_eq(owner, types.error_ty) && field->name == "Message")
+      return check_error_message(n);
 
     if (owner->is_interface) {
       for (size_t i = 0; i < owner->methods.size(); i++) {
@@ -1672,6 +1676,24 @@ struct Checker {
     return n->type = types.string_ty;
   }
 
+  // `e.Message()`: the text the error was declared with, or empty when it was
+  // declared without one.
+  Type *check_error_message(Node *n) {
+    if (!prog.error_message) {
+      std::vector<Type *> params{types.error_ty};
+      prog.error_message = ast.make_symbol(
+          "error.message", types.func(params, types.string_ty), false, n->pos);
+      prog.error_message->is_func = true;
+    }
+    Node *subject = n->lhs->lhs;
+    n->kids.insert(n->kids.begin(), subject);
+    n->form = CALL_DIRECT;
+    n->sym = prog.error_message;
+    n->name = prog.error_message->name;
+    if (!check_args(n, prog.error_message, 0, true)) return nullptr;
+    return n->type = types.string_ty;
+  }
+
   Type *check_call(Node *n) {
     if (n->lhs->kind == ND_INDEX) return check_indexed_call(n);
     if (n->lhs->kind == ND_FIELD) {
@@ -1730,8 +1752,21 @@ struct Checker {
     // so intercept it before the base is resolved as an expression.
     if (n->lhs->kind == ND_IDENT && n->lhs->name == "error" &&
         !lookup("error")) {
+      int code = types.error_code(n->name);
+      if (code == 0) {
+        error(n->pos, "no error named '%s' is declared", n->name.c_str());
+        note(n->pos, "declare it: error %s = \"what went wrong\"",
+             n->name.c_str());
+        return nullptr;
+      }
+      const TypeTable::ErrorDecl *decl = types.error_at(code);
+      if (decl && decl->owner != pkg.prefix && !exported(n->name)) {
+        error(n->pos, "error '%s' is not exported by %s", n->name.c_str(),
+              package_shown(decl->owner).c_str());
+        return nullptr;
+      }
       n->kind = ND_ERROR_LIT;
-      n->ival = (uint64_t)types.error_code(n->name);
+      n->ival = (uint64_t)code;
       return n->type = types.error_ty;
     }
 
@@ -3137,8 +3172,40 @@ struct Checker {
     return true;
   }
 
+  // A package prefix reads as the import made it visible: `std.net.` is `net`.
+  static std::string package_shown(const std::string &prefix) {
+    std::string name = prefix;
+    if (!name.empty() && name.back() == '.') name.pop_back();
+    if (name.empty()) return "this program";
+    return shown_name(name);
+  }
+
+  // `error Timeout = "..."`. Codes are global to the program so that the same
+  // name raised in two packages is one error; the message is global with them,
+  // which is why two packages disagreeing about it is a mistake worth reporting.
+  bool declare_errors() {
+    for (Node *decl : pkg.unit->kids) {
+      if (decl->kind != ND_ERROR_DECL) continue;
+      for (Node *one : decl->kids) {
+        const TypeTable::ErrorDecl *clash = nullptr;
+        int code = types.declare_error(one->name, one->text, pkg.prefix, &clash);
+        if (clash) {
+          error(one->pos,
+                "error '%s' is already declared with a different message",
+                one->name.c_str());
+          note(one->pos, "%s says \"%s\"", package_shown(clash->owner).c_str(),
+               clash->message.c_str());
+          return false;
+        }
+        pkg.error_codes[one->name] = code;
+      }
+    }
+    return true;
+  }
+
   bool run() {
     push_scope();
+    if (!declare_errors()) return false;
     // Constants come first: a struct field may be an array whose length is
     // one of them.
     declare_constants();

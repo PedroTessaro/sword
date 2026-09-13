@@ -18,6 +18,10 @@ struct Package {
   Node *unit = nullptr;
   std::vector<std::string> imports;
 
+  // Errors this package declares, by name, so a diagnostic can say where one
+  // came from.
+  std::unordered_map<std::string, int> error_codes;
+
   // Filled in by the checker. A name is exported when it starts uppercase.
   std::unordered_map<std::string, Symbol *> globals;
   std::unordered_map<std::string, Type *> type_names;
@@ -58,10 +62,12 @@ struct Program {
   // another package.
   std::unordered_map<Type *, Symbol *> enum_names;
 
-  // `nameof` over an error resolves to this. Unlike an enum's, it cannot be
-  // written as source in advance: the set of error names is only complete once
-  // every package has been checked, so lowering builds the body.
+  // `nameof` over an error resolves to the first of these, `e.Message()` to the
+  // second. Unlike an enum's, neither can be written as source in advance: the
+  // set of errors is only complete once every package has been checked, so
+  // lowering builds both bodies.
   Symbol *error_name = nullptr;
+  Symbol *error_message = nullptr;
 
   Package *main() { return order.empty() ? nullptr : order.back(); }
 };

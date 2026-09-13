@@ -3,6 +3,15 @@ package http
 import "std/bytes"
 import "std/strings"
 
+error BadRequestLine = "the request line is malformed"
+error BadStatusLine  = "the status line is malformed"
+error BadHeader      = "a header line is malformed"
+error TooManyHeaders = "more headers than this server accepts"
+error HeadTooLarge   = "the head is larger than the buffer"
+error BodyTooLarge   = "the body is larger than the buffer"
+error BadChunk       = "a chunk of the body is malformed"
+error Truncated      = "the other end stopped in the middle"
+
 const MaxHeaders = 32
 // The most a request line and its headers may come to. Eight kilobytes is what
 // nginx allows by default too; past it the connection is dropped rather than

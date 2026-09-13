@@ -1,5 +1,9 @@
 package mem
 
+// Raised by everything that asks this package for memory and is refused. One
+// declaration, because every package that allocates imports this one.
+error OutOfMemory = "the allocator has no room left"
+
 extern func malloc(n u64) ?[*]u8
 extern func free(p [*]u8)
 

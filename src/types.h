@@ -102,10 +102,23 @@ struct TypeTable {
   void note_instance(Type *type) { instance_list.push_back(type); }
   const std::vector<Type *> &instances_made() const { return instance_list; }
 
-  // Error names are global to the program, as in Zig: every name gets one code
-  // and code 0 always means success. No interprocedural inference needed.
-  int error_code(const std::string &name);
-  const std::vector<std::string> &errors() const { return error_list; }
+  // One code per error name, global to the program: `error.Timeout` raised in
+  // two packages is one error, which is what lets a caller handle it once. Code
+  // 0 always means success. Declared rather than conjured, so a misspelled name
+  // is a compile error instead of a new error nobody handles.
+  struct ErrorDecl {
+    std::string name;
+    std::string message; // empty when declared without one
+    std::string owner;   // the package prefix that declared it
+  };
+  // Returns the code. `clash` is set when the name is already declared with a
+  // different message, which the caller reports.
+  int declare_error(const std::string &name, const std::string &message,
+                    const std::string &owner, const ErrorDecl **clash);
+  // Zero when nothing declared it.
+  int error_code(const std::string &name) const;
+  const ErrorDecl *error_at(int code) const;
+  const std::vector<ErrorDecl> &errors() const { return error_list; }
 
   // One vtable per (concrete type, interface) pair actually used.
   struct VTable {
@@ -134,7 +147,7 @@ private:
   std::unordered_map<Type *, Type *> ptrs, rawptrs, slices, opts, error_unions;
   std::unordered_map<Type *, Type *> atomics, shareds;
   std::map<std::pair<Type *, int64_t>, Type *> arrays;
-  std::vector<std::string> error_list;
+  std::vector<ErrorDecl> error_list;
   std::vector<Type *> error_union_list;
   std::vector<Type *> optional_list;
   std::vector<Type *> shared_list;

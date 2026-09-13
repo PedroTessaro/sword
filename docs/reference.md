@@ -58,6 +58,9 @@ struct Name[T] { field T ... }     // generic; a type only once instantiated
 extern struct Name { ... }         // declared field order, for C
 interface Name { Method(a T) R ... }
 enum Name T { A; B = 3; C }        // T is the width, default int
+error Name = "what went wrong"     // declared, with the sentence it says
+error Name                         // declared, saying nothing
+error A, B, C
 
 package name                       // documentation; the directory decides
 import "path/to/package"
@@ -311,6 +314,9 @@ copies are folded together at the end.
 ## Errors
 
 ```sword
+error Name = "what went wrong"  // declared at the top level, message optional
+error A, B, C
+
 func f() !T                    // may fail
 return error.Name              // fail with a code
 return value                   // succeed
@@ -320,13 +326,25 @@ expr catch |e| { ... }         // handle it, naming the error
 expr catch { ... }             // handle it without naming it
 ```
 
-`nameof(e)` gives an error's name — the compiler writes the table, because at
-run time an error is a code and nothing else. A code that is not an error, zero
-among them, has no name and answers the empty string.
+`nameof(e)` gives an error's name and `e.Message()` the sentence it was declared
+with — the compiler writes both tables, because at run time an error is a code and
+nothing else. A code that is not an error, zero among them, answers the empty
+string for both. An error declared without a message has an empty one.
 
-Error names are global to the program; each gets a code, and 0 always means
-success. A `!T` cannot be discarded, and its fields cannot be reached until it
-is handled.
+Errors are **declared**, and using one that is not is a compile error. That is the
+point of the declaration: `error.Tiemout` used to compile and become a second
+error nobody handled.
+
+Codes are global to the program, so the same name raised in two packages is one
+error and a caller handles it once — but the two declarations have to agree on the
+message, and the compiler says so if they do not. A lowercase name is private to
+the package that declared it, like everything else. A `!T` cannot be discarded, and
+its fields cannot be reached until it is handled.
+
+The message is a string literal, so it costs no allocation: it sits in the binary
+and an error that goes unhandled costs nothing to carry. That is why there is no
+`errors.New` taking a formatted string — building a message is the caller's job,
+at the point where it has somewhere to put it.
 
 A handler block that has to produce a value must leave the scope. In statement
 position nothing is expected of it.

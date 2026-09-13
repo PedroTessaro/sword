@@ -1,6 +1,8 @@
 // expect: 0
 // expect-output: abc-doxx-DED|caught
 
+
+error Boom = "the thing that goes wrong in this test"
 extern func write(fd i32, buf [*]u8, n u64) i64
 
 func put(s string) {

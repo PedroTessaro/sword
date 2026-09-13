@@ -21,6 +21,7 @@ enum NodeKind {
   ND_ENUM_DECL,  // kids are the members, type_expr the width
   ND_ENUM_MEMBER,
   ND_CONST_DECL,
+  ND_ERROR_DECL, // kids name the errors; each kid's text is its message
   ND_FIELD_DECL,
 
   ND_BLOCK,

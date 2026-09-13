@@ -2,6 +2,8 @@
 // The same `fill` runs against a stack arena and against malloc, chosen at
 // run time through the interface.
 
+
+error OutOfMemory = "the allocator has no room left"
 extern func malloc(n u64) ?[*]u8
 extern func free(p [*]u8)
 

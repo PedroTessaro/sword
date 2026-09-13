@@ -111,11 +111,33 @@ Type *TypeTable::error_union(Type *value) {
   return error_unions[value] = type;
 }
 
-int TypeTable::error_code(const std::string &name) {
-  for (size_t i = 0; i < error_list.size(); i++)
-    if (error_list[i] == name) return (int)i + 1;
-  error_list.push_back(name);
+int TypeTable::declare_error(const std::string &name,
+                            const std::string &message,
+                            const std::string &owner, const ErrorDecl **clash) {
+  *clash = nullptr;
+  for (size_t i = 0; i < error_list.size(); i++) {
+    if (error_list[i].name != name) continue;
+    // Two packages may declare the same error, which is how `error.Timeout`
+    // means one thing across a program — but only if they agree on what it says.
+    if (!message.empty() && error_list[i].message.empty())
+      error_list[i].message = message;
+    else if (!message.empty() && error_list[i].message != message)
+      *clash = &error_list[i];
+    return (int)i + 1;
+  }
+  error_list.push_back(ErrorDecl{name, message, owner});
   return (int)error_list.size();
+}
+
+int TypeTable::error_code(const std::string &name) const {
+  for (size_t i = 0; i < error_list.size(); i++)
+    if (error_list[i].name == name) return (int)i + 1;
+  return 0;
+}
+
+const TypeTable::ErrorDecl *TypeTable::error_at(int code) const {
+  if (code <= 0 || (size_t)code > error_list.size()) return nullptr;
+  return &error_list[(size_t)code - 1];
 }
 
 Type *TypeTable::add(Type t) {

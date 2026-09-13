@@ -1,6 +1,8 @@
 // expect: 34
 // expect-output: hello interfaces
 
+
+error WriteFailed = "the write failed"
 extern func write(fd i32, buf [*]u8, n u64) i64
 
 interface Writer {

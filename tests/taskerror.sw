@@ -3,6 +3,8 @@
 
 import "std/io"
 
+error TaskFailed = "the task did not finish its work"
+
 func work(id i64, fail bool) !void {
     if fail {
         return error.TaskFailed

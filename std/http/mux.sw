@@ -2,6 +2,8 @@ package http
 
 import "std/strings"
 
+error TooManyRoutes = "more routes than this mux holds"
+
 const MaxRoutes = 64
 
 struct route {

@@ -8,6 +8,12 @@ import "std/os"
 import "std/strings"
 import "std/time"
 
+// Private: the framework raises these and catches them itself. A test that
+// wants to fail calls t.Fail, not this.
+error failed  = "the test failed"
+error skipped = "the test was skipped"
+error TooDeep = "nested deeper than the limit allows"
+
 // Memory each test gets. Tests run at the same time by default, so this is per
 // task rather than shared, and a test that needs more builds its own arena.
 const ArenaSize = 262144
@@ -100,7 +106,7 @@ func (mut t *T) Failf(format string, args ...any) !void {
 // site, which is the only way to leave a function early here.
 func (mut t *T) Fatalf(format string, args ...any) !void {
     try t.Failf(format, args...)
-    return error.Failed
+    return error.failed
 }
 
 func (mut t *T) Logf(format string, args ...any) !void {
@@ -174,7 +180,7 @@ func (mut t *T) Same(got any, want any) !void {
 func (mut t *T) Equal(got any, want any) !void {
     if !alike(got, want) {
         try t.mismatch(got, want)
-        return error.Failed
+        return error.failed
     }
 }
 
@@ -186,7 +192,7 @@ func (mut t *T) Skip(why string) !void {
     try t.out.WriteString(": ")
     try t.out.WriteString(why)
     try t.out.WriteString("\n")
-    return error.Skipped
+    return error.skipped
 }
 
 // A test within a test, which is what gives a section of one its own label. A
@@ -210,7 +216,7 @@ func (mut t *T) RunWith(name string, body func(mut *T) !void, arg any) !void {
     t.Arg = arg
 
     body(t) catch |e| {
-        if e != error.Failed && e != error.Skipped {
+        if e != error.failed && e != error.skipped {
             try t.Failf("returned error.{}", nameof(e))
         }
     }
@@ -236,9 +242,9 @@ func runOne(cases []Case, at u64, tally *Tally, gate *shared[u64]) !void {
     mut t := try newT(c.Name, &arena)
     mut was_skipped := false
     c.Run(&t) catch |e| {
-        if e == error.Skipped {
+        if e == error.skipped {
             was_skipped = true
-        } else if e != error.Failed {
+        } else if e != error.failed {
             try t.Failf("returned error.{}", nameof(e))
         }
     }

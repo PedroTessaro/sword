@@ -1,5 +1,7 @@
 package strings
 
+error NotANumber = "that is not a number"
+
 // Byte-oriented. Sword strings are UTF-8 but these functions work on bytes,
 // which is what a protocol parser wants.
 

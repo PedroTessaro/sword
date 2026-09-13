@@ -6,6 +6,9 @@
 
 import "std/io"
 
+error NotFound = "there is nothing there"
+error Timeout  = "the wait ran out of time"
+
 func fails(which u64) !u64 {
     switch which {
     case 0:

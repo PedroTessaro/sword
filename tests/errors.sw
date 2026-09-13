@@ -1,6 +1,8 @@
 // expect: 110
 // expect-output: caught
 
+
+error NotEven = "the number is odd"
 extern func write(fd i32, buf [*]u8, n u64) i64
 
 func log(msg string) {

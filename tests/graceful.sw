@@ -10,6 +10,8 @@ import "std/mem"
 import "std/os"
 import "std/time"
 
+error WrongSignal = "a signal arrived that nobody asked for"
+
 struct Slow {
     n u64
 }

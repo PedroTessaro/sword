@@ -5,6 +5,11 @@ import "std/collections"
 import "std/fmt"
 import "std/mem"
 
+error BadJSON      = "the document is not valid JSON"
+error TrailingJSON = "something follows the end of the document"
+error Unbalanced   = "a bracket or brace is not closed"
+error TooDeep      = "nested deeper than the limit allows"
+
 // The document is one flat list of nodes, and a node points at its children by
 // index rather than by pointer. That keeps everything in a single allocation
 // and sidesteps the recursive type a tree would otherwise need.

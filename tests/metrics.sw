@@ -8,6 +8,8 @@ import "std/io"
 import "std/mem"
 import "std/runtime"
 
+error OnPurpose = "this handler fails on purpose"
+
 struct Sometimes {
     n u64
 }

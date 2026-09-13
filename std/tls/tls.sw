@@ -3,6 +3,15 @@ package tls
 import "std/net"
 import "std/time"
 
+error NoTLS = "this build was made without TLS"
+error BadCertificate = "the certificate and key could not be used"
+error BadTrustStore  = "the certificate authorities could not be read"
+error HandshakeFailed = "the handshake did not complete"
+error CannotWriteCertificate = "the certificate could not be written"
+error ReadFailed  = "the read failed"
+error WriteFailed = "the write failed"
+error Timeout     = "the wait ran out of time"
+
 extern func sword_tls_available() i32
 extern func sword_tls_client_context(ca [*]u8, ca_len i64, verify i32) ?[*]u8
 extern func sword_tls_server_context(cert [*]u8, cert_len i64, key [*]u8,

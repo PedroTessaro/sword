@@ -842,6 +842,33 @@ struct Parser {
     return true;
   }
 
+  // error Name
+  // error Name = "what went wrong"
+  // error A, B, C
+  Node *error_decl() {
+    Node *n = make(ND_ERROR_DECL, advance().pos); // the word `error`
+    while (true) {
+      if (kind() != TK_IDENT) {
+        fail("expected an error name");
+        return nullptr;
+      }
+      Node *one = make(ND_IDENT, peek().pos);
+      one->name = advance().text;
+      if (match(TK_ASSIGN)) {
+        if (kind() != TK_STRING) {
+          fail("an error's message has to be a string literal, so that it costs"
+               " no allocation");
+          return nullptr;
+        }
+        one->text = advance().text;
+        one->ival = 1; // a message was given, even if it is empty
+      }
+      n->kids.push_back(one);
+      if (!match(TK_COMMA)) break;
+    }
+    return n;
+  }
+
   Node *func_decl(bool is_extern) {
     Node *n = make(ND_FUNC, advance().pos);
     n->is_extern = is_extern;
@@ -1040,6 +1067,13 @@ struct Parser {
       n->rhs = expr();
       return n->rhs ? n : nullptr;
     }
+
+    // `error Timeout = "the peer did not answer"`, or a list of bare names.
+    // `error` is not a keyword — `error.X` has always been an identifier the
+    // checker intercepts — so this is recognised by shape: the word followed by
+    // a name rather than by a dot.
+    if (kind() == TK_IDENT && peek().text == "error" && kind(1) == TK_IDENT)
+      return error_decl();
 
     bool is_extern = match(TK_EXTERN);
     if (kind() == TK_FUNC) return func_decl(is_extern);

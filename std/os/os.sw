@@ -1,5 +1,10 @@
 package os
 
+error NoSignals   = "this platform cannot deliver signals here"
+error CannotCatch = "that signal cannot be caught"
+error CannotSignal = "the signal could not be sent"
+error CannotRaise = "the limit could not be raised"
+
 // The process and what it was started with. A C function cannot hand back a
 // Sword string by value, so these come across as a pointer and a length and
 // get stitched together here.

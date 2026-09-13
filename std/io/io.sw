@@ -2,6 +2,8 @@ package io
 
 import "std/fmt"
 
+error WriteFailed = "the write failed"
+
 extern func write(fd i32, buf [*]u8, n u64) i64
 
 const Stdout = 1

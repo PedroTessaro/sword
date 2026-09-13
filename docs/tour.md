@@ -410,10 +410,13 @@ Two ways to get at the value, and no third:
 - `if n := opt { ... }` runs the block with the unwrapped value bound
 - `opt orelse fallback` produces the value or the fallback
 
-An error's name is available too, which is what a log or a test failure wants:
+An error's name and message are available too, which is what a log line or a test
+failure wants:
 
 ```sword
 import "std/io"
+
+error NotFound = "there is nothing there"
 
 func risky() !u64 {
     return error.NotFound
@@ -421,7 +424,7 @@ func risky() !u64 {
 
 func main() !int {
     risky() catch |e| {
-        try io.Printf("gave up: error.{}\n", nameof(e))
+        try io.Printf("gave up: {} — {}\n", nameof(e), e.Message())
     }
     return 0
 }
@@ -534,9 +537,17 @@ that is not a member.
 
 ## Errors
 
+An error is declared, given a name and the sentence it should say:
+
+```sword
+error NotEven = "the number is odd"
+```
+
 A function that can fail says so with `!` on its result:
 
 ```sword
+error NotEven = "the number is odd"
+
 func half(n i32) !i32 {
     if n % 2 != 0 {
         return error.NotEven
@@ -545,9 +556,29 @@ func half(n i32) !i32 {
 }
 ```
 
-`error.NotEven` invents an error by naming it. Errors are just codes — they
-carry no payload, never allocate, and the set is global to the program, so
-there is no error type to declare anywhere.
+An error is a code at run time and nothing more: no payload, no allocation, and
+the message lives in the binary rather than being built when something goes
+wrong. The set is global to the program, so `error.Timeout` raised by two
+packages is one error and a caller handles it once.
+
+Declaring is not ceremony — it is what makes `error.NotEvn` a compile error
+instead of a second error nobody handles. Several at once, and one without a
+message when the name says everything:
+
+```sword
+error Closed = "the channel is closed"
+error Refused = "nothing is listening there"
+error tooDeep                    // lowercase: nobody outside this package
+```
+
+`nameof(e)` gives the name and `e.Message()` the sentence:
+
+```sword
+half(41) catch |e| {
+    try io.Printf("{}: {}\n", nameof(e), e.Message())
+}
+// NotEven: the number is odd
+```
 
 `try` passes a failure up to your own caller:
 
@@ -561,6 +592,8 @@ func quarter(n i32) !i32 {
 `catch` handles it. Three shapes:
 
 ```sword
+error NotEven = "the number is odd"
+
 func half(n i32) !i32 {
     if n % 2 != 0 {
         return error.NotEven

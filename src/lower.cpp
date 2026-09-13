@@ -1886,10 +1886,10 @@ struct Lowerer {
     return in.dst;
   }
 
-  // `error.name`: a code in, its name out. Written here rather than as source
-  // because the set of error names is only complete once every package has been
-  // checked, and this is the first place that is true.
-  void error_names(IrFunc &out) {
+  // `error.name` and `error.message`: a code in, a string out. Written here
+  // rather than as source because the set of errors is only complete once every
+  // package has been checked, and this is the first place that is true.
+  void error_table(IrFunc &out, bool messages) {
     fn = &out;
     cur = 0;
     sret = -1;
@@ -1897,7 +1897,7 @@ struct Lowerer {
     loops.clear();
     scopes.clear();
 
-    out.name = "error.name";
+    out.name = messages ? "error.message" : "error.name";
     out.params.push_back(types.error_ty);
     out.ret = ret = types.string_ty;
     out.ret_by_pointer = true;
@@ -1909,8 +1909,8 @@ struct Lowerer {
 
     // A chain rather than a table: error sets are small, and LLVM turns a dense
     // chain into a switch on its own.
-    const std::vector<std::string> &names = types.errors();
-    for (size_t i = 0; i < names.size(); i++) {
+    const std::vector<TypeTable::ErrorDecl> &all = types.errors();
+    for (size_t i = 0; i < all.size(); i++) {
       int same = binop(IR_EQ, code,
                        constant((int64_t)i + 1, types.error_ty), types.bool_ty);
       int hit = new_block();
@@ -1918,7 +1918,8 @@ struct Lowerer {
       cond_branch(same, hit, next);
 
       cur = hit;
-      copy(sret, string_value(names[i]), types.string_ty);
+      copy(sret, string_value(messages ? all[i].message : all[i].name),
+           types.string_ty);
       emit_ret(-1, types.void_ty);
       cur = next;
     }
@@ -2032,11 +2033,15 @@ void lower(Program &prog, TypeTable &types, Mode mode, IrModule &mod) {
     }
   }
 
-  // After everything else: the table is only complete once every error name in
-  // the program has been seen.
+  // After everything else: the tables are only complete once every error in the
+  // program has been declared.
   if (prog.error_name) {
     mod.funcs.emplace_back();
-    lowerer.error_names(mod.funcs.back());
+    lowerer.error_table(mod.funcs.back(), false);
+  }
+  if (prog.error_message) {
+    mod.funcs.emplace_back();
+    lowerer.error_table(mod.funcs.back(), true);
   }
 
   for (const auto &thunk : lowerer.thunks) {

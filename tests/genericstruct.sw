@@ -3,6 +3,8 @@
 
 import "std/mem"
 
+error Full = "there is no room left in it"
+
 struct List[T] {
     items []T
     count u64

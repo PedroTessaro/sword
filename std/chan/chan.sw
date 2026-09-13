@@ -2,6 +2,8 @@ package chan
 
 import "std/mem"
 
+error Closed = "the channel is closed"
+
 // A queue tasks hand values through. A send waits while it is full and a
 // receive waits while it is empty, and waiting here costs a stack rather than a
 // thread — the task is put down and the worker goes elsewhere.

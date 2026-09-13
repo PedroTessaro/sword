@@ -2,6 +2,15 @@ package net
 
 import "std/time"
 
+error ListenFailed = "the address could not be listened on"
+error AcceptFailed = "the connection could not be accepted"
+error DialFailed   = "the connection could not be made"
+error ReadFailed   = "the read failed"
+error WriteFailed  = "the write failed"
+error Timeout      = "the wait ran out of time"
+error TimeoutNotSet = "the timeout could not be set"
+error NoPeer       = "the other end has no address to report"
+
 // The socket layer is the one place the standard library leans on C: address
 // structures are laid out differently on BSD and Linux, and Sword has no
 // conditional compilation to tell them apart. Everything above this file is

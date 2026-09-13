@@ -3,6 +3,9 @@ package http
 import "std/fs"
 import "std/strings"
 
+error NoSuchFile = "there is no file at that path"
+error ShortFile  = "the file is smaller than it said it was"
+
 // How much of a file goes out at a time. Big enough that a megabyte is a few
 // dozen writes, small enough to sit on a task's stack beside everything else a
 // connection needs.

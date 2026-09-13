@@ -7,6 +7,8 @@ import "std/collections"
 import "std/io"
 import "std/mem"
 
+error Nope = "this is the failure the test is about"
+
 struct Tally {
     hits, misses u64
 }

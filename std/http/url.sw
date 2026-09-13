@@ -2,6 +2,11 @@ package http
 
 import "std/strings"
 
+error BadURL      = "that is not a URL this package can use"
+error RelativeURL = "a relative URL needs the one it came from"
+error BadEscape   = "a percent escape is malformed"
+error NoSpace     = "the buffer given has no room for the result"
+
 // The request target as it arrives on the request line, split at `?`. Both
 // halves point into the read buffer, so nothing is copied.
 struct Target {
