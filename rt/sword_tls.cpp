@@ -14,10 +14,12 @@ extern "C" {
 
 int32_t sword_tls_available(void) { return 0; }
 
-void *sword_tls_client_context(const char *, int64_t, int32_t) {
+void *sword_tls_client_context(const char *, int64_t, int32_t, const char *,
+                               int64_t, const char *, int64_t) {
   return nullptr;
 }
-void *sword_tls_server_context(const char *, int64_t, const char *, int64_t) {
+void *sword_tls_server_context(const char *, int64_t, const char *, int64_t,
+                               const char *, int64_t, int32_t) {
   return nullptr;
 }
 void sword_tls_free_context(void *) {}
@@ -40,6 +42,13 @@ int32_t sword_tls_self_signed(const char *, int64_t, const char *, int64_t,
                               const char *, int64_t) {
   return -1;
 }
+int32_t sword_tls_signed_by(const char *, int64_t, const char *, int64_t,
+                            const char *, int64_t, const char *, int64_t,
+                            const char *, int64_t, int32_t) {
+  return -1;
+}
+int64_t sword_tls_peer_name(void *, char *, int64_t) { return -1; }
+int32_t sword_tls_peer_verified(void *) { return 0; }
 }
 
 #else
@@ -164,7 +173,9 @@ extern "C" {
 int32_t sword_tls_available(void) { return 1; }
 
 void *sword_tls_client_context(const char *ca_file, int64_t ca_len,
-                               int32_t verify) {
+                               int32_t verify, const char *cert_file,
+                               int64_t cert_len, const char *key_file,
+                               int64_t key_len) {
   ensure_library();
   SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
   if (!ctx) return nullptr;
@@ -187,11 +198,28 @@ void *sword_tls_client_context(const char *ca_file, int64_t ca_len,
   } else {
     SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, nullptr);
   }
+
+  // A certificate of the client's own, for a server that asks who is calling.
+  if (cert_len > 0 && key_len > 0) {
+    char cert[1024];
+    char key[1024];
+    if (!as_path(cert_file, cert_len, cert, sizeof(cert)) ||
+        !as_path(key_file, key_len, key, sizeof(key)) ||
+        SSL_CTX_use_certificate_chain_file(ctx, cert) != 1 ||
+        SSL_CTX_use_PrivateKey_file(ctx, key, SSL_FILETYPE_PEM) != 1 ||
+        SSL_CTX_check_private_key(ctx) != 1) {
+      ERR_clear_error();
+      SSL_CTX_free(ctx);
+      return nullptr;
+    }
+  }
   return ctx;
 }
 
 void *sword_tls_server_context(const char *cert_file, int64_t cert_len,
-                               const char *key_file, int64_t key_len) {
+                               const char *key_file, int64_t key_len,
+                               const char *ca_file, int64_t ca_len,
+                               int32_t require) {
   ensure_library();
   char cert[1024];
   char key[1024];
@@ -207,6 +235,25 @@ void *sword_tls_server_context(const char *cert_file, int64_t cert_len,
     ERR_clear_error();
     SSL_CTX_free(ctx);
     return nullptr;
+  }
+
+  // Asking the client for a certificate. Without an authority to check it against
+  // there is nothing to ask — a certificate nobody can verify says nothing.
+  if (ca_len > 0) {
+    char authority[1024];
+    if (!as_path(ca_file, ca_len, authority, sizeof(authority)) ||
+        SSL_CTX_load_verify_locations(ctx, authority, nullptr) != 1) {
+      ERR_clear_error();
+      SSL_CTX_free(ctx);
+      return nullptr;
+    }
+    // The names the server will accept, sent to the client so it knows which of
+    // its certificates to offer.
+    STACK_OF(X509_NAME) *names = SSL_load_client_CA_file(authority);
+    if (names) SSL_CTX_set_client_CA_list(ctx, names);
+    int mode = require ? (SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT)
+                       : SSL_VERIFY_PEER;
+    SSL_CTX_set_verify(ctx, mode, nullptr);
   }
   return ctx;
 }
@@ -285,20 +332,50 @@ const char *sword_tls_cipher(void *conn, int64_t *len) {
   return text;
 }
 
-// A certificate for `host`, signed by its own key. Enough to talk TLS to
-// yourself, which is what a development server and a test need, and worth
-// nothing to anybody else — no client trusts this without being told to.
-int32_t sword_tls_self_signed(const char *host, int64_t host_len,
-                              const char *cert_file, int64_t cert_len,
-                              const char *key_file, int64_t key_len) {
-  ensure_library();
-  char name[256];
-  char cert_path[1024];
-  char key_path[1024];
-  if (!as_path(host, host_len, name, sizeof(name))) return -1;
-  if (!as_path(cert_file, cert_len, cert_path, sizeof(cert_path))) return -1;
-  if (!as_path(key_file, key_len, key_path, sizeof(key_path))) return -1;
+// The subject line of the peer's certificate: "/CN=api.internal" and whatever else
+// it carries. -1 when there is no certificate, which for a server that did not ask
+// is the ordinary case.
+int64_t sword_tls_peer_name(void *conn, char *out, int64_t out_len) {
+  Conn *c = (Conn *)conn;
+  if (!c || out_len <= 0) return -1;
+  X509 *peer = SSL_get1_peer_certificate(c->ssl);
+  if (!peer) return -1;
+  X509_NAME *subject = X509_get_subject_name(peer);
+  char *line = X509_NAME_oneline(subject, nullptr, 0);
+  int64_t wrote = -1;
+  if (line) {
+    int64_t len = (int64_t)strlen(line);
+    if (len > out_len) len = out_len;
+    memcpy(out, line, (size_t)len);
+    wrote = len;
+    OPENSSL_free(line);
+  }
+  X509_free(peer);
+  return wrote;
+}
 
+int32_t sword_tls_peer_verified(void *conn) {
+  Conn *c = (Conn *)conn;
+  if (!c) return 0;
+  if (SSL_get_verify_result(c->ssl) != X509_V_OK) return 0;
+  X509 *peer = SSL_get1_peer_certificate(c->ssl);
+  if (!peer) return 0;
+  X509_free(peer);
+  return 1;
+}
+
+// Writes one certificate and its key. `issuer` and `issuer_key` null means the
+// certificate signs itself, which is what a development server uses; given an
+// authority, two certificates from it are two identities that can check each other.
+//
+// `client` marks it for client authentication. Without the right extended key usage
+// a strict peer refuses a certificate for the job it was not issued for, and the
+// error it gives says nothing useful about why.
+namespace {
+
+int write_certificate(const char *name, X509 *issuer, EVP_PKEY *issuer_key,
+                      const char *cert_path, const char *key_path, bool client,
+                      bool authority) {
   EVP_PKEY *key = EVP_RSA_gen(2048);
   if (!key) return -1;
 
@@ -310,8 +387,8 @@ int32_t sword_tls_self_signed(const char *host, int64_t host_len,
 
   int ok = 0;
   do {
-    X509_set_version(cert, 2); // v3, which is what a SAN needs
-    ASN1_INTEGER_set(X509_get_serialNumber(cert), 1);
+    X509_set_version(cert, 2); // v3, which is what the extensions need
+    ASN1_INTEGER_set(X509_get_serialNumber(cert), issuer ? 2 : 1);
     X509_gmtime_adj(X509_getm_notBefore(cert), 0);
     X509_gmtime_adj(X509_getm_notAfter(cert), 60 * 60 * 24);
     if (X509_set_pubkey(cert, key) != 1) break;
@@ -319,21 +396,40 @@ int32_t sword_tls_self_signed(const char *host, int64_t host_len,
     X509_NAME *subject = X509_get_subject_name(cert);
     X509_NAME_add_entry_by_txt(subject, "CN", MBSTRING_ASC,
                                (const unsigned char *)name, -1, -1, 0);
-    X509_set_issuer_name(cert, subject); // its own issuer: that is the point
+    // Signed by somebody else, or by itself — and self-signed is the only case
+    // where those two are the same name.
+    X509_set_issuer_name(cert, issuer ? X509_get_subject_name(issuer) : subject);
 
-    // Modern clients check the subject alternative name and ignore the common
-    // name, so without this the certificate is for nobody.
+    // Modern peers check the subject alternative name and ignore the common name,
+    // so without this the certificate is for nobody.
     char alt[320];
     bool numeric = name[0] >= '0' && name[0] <= '9';
     snprintf(alt, sizeof(alt), numeric ? "IP:%s" : "DNS:%s", name);
-    X509_EXTENSION *san = X509V3_EXT_conf_nid(nullptr, nullptr,
-                                              NID_subject_alt_name, alt);
+    X509_EXTENSION *san =
+        X509V3_EXT_conf_nid(nullptr, nullptr, NID_subject_alt_name, alt);
     if (san) {
       X509_add_ext(cert, san, -1);
       X509_EXTENSION_free(san);
     }
 
-    if (X509_sign(cert, key, EVP_sha256()) == 0) break;
+    if (authority) {
+      X509_EXTENSION *basic = X509V3_EXT_conf_nid(
+          nullptr, nullptr, NID_basic_constraints, "critical,CA:TRUE");
+      if (basic) {
+        X509_add_ext(cert, basic, -1);
+        X509_EXTENSION_free(basic);
+      }
+    } else {
+      X509_EXTENSION *usage = X509V3_EXT_conf_nid(
+          nullptr, nullptr, NID_ext_key_usage,
+          client ? "clientAuth" : "serverAuth");
+      if (usage) {
+        X509_add_ext(cert, usage, -1);
+        X509_EXTENSION_free(usage);
+      }
+    }
+
+    if (X509_sign(cert, issuer_key ? issuer_key : key, EVP_sha256()) == 0) break;
 
     FILE *out = fopen(cert_path, "wb");
     if (!out) break;
@@ -343,8 +439,7 @@ int32_t sword_tls_self_signed(const char *host, int64_t host_len,
 
     out = fopen(key_path, "wb");
     if (!out) break;
-    wrote = PEM_write_PrivateKey(out, key, nullptr, nullptr, 0, nullptr,
-                                 nullptr);
+    wrote = PEM_write_PrivateKey(out, key, nullptr, nullptr, 0, nullptr, nullptr);
     fclose(out);
     if (wrote != 1) break;
     ok = 1;
@@ -354,6 +449,87 @@ int32_t sword_tls_self_signed(const char *host, int64_t host_len,
   EVP_PKEY_free(key);
   if (!ok) ERR_clear_error();
   return ok ? 0 : -1;
+}
+
+// Reads a certificate and its key back off disk, which is how the authority that
+// signs comes in.
+bool load_pair(const char *cert_path, const char *key_path, X509 **cert,
+               EVP_PKEY **key) {
+  *cert = nullptr;
+  *key = nullptr;
+  FILE *in = fopen(cert_path, "rb");
+  if (!in) return false;
+  *cert = PEM_read_X509(in, nullptr, nullptr, nullptr);
+  fclose(in);
+  if (!*cert) return false;
+  in = fopen(key_path, "rb");
+  if (!in) {
+    X509_free(*cert);
+    *cert = nullptr;
+    return false;
+  }
+  *key = PEM_read_PrivateKey(in, nullptr, nullptr, nullptr);
+  fclose(in);
+  if (!*key) {
+    X509_free(*cert);
+    *cert = nullptr;
+    return false;
+  }
+  return true;
+}
+
+} // namespace
+
+// A certificate for `host`, signed by its own key and marked as an authority, so
+// that it can both serve and sign. Enough to talk TLS to yourself, which is what a
+// development server and a test need, and worth nothing to anybody else — no peer
+// trusts this without being told to.
+int32_t sword_tls_self_signed(const char *host, int64_t host_len,
+                              const char *cert_file, int64_t cert_len,
+                              const char *key_file, int64_t key_len) {
+  ensure_library();
+  char name[256];
+  char cert_path[1024];
+  char key_path[1024];
+  if (!as_path(host, host_len, name, sizeof(name))) return -1;
+  if (!as_path(cert_file, cert_len, cert_path, sizeof(cert_path))) return -1;
+  if (!as_path(key_file, key_len, key_path, sizeof(key_path))) return -1;
+  return write_certificate(name, nullptr, nullptr, cert_path, key_path, false,
+                           true) == 0
+             ? 0
+             : -1;
+}
+
+int32_t sword_tls_signed_by(const char *name_text, int64_t name_len,
+                            const char *ca_cert, int64_t ca_cert_len,
+                            const char *ca_key, int64_t ca_key_len,
+                            const char *cert_file, int64_t cert_len,
+                            const char *key_file, int64_t key_len,
+                            int32_t client) {
+  ensure_library();
+  char name[256];
+  char ca_cert_path[1024];
+  char ca_key_path[1024];
+  char cert_path[1024];
+  char key_path[1024];
+  if (!as_path(name_text, name_len, name, sizeof(name))) return -1;
+  if (!as_path(ca_cert, ca_cert_len, ca_cert_path, sizeof(ca_cert_path)))
+    return -1;
+  if (!as_path(ca_key, ca_key_len, ca_key_path, sizeof(ca_key_path))) return -1;
+  if (!as_path(cert_file, cert_len, cert_path, sizeof(cert_path))) return -1;
+  if (!as_path(key_file, key_len, key_path, sizeof(key_path))) return -1;
+
+  X509 *issuer = nullptr;
+  EVP_PKEY *issuer_key = nullptr;
+  if (!load_pair(ca_cert_path, ca_key_path, &issuer, &issuer_key)) {
+    ERR_clear_error();
+    return -1;
+  }
+  int result = write_certificate(name, issuer, issuer_key, cert_path, key_path,
+                                 client != 0, false);
+  X509_free(issuer);
+  EVP_PKEY_free(issuer_key);
+  return result == 0 ? 0 : -1;
 }
 }
 
