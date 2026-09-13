@@ -306,13 +306,33 @@ void TypeTable::layout_struct(Type *type, std::vector<Field> fields) {
   type->fields = std::move(fields);
 }
 
-// The program's own package is qualified in the object file so its names cannot
-// collide with libc's, but that prefix is a linker concern and has no business
-// in a diagnostic: the user wrote `Kind`, not `main.Kind`.
+// Names are qualified by the whole import path so that nothing in the object
+// file can collide, but a diagnostic should read the way the program does: the
+// user wrote `Kind` and `time.Duration`, not `main.Kind` and
+// `std.time.Duration`. A generic instance carries its type arguments after a
+// '$', and each of those is a name in its own right.
 std::string shown_name(const std::string &name) {
-  const std::string own = "main.";
-  if (name.compare(0, own.size(), own) == 0) return name.substr(own.size());
-  return name;
+  std::string out;
+  size_t at = 0;
+  while (at <= name.size()) {
+    size_t end = name.find('$', at);
+    if (end == std::string::npos) end = name.size();
+    std::string piece = name.substr(at, end - at);
+    size_t last = piece.rfind('.');
+    if (last != std::string::npos) {
+      size_t before = piece.rfind('.', last - 1);
+      // The program's own package has no name to say; everything else keeps the
+      // one segment the import made visible.
+      piece = piece.compare(0, 5, "main.") == 0 || before == std::string::npos
+                  ? piece.substr(last + 1)
+                  : piece.substr(before + 1);
+    }
+    out += piece;
+    if (end == name.size()) break;
+    out += '$';
+    at = end + 1;
+  }
+  return out;
 }
 
 std::string type_str(const Type *t) {
