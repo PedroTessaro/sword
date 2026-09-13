@@ -741,6 +741,7 @@ func (s Stats) Running() i64      // Started - Finished
 | `Parked` | threads stopped inside a syscall that cannot be put down |
 | `Stacks` | task stacks alive, in use or pooled |
 | `Started` `Finished` | tasks begun and ended since the program did |
+| `StackBytes` | what one task's stack reserves, which `SWORD_STACK_KB` sets |
 
 ### `std/net`
 
@@ -899,6 +900,7 @@ left out of every other build. See [Testing](testing.md).
 | `SWORD_ROOT` | where the compiler looks for the standard library |
 | `SWORD_THREADS` | fixed worker count, defaults to one per core |
 | `SWORD_MAX_THREADS` | how far the pool may grow to cover blocked tasks, default 512 |
+| `SWORD_STACK_KB` | stack per task in KiB, default 1024, held between 64 and 262144 |
 
 ## Reserved but not implemented
 

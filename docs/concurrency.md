@@ -358,13 +358,40 @@ func handle(c net.Conn) !void {
 }
 ```
 
+### What a stack costs
+
 A stack is reserved rather than committed, so what a waiting task actually costs
 is the few pages it has touched. Measured on a real server: a keep-alive
 connection sitting idle costs about 33 KiB, against roughly 80 KiB and a whole
 thread before. Two thousand of them run on twelve threads.
 
-An overflow hits a guard page and faults where it happened, rather than writing
-quietly through somebody else's stack.
+A megabyte is the default reservation, and `SWORD_STACK_KB` changes it — down for
+a server whose handlers are shallow and which wants a great many of them, up for
+code that recurses or keeps large buffers in frames. `runtime.Read().StackBytes`
+reports what it settled on.
+
+Stacks come thirty-two to a mapping, and a stack that nobody wants goes back on a
+pile with its pages dropped rather than kept. That is what stops a spike from
+costing memory for the rest of the run: twenty thousand tasks each touching a
+16 KiB buffer sit in 338 MiB, and when they finish the memory goes back.
+
+### Running out of it
+
+Below every task's stack is a guard, and a write into it stops the program with
+what happened:
+
+```
+sword: a task ran out of stack. It had 1024 KiB; SWORD_STACK_KB sets that.
+```
+
+The guard is 64 KiB rather than a single page, because a frame that reserves a
+large buffer and writes into the middle of it can step over one page without
+touching it — and with stacks packed together, what is on the other side belongs
+to another task.
+
+A fault anywhere else is left alone: a wild pointer dies the way it always did,
+and a thread that overflows its own stack — the main function's, before any
+`scope` — is still the operating system's to report.
 
 ### What still holds a thread
 
@@ -398,6 +425,7 @@ Three numbers control the shape of it:
 |---|---|
 | `SWORD_THREADS` | Workers. Defaults to one per core. |
 | `SWORD_MAX_THREADS` | How large the pool may grow to cover threads stuck in the kernel. Defaults to 512. |
+| `SWORD_STACK_KB` | How much stack a task gets. Defaults to 1024, held between 64 and 262144. |
 
 The ceiling is a brake rather than a wall. A pool at its limit with every thread
 parked and work still queued would be a program that has stopped, so in that one
@@ -676,9 +704,15 @@ have been taken again by the time it wakes. `Notify` wakes one waiter and
 they come from. A slice returned straight out of a call, never bound to
 anything, is not tracked — there is nothing to compare it against.
 
-**Growable stacks.** A task's stack is reserved at a megabyte and the pages it
-touches are what it costs, which is fine into the low tens of thousands of
-tasks. Past that the reservations themselves start to matter: Linux counts
-mappings, and the usual limit is around sixty-five thousand of them, or about
-thirty thousand tasks. Go grows and moves stacks instead, which needs the
-compiler's help to find and rewrite the pointers into them.
+**Growable stacks.** A task's stack is one size for its whole life. Overflowing
+it is now reported rather than mysterious, and `SWORD_STACK_KB` is there for code
+that needs more, but nothing grows on demand. Go moves stacks to grow them, which
+works because its compiler can find every pointer into a stack and rewrite it;
+Sword hands out `&local` and slices of stack arrays freely, and there is no way
+to find them all after the fact.
+
+What that leaves is a ceiling on live tasks. Each stack needs its guard, the
+kernel counts a protected range as a mapping of its own, and Linux allows around
+sixty-five thousand — so tens of thousands of tasks at once is the honest number,
+and a machine that needs more can raise `vm.max_map_count`. Packing stacks into
+slabs made them cheaper to hand out; it did not move that limit.
