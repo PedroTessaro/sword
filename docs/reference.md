@@ -721,9 +721,10 @@ func ReadStdin(mut a mem.Allocator, most u64) ![]u8
 `Stdin`, `Stdout` and `Stderr` are the descriptors the process starts with.
 
 A file is never "not ready yet" — the wait is the disk, and no poller has
-anything to say about it. So file work really does stop a thread, and the
-scheduler hires a replacement while it is gone. Forty tasks reading at once run
-on forty-odd threads, unlike forty tasks on sockets.
+anything to say about it. So a file call goes to a thread kept for exactly that,
+and the task waiting on it is put down like any other. Forty tasks reading at once
+run on a pool of ten, not forty threads; `SWORD_IO_THREADS` is the cap and
+`runtime.Read().IoThreads` is the count.
 
 ### `std/runtime`
 
@@ -744,6 +745,7 @@ func (s Stats) Running() i64      // Started - Finished
 | `Stacks` | task stacks alive, in use or pooled |
 | `Started` `Finished` | tasks begun and ended since the program did |
 | `StackBytes` | what one task's stack reserves, which `SWORD_STACK_KB` sets |
+| `IoThreads` | threads kept for calls that cannot be put down, capped by `SWORD_IO_THREADS` |
 
 ### `std/net`
 
@@ -903,6 +905,7 @@ left out of every other build. See [Testing](testing.md).
 | `SWORD_THREADS` | fixed worker count, defaults to one per core |
 | `SWORD_MAX_THREADS` | how far the pool may grow to cover blocked tasks, default 512 |
 | `SWORD_STACK_KB` | stack per task in KiB, default 1024, held between 64 and 262144 |
+| `SWORD_IO_THREADS` | threads for file I/O and name resolution, default the core count or 4 |
 
 ## Reserved but not implemented
 

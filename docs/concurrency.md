@@ -393,28 +393,40 @@ A fault anywhere else is left alone: a wild pointer dies the way it always did,
 and a thread that overflows its own stack — the main function's, before any
 `scope` — is still the operating system's to report.
 
-### What still holds a thread
+### What cannot be put down
 
-Not everything can be put down. Name resolution is one call in the C library
-with no way in or out of the middle, and so is sleeping in some cases. Those say
-so first:
+Not everything is a socket. A file is never "not ready yet" — the wait is the
+disk, and asking a poller about a regular file tells you nothing. Name resolution
+is one call in the C library with no way into the middle of it.
+
+Those go to a pool of threads kept for the purpose. The task waiting on one is
+put down like any other, the worker goes on to something else, and the threads
+doing the waiting are not scheduler capacity and never run Sword code. What forty
+concurrent file reads cost is the size of that pool — ten threads on a ten-core
+machine — and not forty threads, which is what it used to be.
+
+The pool grows only while every thread in it is busy, gives a thread back after a
+second of finding nothing to do, and stops at `SWORD_IO_THREADS`. Past that,
+calls queue: a server whose disk is the bottleneck should wait on the disk rather
+than on a thread it cannot afford.
+
+`runtime.Read().IoThreads` reports how many are up.
+
+### The fallback underneath
+
+A thread can still say it is about to block:
 
 ```
 sword_blocking_enter();
-getaddrinfo(...);
+something_that_stops_the_thread();
 sword_blocking_exit();
 ```
 
 A parked thread stops counting as scheduler capacity, so the pool hires a
-replacement while it is gone and retires it after 200 ms of finding no work. It
-is the fallback now rather than the main mechanism, but it is still what keeps
-one slow name lookup from stalling everything.
-
-Files are the other one, and for a different reason: a file is never "not ready
-yet". The wait is the disk, and asking a poller about a regular file tells you
-nothing. So `std/fs` stops the thread on purpose and says so, which is why forty
-tasks reading files run on forty-odd threads while forty tasks on sockets run on
-eleven.
+replacement while it is gone and retires it after 200 ms of finding no work. It is
+what code outside any task falls back to — the main function, before any `scope` —
+and it is why a program that blocks somewhere unforeseen slows down instead of
+stopping.
 
 Code that is not in a task at all — the main function, before any `scope` — has
 nothing to put down, so it waits on the thread the ordinary way.
@@ -426,6 +438,7 @@ Three numbers control the shape of it:
 | `SWORD_THREADS` | Workers. Defaults to one per core. |
 | `SWORD_MAX_THREADS` | How large the pool may grow to cover threads stuck in the kernel. Defaults to 512. |
 | `SWORD_STACK_KB` | How much stack a task gets. Defaults to 1024, held between 64 and 262144. |
+| `SWORD_IO_THREADS` | Threads for calls that cannot be put down — file I/O, name resolution. Defaults to the core count, at least 4. |
 
 The ceiling is a brake rather than a wall. A pool at its limit with every thread
 parked and work still queued would be a program that has stopped, so in that one
