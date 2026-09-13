@@ -4,6 +4,7 @@ import "std/bytes"
 import "std/fmt"
 import "std/mem"
 import "std/net"
+import "std/tls"
 import "std/strings"
 import "std/time"
 
@@ -509,6 +510,9 @@ func handleConn(c net.Stream, h Handler, mut a mem.Allocator,
 
 struct Server {
     listener net.Listener
+    // Set by ListenTLS. Every connection is handshaked before a byte of HTTP is
+    // read, and one context serves them all.
+    secure ?tls.Context
     // Counted rather than guessed: a server nobody can see inside is a server
     // nobody can run. Atomics because every connection is its own task and they
     // all count themselves.
@@ -520,18 +524,45 @@ struct Server {
 
 // Loopback only, which is what a test wants and not what a server does.
 func Listen(port i32) !Server {
-    return Server{listener: try net.Listen(port), live: atomic[u64](0),
-                  accepted: atomic[u64](0), served: atomic[u64](0),
-                  failed: atomic[u64](0)}
+    return Server{listener: try net.Listen(port), secure: nil,
+                  live: atomic[u64](0), accepted: atomic[u64](0),
+                  served: atomic[u64](0), failed: atomic[u64](0)}
+}
+
+// The same, with TLS. The certificate chain and its key are PEM files, read once
+// here rather than per connection, so a bad pair fails at startup where somebody
+// is watching.
+//
+//     mut srv := try http.ListenTLS(443, "chain.pem", "key.pem")
+//     try srv.Serve(&mux)
+func ListenTLS(port i32, certFile string, keyFile string) !Server {
+    ctx := try tls.ServerContext(certFile, keyFile)
+    return Server{listener: try net.Listen(port), secure: ctx,
+                  live: atomic[u64](0), accepted: atomic[u64](0),
+                  served: atomic[u64](0), failed: atomic[u64](0)}
 }
 
 // The address to bind, empty meaning every interface. `share` lets another
 // process hold the same port, which is how one is replaced by another without
 // dropping connections in between.
 func ListenOn(host string, port i32, share bool) !Server {
-    return Server{listener: try net.ListenOn(host, port, share),
+    return Server{listener: try net.ListenOn(host, port, share), secure: nil,
                   live: atomic[u64](0), accepted: atomic[u64](0),
                   served: atomic[u64](0), failed: atomic[u64](0)}
+}
+
+// Both at once, which is what a server on a real address actually wants.
+func ListenOnTLS(host string, port i32, share bool, certFile string,
+                 keyFile string) !Server {
+    ctx := try tls.ServerContext(certFile, keyFile)
+    return Server{listener: try net.ListenOn(host, port, share), secure: ctx,
+                  live: atomic[u64](0), accepted: atomic[u64](0),
+                  served: atomic[u64](0), failed: atomic[u64](0)}
+}
+
+// Whether this server handshakes before it reads.
+func (s *Server) Secure() bool {
+    return s.secure != nil
 }
 
 // Connections being served right now.
@@ -560,9 +591,22 @@ func (s *Server) Port() i32 {
 }
 
 // Closing the listener is how a running server is stopped: every accept loop
-// fails and returns, and the scope around them joins.
+// fails and returns, and the scope around them joins. Nothing is freed here, and
+// it is deliberate — this is called from inside a task, where the connections
+// still handshaking are using the certificate.
 func (s *Server) Close() {
     s.listener.Close()
+}
+
+// Gives back the certificate a TLS server was holding. Only after the scope
+// around `Serve` has joined: until then a connection may still be handshaking
+// against it. A server that runs until the process ends need not bother.
+func (mut s *Server) Free() {
+    if ctx := s.secure {
+        mut held := ctx
+        held.Free()
+        s.secure = nil
+    }
 }
 
 // One task per connection, with its own arena on its own stack. That is only
@@ -576,6 +620,35 @@ func serveConn(c net.Conn, h Handler, s *Server) !void {
 
     // Asked once, on the task's own stack: the address does not change and the
     // request only borrows it.
+    mut room := [24]u8{}
+    peer := conn.Peer(room[..]) catch net.Peer{Address: "", Port: 0}
+    from := peer.Address
+
+    handleConn(&conn, h, &arena, s, from) catch {}
+    conn.Close()
+    s.live.Sub(1)
+}
+
+// The same as serveConn with a handshake in front of it. The connection is the
+// task's own, which is what lets it be lent to the server as a stream: an
+// interface value points at something, and here that something is on this task's
+// stack and lives exactly as long as the task does.
+//
+// A handshake that fails costs one connection and says nothing on the wire —
+// there is no HTTP yet to answer with, and a client that offered an unusable
+// certificate or an old protocol is not going to understand a 400.
+func serveTLS(c net.Conn, ctx tls.Context, h Handler, s *Server) !void {
+    mut held := ctx
+    mut socket := c
+    mut conn := tls.Server(&held, socket) catch {
+        socket.Close()
+        s.live.Sub(1)
+        return
+    }
+    mut backing := [ArenaSize]u8{}
+    mut arena := mem.NewArena(backing[..])
+    conn.SetTimeout(time.Seconds(DefaultTimeout)) catch {}
+
     mut room := [24]u8{}
     peer := conn.Peer(room[..]) catch net.Peer{Address: "", Port: 0}
     from := peer.Address
@@ -604,7 +677,11 @@ func (s *Server) ServeWith(h Handler, most u64) !void {
             c := s.listener.Accept() catch break
             s.live.Add(1)
             s.accepted.Add(1)
-            spawn serveConn(c, h, s)
+            if ctx := s.secure {
+                spawn serveTLS(c, ctx, h, s)
+            } else {
+                spawn serveConn(c, h, s)
+            }
         }
     }
 }

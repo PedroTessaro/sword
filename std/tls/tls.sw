@@ -125,7 +125,7 @@ func Server(ctx *Context, socket net.Conn) !Conn {
 
 // Bytes read, which may be fewer than there is room for. Zero means the peer
 // closed the connection properly, which over TLS is a message and not a guess.
-func (mut c *Conn) Read(mut into []u8) !u64 {
+func (c *Conn) Read(mut into []u8) !u64 {
     if into.len == 0 {
         return 0
     }
@@ -140,7 +140,7 @@ func (mut c *Conn) Read(mut into []u8) !u64 {
 }
 
 // All of it or an error, the same as a socket write.
-func (mut c *Conn) Write(from []u8) !void {
+func (c *Conn) Write(from []u8) !void {
     if from.len == 0 {
         return
     }
@@ -153,19 +153,25 @@ func (mut c *Conn) Write(from []u8) !void {
     }
 }
 
-func (mut c *Conn) WriteString(s string) !void {
+func (c *Conn) WriteString(s string) !void {
     try c.Write([]u8(s))
 }
 
 // The close notification, then the socket. Nothing waits for the peer's half of
 // it: that would hold the task on a connection that may never answer.
-func (mut c *Conn) Close() {
+func (c *Conn) Close() {
     sword_tls_close(c.handle)
     c.Socket.Close()
 }
 
-func (c *Conn) SetTimeout(d time.Duration) !void {
-    try c.Socket.SetTimeout(d)
+func (c *Conn) SetTimeout(limit time.Duration) !void {
+    try c.Socket.SetTimeout(limit)
+}
+
+// Who is on the other end, which is the socket's business rather than the
+// protocol's. Here so that a `tls.Conn` is a `net.Stream`.
+func (c *Conn) Peer(mut into []u8) !net.Peer {
+    return try c.Socket.Peer(into)
 }
 
 func (c *Conn) SetDeadline(at time.Instant) !void {
