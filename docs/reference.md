@@ -829,6 +829,7 @@ Targets and query strings, decoding into space you provide:
 
 ```sword
 func ParseTarget(target string) Target       // { Path, RawQuery }
+func ParseURL(text string, fromHost string, fromPort i32) !URL  // { Host, Port, Target, TLS }
 func QueryValue(query string, name string) string
 func Unescape(s string, mut into []u8) !string   // %20 and + become a space
 func Escape(s string, mut into []u8) !string
@@ -890,7 +891,12 @@ func Post(host string, port i32, target string, contentType string, body []u8,
 ```
 
 `Client` has two `time.Duration` fields, `Connect` and `Read`, either of which
-may be zero to wait as long as the kernel would.
+may be zero to wait as long as the kernel would, and `Redirects`, how many to
+follow — five by default, zero to hand the 3xx back. 301, 302 and 303 become a
+GET; 307 and 308 keep the method and body.
+
+A chunked reply is decoded, and a reply with no framing at all is read until the
+connection closes.
 
 ## Command line
 

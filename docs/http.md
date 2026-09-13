@@ -407,6 +407,10 @@ The response body lives in the allocator you pass in, so it stays valid until
 you reset or free that allocator. The client sends `Connection: close` and does
 not reuse sockets.
 
+A reply framed with `Transfer-Encoding: chunked` is decoded for you, and one with
+no framing at all — no length, no chunks — is read until the connection closes.
+Both matter: this package's own server sends the first for anything streamed.
+
 Both of those go through a default `Client`, which gives up after 10 seconds
 trying to connect and 30 seconds waiting for a reply. Build your own when those
 are wrong:
@@ -426,6 +430,37 @@ that is not listening answers within a moment, so a short connect timeout
 catches a wrong address without cutting off a server that is merely thinking. A
 zero duration on either waits as long as the kernel would — which for connect
 is over a minute, and is why the default is not zero.
+
+### Redirects
+
+Up to five are followed. `Redirects` is the limit, and setting it to zero hands
+the 3xx back instead — which is what a client that wants to decide for itself
+needs:
+
+```sword
+mut client := http.NewClient()
+client.Redirects = 0
+
+res := try client.Get("127.0.0.1", 8080, "/old", &arena)
+if res.Status == 301 {
+    moved := res.Headers.Get("Location")
+}
+```
+
+301, 302 and 303 turn into a GET with no body, the way every client on the web
+does it rather than the way the specification says. 307 and 308 keep the method
+and the body, which is what they were added for. A `Location` pointing at `https`
+fails rather than being fetched in the clear.
+
+`ParseURL` is the same parser, if you need it:
+
+```sword
+url := try http.ParseURL("http://example.com:8080/a?b=1", "fallback.host", 80)
+// url.Host "example.com", url.Port 8080, url.Target "/a?b=1", url.TLS false
+```
+
+A URL that is only a path keeps the host and port passed in, which is how a
+relative `Location` is resolved.
 
 ## Testing a server without leaving the program
 
@@ -449,6 +484,6 @@ writing the same thing".
 
 ## What is missing
 
-No TLS. There is no cookie or form parsing, no range requests, and the client does
-not follow redirects, keep connections alive between calls, or send chunked itself
-— the server reads chunked requests but the client does not write them.
+No TLS. There is no cookie or form parsing and no range requests, and the client
+does not keep connections alive between calls or send chunked itself — the server
+reads chunked requests but the client does not write them.
