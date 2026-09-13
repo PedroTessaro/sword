@@ -55,7 +55,13 @@ func NewArena(backing []u8) Arena {
 }
 
 func (mut a *Arena) Alloc(n u64, align u64) ?[*]u8 {
-    start := Align(a.offset, align)
+    // The *address* has to be aligned, not the offset into the buffer. A buffer
+    // of bytes may begin anywhere, and aligning the offset would then hand back
+    // an address that is off by however much the buffer was — which ordinary
+    // loads on arm64 forgive and atomics do not. A `shared` value in arena
+    // memory faulted on its own mutex before this was arithmetic on the address.
+    base := u64(a.buf)
+    start := Align(base + a.offset, align) - base
     if start + n > a.cap {
         return nil
     }
