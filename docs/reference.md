@@ -778,10 +778,69 @@ A wait here puts the *task* down, not the thread: the descriptor goes to the
 poller and the worker moves on. That is what lets connections outnumber threads
 by a couple of orders of magnitude. See [Concurrency](concurrency.md#waiting).
 
+`Stream` is what a socket satisfies without being asked, and what `std/http` is
+written against, so a server serves a plain socket and a TLS connection with the
+same code:
+
+```sword
+interface Stream {
+    Read(mut into []u8) !u64
+    Write(from []u8) !void
+    WriteString(s string) !void
+    SetTimeout(limit time.Duration) !void
+    SetDeadline(at time.Instant) !void
+    Peer(mut into []u8) !Peer
+    Close()
+}
+
+func (c *Conn) Fd() i32                      // for a layer that wraps the socket
+```
+
+### `std/tls`
+
+TLS 1.2 and 1.3 over a socket, from OpenSSL. Optional: the build looks for OpenSSL
+in the usual places (`SWORD_OPENSSL=<prefix>` names another, `SWORD_NO_TLS=1` skips
+it), and a build without it answers `Available() == false` and fails every call
+here rather than failing to link.
+
+```sword
+func Available() bool
+
+func NewConfig() Config                      // { CAFile, Verify }
+func ClientContext(c Config) !Context        // one context, any number of conns
+func ServerContext(certFile string, keyFile string) !Context
+func (c *Context) Free()
+
+func Dial(ctx *Context, host string, port i32) !Conn
+func Client(ctx *Context, socket net.Conn, host string) !Conn
+func Server(ctx *Context, socket net.Conn) !Conn
+
+func (c *Conn) Read(mut into []u8) !u64
+func (c *Conn) Write(from []u8) !void
+func (c *Conn) WriteString(s string) !void
+func (c *Conn) SetTimeout(limit time.Duration) !void
+func (c *Conn) SetDeadline(at time.Instant) !void
+func (c *Conn) Peer(mut into []u8) !net.Peer
+func (c *Conn) Version() string              // "TLSv1.3"
+func (c *Conn) Cipher() string
+func (c *Conn) Close()
+
+// A certificate signed by its own key, valid for a day. Development and tests.
+func SelfSigned(host string, certFile string, keyFile string) !void
+```
+
+A `Conn` keeps the socket it took over in `Socket`, so deadlines and the peer's
+address stay where they were, and it is a `net.Stream`. The handshake and every
+read and write put the *task* down while the socket is not ready, the same as a
+plain read — twenty handshakes at once are twenty tasks, not twenty threads.
+
+`Config.Verify` off means encryption with no idea who is on the other end. It is
+there for talking to your own machine and it is not security.
+
 ### `std/http`
 
-HTTP/1.1 with keep-alive, routing, timeouts and chunked transfer encoding. No
-TLS.
+HTTP/1.1 with keep-alive, routing, timeouts, chunked transfer encoding, static
+files and TLS.
 
 ```sword
 interface Handler {
@@ -790,6 +849,11 @@ interface Handler {
 
 func Listen(port i32) !Server                        // loopback only
 func ListenOn(host string, port i32, share bool) !Server
+func ListenTLS(port i32, certFile string, keyFile string) !Server
+func ListenOnTLS(host string, port i32, share bool, certFile string,
+                 keyFile string) !Server
+func (s *Server) Secure() bool               // whether it handshakes first
+func (mut s *Server) Free()                  // gives the certificate back
 func (s *Server) Port() i32
 func (s *Server) Serve(h Handler) !void      // up to 1024 connections at once
 func (s *Server) ServeWith(h Handler, most u64) !void
@@ -883,11 +947,23 @@ func (c *Client) Do(host string, port i32, method string, target string,
                     contentType string, body []u8,
                     mut a mem.Allocator) !ClientResponse
 
+// Over TLS. Fetch takes a URL, which is the only shape that can say a scheme.
+func (c *Client) Fetch(url string, mut a mem.Allocator) !ClientResponse
+func (c *Client) GetTLS(host string, port i32, target string,
+                        mut a mem.Allocator) !ClientResponse
+func (c *Client) PostTLS(host string, port i32, target string,
+                         contentType string, body []u8,
+                         mut a mem.Allocator) !ClientResponse
+func (c *Client) DoTLS(host string, port i32, method string, target string,
+                       contentType string, body []u8,
+                       mut a mem.Allocator) !ClientResponse
+
 // The same through a default client.
 func Get(host string, port i32, target string,
          mut a mem.Allocator) !ClientResponse
 func Post(host string, port i32, target string, contentType string, body []u8,
           mut a mem.Allocator) !ClientResponse
+func Fetch(url string, mut a mem.Allocator) !ClientResponse
 ```
 
 `Client` has two `time.Duration` fields, `Connect` and `Read`, either of which
@@ -896,7 +972,8 @@ follow — five by default, zero to hand the 3xx back. 301, 302 and 303 become a
 GET; 307 and 308 keep the method and body.
 
 A chunked reply is decoded, and a reply with no framing at all is read until the
-connection closes.
+connection closes. `Client.TLS` is a `tls.Config` and decides how an `https` URL is
+trusted; the context is built per request, so a client keeps nothing between calls.
 
 ## Command line
 

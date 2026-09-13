@@ -2,7 +2,8 @@
 
 ## What you need
 
-A C++17 compiler and `clang` on your PATH. That is the whole list.
+A C++17 compiler and `clang` on your PATH. That is the whole list; OpenSSL is
+optional and only for TLS.
 
 `clang` is not a build-time dependency — it is a runtime one. Sword compiles to
 LLVM IR and hands that text to `clang` to assemble and link, so `clang` has to
@@ -11,6 +12,26 @@ compiler.
 
 On macOS the Xcode command line tools give you both. On Debian or Ubuntu,
 `apt install clang build-essential`.
+
+### OpenSSL, for TLS
+
+`std/tls` and `http.ListenTLS` need it. The build looks in the usual places —
+`/opt/homebrew/opt/openssl@3`, `/usr/local/opt/openssl@3`, `/usr/include` — and
+builds without TLS if it finds nothing, in which case `tls.Available()` answers
+false and every call in that package fails with `error.NoTLS`. Nothing else is
+affected, and no program fails to link.
+
+```sh
+brew install openssl@3                  # macOS
+apt install libssl-dev                  # Debian, Ubuntu
+
+make SWORD_OPENSSL=/path/to/openssl     # somewhere else entirely
+make SWORD_NO_TLS=1                     # deliberately without
+```
+
+Whatever it decides ends up in `libsword_rt.flags` next to the archive, which is
+what the compiler reads to link your programs. Switching the decision and running
+`make` again is enough; no `make clean` needed.
 
 ## Building
 
@@ -27,6 +48,7 @@ That produces three things:
 | `shield` | the compiler |
 | `swordls` | the language server, for editors |
 | `libsword_rt.a` | the scheduler, linked into programs that use tasks |
+| `libsword_rt.flags` | what else to link it against, read by the compiler |
 
 You can stop here and run `./shield` straight out of the tree. Everything it
 needs it finds next to itself.

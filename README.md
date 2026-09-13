@@ -113,7 +113,9 @@ holding a thread: the descriptor goes to a poller and the worker moves on.
 Measured, on ten cores — 4000 concurrent keep-alive connections at 84 000
 requests a second on twelve threads, and 2000 idle ones in 65 MiB.
 
-Not there yet: TLS.
+TLS comes from OpenSSL, found at build time — `http.ListenTLS` for a server,
+`http.Fetch("https://...")` for a client. A build made on a machine without
+OpenSSL says so (`tls.Available()`) instead of failing to link.
 
 ## License
 

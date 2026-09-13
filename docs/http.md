@@ -2,7 +2,7 @@
 
 `std/http` is a small HTTP/1.1 server and client, written in Sword on top of
 `std/net`. It does keep-alive, routing with path parameters, query strings,
-timeouts and chunked transfer encoding; it does not do TLS.
+timeouts, chunked transfer encoding, static files and TLS.
 
 ## A server
 
@@ -156,6 +156,69 @@ is a response that says one thing and does another.
 A request arriving with `Transfer-Encoding: chunked` is decoded before the
 handler sees it, in place in the read buffer: a chunk's bytes always sit further
 along than where they end up, so no second buffer is needed.
+
+## HTTPS
+
+One line changes:
+
+```sword
+mut server := try http.ListenTLS(443, "chain.pem", "key.pem")
+try server.Serve(&mux)
+```
+
+The handlers, the router, the streaming and the keep-alive are all the same — the
+server reads and writes a `net.Stream`, and a TLS connection is one. `ListenOnTLS`
+takes an address as well, for a server that is not on loopback.
+
+Both files are PEM. The certificate one should be the **chain**, not just your
+certificate: a client that cannot build a path to an authority it trusts refuses
+the connection, and the intermediates are how it builds one. Both are read once at
+startup, so a bad pair fails where somebody is watching rather than on the first
+request.
+
+A handshake that fails costs that one connection and nothing is written back.
+There is no HTTP yet to answer with, and a client that offered a protocol from
+2011 would not read a 400 anyway. TLS 1.2 is the floor.
+
+`Free()` gives the certificate back, and it is separate from `Close()` on purpose:
+`Close` stops the accept loop and is normally called from inside a task, at which
+moment other connections are still handshaking against the certificate. Free it
+after the scope has joined, or not at all if the server outlives everything.
+
+For a certificate to develop against:
+
+```sword
+import "std/tls"
+
+try tls.SelfSigned("127.0.0.1", "dev-cert.pem", "dev-key.pem")
+```
+
+That one is signed by nobody, so a client has to be told to trust it — which is
+the whole point of the exercise. See [the TLS
+reference](reference.md#stdtls) for what a client can be told.
+
+### Calling one
+
+```sword
+res := try http.Fetch("https://example.com/health", &arena)
+```
+
+`Fetch` takes a URL because that is the only shape that can say `https`.
+`GetTLS`, `PostTLS` and `DoTLS` take a host and port instead, for when those are
+what you have. A redirect from `http` to `https` is followed like any other.
+
+Trust is `Client.TLS`, a `tls.Config`:
+
+```sword
+mut client := http.NewClient()
+client.TLS.CAFile = "dev-cert.pem"     // a private authority, or a self-signed one
+
+res := try client.GetTLS("127.0.0.1", 8443, "/health", &arena)
+```
+
+Setting `Verify` to false instead turns TLS into encryption with no idea who is on
+the other end. That is a reasonable thing to do against your own machine and never
+anywhere else.
 
 ## Serving files
 
@@ -484,6 +547,8 @@ writing the same thing".
 
 ## What is missing
 
-No TLS. There is no cookie or form parsing and no range requests, and the client
-does not keep connections alive between calls or send chunked itself — the server
-reads chunked requests but the client does not write them.
+There is no cookie or form parsing and no range requests, and the client does not
+keep connections alive between calls or send chunked itself — the server reads
+chunked requests but the client does not write them. Client certificates are not
+wired up either: TLS here authenticates the server to the client and not the other
+way round.
