@@ -3352,6 +3352,12 @@ struct Checker {
         return false;
       }
     }
+
+    // Sizes are settled rather than computed once. Laying out in declaration
+    // order gave a struct holding one declared further down the file a size that
+    // was missing it — silently, and only visible as a copy that moved too few
+    // bytes. Cycles are already ruled out above, so this converges.
+    types.settle_layouts();
     return true;
   }
 

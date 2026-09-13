@@ -88,6 +88,12 @@ struct TypeTable {
   // Assigns offsets. Non-extern structs are reordered widest-first so padding
   // does not leak into every instance.
   void layout_struct(Type *type, std::vector<Field> fields);
+  // Lays every struct out again until no size moves. A struct's size depends on
+  // the structs it holds by value, and declaration order says nothing about
+  // which of those comes first — while `?T`, `!T` and `shared[T]` are built while
+  // a field is being resolved, before the T they wrap may have a size at all.
+  // Layout only ever grows a size, so settling terminates.
+  void settle_layouts();
 
   Type *error_union(Type *value);
   // Every `!T` the program mentions, in creation order, so the backend can

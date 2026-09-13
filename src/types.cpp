@@ -328,6 +328,22 @@ void TypeTable::layout_struct(Type *type, std::vector<Field> fields) {
   type->fields = std::move(fields);
 }
 
+void TypeTable::settle_layouts() {
+  // The bound is the depth a struct can be nested to, not a guess: each pass
+  // settles one more level, and a program deeper than this has a cycle, which is
+  // reported elsewhere.
+  for (int pass = 0; pass < 64; pass++) {
+    bool moved = false;
+    for (Type &t : pool) {
+      if (t.kind != TY_STRUCT || t.fields.empty()) continue;
+      int64_t before = size_of(&t);
+      layout_struct(&t, t.fields);
+      if (size_of(&t) != before) moved = true;
+    }
+    if (!moved) return;
+  }
+}
+
 // Names are qualified by the whole import path so that nothing in the object
 // file can collide, but a diagnostic should read the way the program does: the
 // user wrote `Kind` and `time.Duration`, not `main.Kind` and
