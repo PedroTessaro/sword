@@ -18,6 +18,40 @@ func Align(offset u64, align u64) u64 {
     return (offset + align - 1) / align * align
 }
 
+// Wraps another allocator and writes over everything released through it, so a
+// use-after-free reads something obviously wrong rather than something plausible.
+// The language stops a task from outliving the memory it borrowed; it does not
+// stop you from freeing something and reading it afterwards, and this is how you
+// find out that you did.
+//
+//     mut sys := mem.NewSystem()
+//     mut checked := mem.NewWatched(&sys)
+//     mut xs := mem.Alloc[u64](&checked, 4) orelse return 1
+//
+// A write per byte released, so it is opt-in: tests and a build you are debugging,
+// not the one you ship.
+struct Watched {
+    inner   Allocator
+    Written u64 // bytes written over, which is how a test knows it is on
+}
+
+func NewWatched(a Allocator) Watched {
+    return Watched{inner: a, Written: 0}
+}
+
+func (mut w *Watched) Alloc(n u64, align u64) ?[*]u8 {
+    return w.inner.Alloc(n, align)
+}
+
+func (mut w *Watched) Release(p [*]u8, n u64) {
+    mut over := p
+    for i in 0..n {
+        over[i] = Poison
+    }
+    w.Written += n
+    w.inner.Release(p, n)
+}
+
 // Hands every request to the C allocator and keeps track of what is still out.
 struct System {
     live u64
@@ -42,16 +76,27 @@ func (s *System) Live() u64 {
     return s.live
 }
 
+// What a released byte is written over with, when anything is watching. Not zero:
+// zero is a plausible value for almost everything, and the point of this is to be
+// implausible.
+const Poison = 222 // 0xDE
+
 // Bumps a pointer through a buffer it does not own. Individual releases do
 // nothing; the whole arena is reset at once, which is the point.
 struct Arena {
     buf    [*]u8
     cap    u64
     offset u64
+    // Set this and `Reset` writes over everything it hands back, so anything
+    // still holding a slice from before the reset reads 0xDE instead of the next
+    // request's data. A write per byte, which is why it is a choice: turn it on
+    // in tests and in a build you are debugging, leave it off where it costs.
+    Watch bool
 }
 
 func NewArena(backing []u8) Arena {
-    return Arena{buf: [*]u8(&backing[0]), cap: backing.len, offset: 0}
+    return Arena{buf: [*]u8(&backing[0]), cap: backing.len, offset: 0,
+                 Watch: false}
 }
 
 func (mut a *Arena) Alloc(n u64, align u64) ?[*]u8 {
@@ -72,6 +117,11 @@ func (mut a *Arena) Alloc(n u64, align u64) ?[*]u8 {
 func (mut a *Arena) Release(p [*]u8, n u64) {}
 
 func (mut a *Arena) Reset() {
+    if a.Watch {
+        for i in 0..a.offset {
+            a.buf[i] = Poison
+        }
+    }
     a.offset = 0
 }
 

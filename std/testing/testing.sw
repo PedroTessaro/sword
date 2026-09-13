@@ -237,6 +237,10 @@ struct Tally {
 func runOne(cases []Case, at u64, tally *Tally, gate *shared[u64]) !void {
     mut backing := [ArenaSize]u8{}
     mut arena := mem.NewArena(backing[..])
+    // A test is exactly where a use-after-reset should be loud: anything still
+    // holding memory from before a `t.Mem` reset reads 0xDE rather than the next
+    // allocation's data. It costs a write per byte and a test has few.
+    arena.Watch = true
 
     c := cases[at]
     mut t := try newT(c.Name, &arena)
