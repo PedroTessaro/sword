@@ -24,6 +24,23 @@ extern func sword_net_stop(fd i32) i32
 
 const DefaultBacklog = 128
 
+// Something bytes go through, with a deadline: a socket, or a socket with TLS
+// over it. A server written against this serves either, and the one place that
+// knows the difference is where the connection is made.
+//
+// Satisfied by a pointer, like every interface here, so the value it points at
+// has to outlive the borrow — a task that owns its connection passes `&conn` and
+// that is exactly right.
+interface Stream {
+    Read(mut into []u8) !u64
+    Write(from []u8) !void
+    WriteString(s string) !void
+    SetTimeout(limit time.Duration) !void
+    SetDeadline(at time.Instant) !void
+    Peer(mut into []u8) !Peer
+    Close()
+}
+
 // A socket is just its descriptor. Copying one copies the number, not the
 // connection, so close it only where it is owned.
 struct Conn {

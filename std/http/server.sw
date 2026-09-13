@@ -73,7 +73,7 @@ struct Response {
     // connection as the handler goes, rather than being collected and measured
     // at the end; `chunked` says whether each write is framed as a chunk or goes
     // out as it is, against a length the client already has.
-    conn    ?*net.Conn
+    conn    ?net.Stream
     sent    bool
     chunked bool
 }
@@ -313,7 +313,7 @@ func parseRequestLine(text string, mut req *Request) !void {
 
 // Returns how many bytes of `buf` the request occupies, or zero when the peer
 // closed before sending anything.
-func readRequest(mut c *net.Conn, mut buf []u8, mut req *Request) !u64 {
+func readRequest(c net.Stream, mut buf []u8, mut req *Request) !u64 {
     mut have u64 = 0
     mut head u64 = 0
     for {
@@ -373,7 +373,7 @@ struct chunked {
 // Decodes a chunked body in place. A chunk's bytes always sit further along than
 // where they end up, because the framing before them is dropped, so this can
 // compact as it goes without a second buffer.
-func readChunked(mut c *net.Conn, mut buf []u8, head u64,
+func readChunked(c net.Stream, mut buf []u8, head u64,
                  already u64) !chunked {
     mut have := already
     mut out := head // where decoded bytes land
@@ -437,7 +437,7 @@ func wantsKeepAlive(req *Request) bool {
     return req.Proto == "HTTP/1.1"
 }
 
-func writeResponse(mut c *net.Conn, mut res *Response, keep bool,
+func writeResponse(c net.Stream, mut res *Response, keep bool,
                    mut out *bytes.Buffer) !void {
     // A response that sent its own head has nothing left but what is still in
     // the buffer — and, if it was chunked, the chunk that says there are no more.
@@ -471,7 +471,7 @@ func writeResponse(mut c *net.Conn, mut res *Response, keep bool,
     try c.Write(out.Bytes())
 }
 
-func handleConn(mut c *net.Conn, h Handler, mut a mem.Allocator,
+func handleConn(c net.Stream, h Handler, mut a mem.Allocator,
                 s *Server, from string) !void {
     mut buf := mem.Alloc[u8](a, MaxHead) orelse return error.OutOfMemory
     mut out := try bytes.New(a, 1024)
