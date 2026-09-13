@@ -44,6 +44,12 @@ struct Request {
     // Who sent it, as dotted quad. A log or a rate limiter wants this and had
     // no way to ask; it is read once per connection rather than per request.
     RemoteAddr string
+    // The subject of the client's certificate, when the server asked for one and
+    // the client presented one that checked out. Empty otherwise — which is every
+    // request on a server that did not ask, and the ones that came in anonymously
+    // where it only asked. A handler that cares has to look at this rather than
+    // assume, because `Ask.Optional` lets both kinds through.
+    PeerName   string
     Headers    Headers
     Body       []u8
     params  [MaxParams]Param
@@ -93,10 +99,10 @@ func NewHeaders() Headers {
 
 // The body starts as an empty window into the read buffer, so it always points
 // at memory that is alive.
-func newRequest(buf []u8, from string) Request {
+func newRequest(buf []u8, from string, peer string) Request {
     return Request{Method: "", Target: "", Path: "", RawQuery: "", Proto: "",
-                   RemoteAddr: from, Headers: NewHeaders(), Body: buf[0..0],
-                   params: [MaxParams]Param{}, pcount: 0}
+                   RemoteAddr: from, PeerName: peer, Headers: NewHeaders(),
+                   Body: buf[0..0], params: [MaxParams]Param{}, pcount: 0}
 }
 
 func (mut r *Response) SetHeader(name string, value string) !void {
@@ -475,7 +481,7 @@ func writeResponse(c net.Stream, mut res *Response, keep bool,
 }
 
 func handleConn(c net.Stream, h Handler, mut a mem.Allocator,
-                s *Server, from string) !void {
+                s *Server, from string, peer string) !void {
     mut buf := mem.Alloc[u8](a, MaxHead) orelse return error.OutOfMemory
     mut out := try bytes.New(a, 1024)
     mut body := try bytes.New(a, 1024)
@@ -486,7 +492,7 @@ func handleConn(c net.Stream, h Handler, mut a mem.Allocator,
         // is what a keep-alive idle timeout is.
         c.SetDeadline(time.Now().Add(time.Seconds(RequestTimeout))) catch {}
 
-        mut req := newRequest(buf, from)
+        mut req := newRequest(buf, from, peer)
         got := try readRequest(c, buf, &req)
         if got == 0 {
             return
@@ -556,7 +562,30 @@ func ListenOn(host string, port i32, share bool) !Server {
 // Both at once, which is what a server on a real address actually wants.
 func ListenOnTLS(host string, port i32, share bool, certFile string,
                  keyFile string) !Server {
-    ctx := try tls.ServerContext(certFile, keyFile)
+    mut conf := tls.NewServerConfig(certFile, keyFile)
+    return try ListenOnWith(host, port, share, conf)
+}
+
+// The whole TLS configuration, which is how a server asks its clients for a
+// certificate of their own:
+//
+//     mut conf := tls.NewServerConfig("chain.pem", "key.pem")
+//     conf.ClientCA = "clients.pem"
+//     conf.Clients = tls.Ask.Required
+//     mut srv := try http.ListenWith(8443, conf)
+//
+// With `Required`, a handler may believe `req.PeerName`. With `Optional` it has to
+// check whether there is one, because both kinds of connection get through.
+func ListenWith(port i32, conf tls.ServerConfig) !Server {
+    ctx := try tls.ServerContextWith(conf)
+    return Server{listener: try net.Listen(port), secure: ctx,
+                  live: atomic[u64](0), accepted: atomic[u64](0),
+                  served: atomic[u64](0), failed: atomic[u64](0)}
+}
+
+func ListenOnWith(host string, port i32, share bool,
+                  conf tls.ServerConfig) !Server {
+    ctx := try tls.ServerContextWith(conf)
     return Server{listener: try net.ListenOn(host, port, share), secure: ctx,
                   live: atomic[u64](0), accepted: atomic[u64](0),
                   served: atomic[u64](0), failed: atomic[u64](0)}
@@ -626,7 +655,9 @@ func serveConn(c net.Conn, h Handler, s *Server) !void {
     peer := conn.Peer(room[..]) catch net.Peer{Address: "", Port: 0}
     from := peer.Address
 
-    handleConn(&conn, h, &arena, s, from) catch {}
+    // Nobody was asked for a certificate on this path, so there is no name to
+    // report.
+    handleConn(&conn, h, &arena, s, from, "") catch {}
     conn.Close()
     s.live.Sub(1)
 }
@@ -655,7 +686,13 @@ func serveTLS(c net.Conn, ctx tls.Context, h Handler, s *Server) !void {
     peer := conn.Peer(room[..]) catch net.Peer{Address: "", Port: 0}
     from := peer.Address
 
-    handleConn(&conn, h, &arena, s, from) catch {}
+    // Who the certificate says they are, when the server asked and the client had
+    // one. Read once here, on this task's own stack, because it cannot change for
+    // the life of a connection.
+    mut subject := [256]u8{}
+    who := conn.PeerName(subject[..]) orelse ""
+
+    handleConn(&conn, h, &arena, s, from, who) catch {}
     conn.Close()
     s.live.Sub(1)
 }
