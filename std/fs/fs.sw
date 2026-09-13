@@ -11,6 +11,8 @@ extern func sword_fs_write(fd i32, buf [*]u8, len i64) i64
 extern func sword_fs_close(fd i32) i32
 extern func sword_fs_size(path [*]u8, path_len i64) i64
 extern func sword_fs_remove(path [*]u8, path_len i64) i32
+extern func sword_fs_make_dir(path [*]u8, path_len i64) i32
+extern func sword_fs_remove_dir(path [*]u8, path_len i64) i32
 
 enum Mode i32 {
     Read
@@ -85,6 +87,22 @@ func Exists(path string) bool {
 
 func Remove(path string) !void {
     if sword_fs_remove(path.ptr, i64(path.len)) < 0 {
+        return error.CannotRemove
+    }
+}
+
+// One directory, not a path of them, and not an error when it is already there:
+// what the caller asked for is that it exist.
+func MakeDir(path string) !void {
+    if sword_fs_make_dir(path.ptr, i64(path.len)) < 0 {
+        return error.CannotMakeDir
+    }
+}
+
+// Only an empty directory. Removing a tree is a decision rather than a
+// convenience, so nothing here turns it into one line by accident.
+func RemoveDir(path string) !void {
+    if sword_fs_remove_dir(path.ptr, i64(path.len)) < 0 {
         return error.CannotRemove
     }
 }
