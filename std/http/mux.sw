@@ -19,7 +19,9 @@ struct route {
 //     try srv.Serve(&mux)
 //
 // A `{name}` in a pattern matches one whole path segment and leaves it behind
-// for req.Param("name"). Routes are tried in the order they were added.
+// for req.Param("name"); a `{name...}` at the end of a pattern matches the rest
+// of the path, slashes and all, which is what a subtree of files wants. Routes
+// are tried in the order they were added.
 struct Mux {
     routes [MaxRoutes]route
     count  u64
@@ -86,6 +88,12 @@ func isWildcard(s string) bool {
     return s.len >= 2 && s[0] == 123 && s[s.len-1] == 125 // {name}
 }
 
+// `{rest...}` takes everything left of the path rather than one segment, which
+// is how a whole subtree goes to one handler.
+func isCatchAll(s string) bool {
+    return isWildcard(s) && strings.HasSuffix(s[0..s.len-1], "...")
+}
+
 // Walks both sides a segment at a time, recording what the wildcards caught.
 // `req` is the copy the mux is about to hand to the handler, never the one it
 // was given.
@@ -95,12 +103,42 @@ func matchPattern(pattern string, path string, mut req *Request) bool {
     req.pcount = 0
     for {
         if want.len == 0 || have.len == 0 {
+            // A catch-all matches nothing as happily as it matches everything:
+            // `/files/{path...}` is the route for `/files/` as well.
+            last := nextSegment(want)
+            if have.len == 0 && last.rest.len == 0 && isCatchAll(last.text) {
+                if req.pcount < MaxParams {
+                    req.params[req.pcount] = Param{
+                        Name:  last.text[1..last.text.len-4],
+                        Value: have,
+                    }
+                    req.pcount += 1
+                }
+                return true
+            }
             return want.len == 0 && have.len == 0
         }
         left := nextSegment(want)
         right := nextSegment(have)
+        rest := have // everything the path has left, before this segment is taken
         want = left.rest
         have = right.rest
+
+        if isCatchAll(left.text) {
+            // A catch-all has to be the last thing in the pattern; there is
+            // nothing after it for a segment to match against.
+            if want.len != 0 {
+                return false
+            }
+            if req.pcount < MaxParams {
+                req.params[req.pcount] = Param{
+                    Name:  left.text[1..left.text.len-4],
+                    Value: rest,
+                }
+                req.pcount += 1
+            }
+            return true
+        }
 
         if isWildcard(left.text) {
             if req.pcount < MaxParams {
