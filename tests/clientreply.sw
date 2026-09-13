@@ -77,6 +77,11 @@ func drive(port i32, mut score *atomic[u64], s *http.Server) !void {
     if third.Status == 302 {
         score.Add(4)
     }
+    // A client keeps the connection it used, and that connection holds a task on
+    // the server. Not closing it here made this test wait out the server's idle
+    // timeout — fifteen seconds of doing nothing, which is what a forgotten client
+    // costs.
+    client.Close()
 
     // A whole URL rather than its pieces, which is the only way to say a scheme.
     arena.Reset()
@@ -106,6 +111,7 @@ func drive(port i32, mut score *atomic[u64], s *http.Server) !void {
     if fourth.Status == 302 && fourth.Headers.Get("Location") == "/there" {
         score.Add(8)
     }
+    plain.Close()
 
     s.Close()
 }
