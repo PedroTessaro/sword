@@ -22,6 +22,11 @@ struct Chan {
   int32_t direct; // capacity zero: a handover rather than a queue
 };
 
+// As many cases as one select may have. The checker holds the language to the
+// same number, so this is a second line of defence rather than a limit anybody
+// meets.
+const int64_t kMaxCases = 64;
+
 const int64_t kHeader = (int64_t)((sizeof(Chan) + 15) / 16 * 16);
 
 unsigned char *slot_at(Chan *c, int64_t index) {
@@ -165,6 +170,10 @@ int64_t sword_chan_select(void **chans, const int32_t *ops, void **values,
                           int64_t n, int32_t has_default, int32_t *got) {
   *got = 0;
   if (n <= 0) return has_default ? 0 : -1;
+  if (n > kMaxCases) {
+    fputs("sword: select with more cases than the runtime holds\n", stderr);
+    abort();
+  }
 
   // Where the sweep starts, moved along every time, so a case that is always
   // ready cannot starve the ones after it. One counter for the process is enough
@@ -172,66 +181,64 @@ int64_t sword_chan_select(void **chans, const int32_t *ops, void **values,
   static std::atomic<uint64_t> turn{0};
   uint64_t start = turn.fetch_add(1, std::memory_order_relaxed);
 
+  // One waiter node per channel, on this task's stack: it is parked while they are
+  // in use, so the stack is going nowhere.
+  void *guards[kMaxCases];
+  for (int64_t i = 0; i < n; i++) guards[i] = ((Chan *)chans[i])->guard;
+  int64_t node_bytes = sword_mutex_watch_bytes() * n;
+  void *nodes = alloca((size_t)node_bytes);
+
   while (true) {
-    for (int64_t k = 0; k < n; k++) {
-      int64_t i = (int64_t)((start + (uint64_t)k) % (uint64_t)n);
-      Chan *c = (Chan *)chans[i];
-      if (ops[i] == SWORD_CHAN_SEND) {
-        if (sword_chan_try_send(c, values[i])) return i;
-        continue;
-      }
-      // A receive that finds the channel closed and empty has its answer, and
-      // the answer is "nothing more". That is the case firing.
-      sword_mutex_lock(c->guard);
-      if (c->count > 0) {
-        take(c, values[i]);
-        sword_mutex_notify_all(c->guard);
-        sword_mutex_unlock(c->guard);
-        *got = 1;
-        return i;
-      }
-      if (c->closed) {
-        sword_mutex_unlock(c->guard);
-        *got = 0;
-        return i;
-      }
-      sword_mutex_unlock(c->guard);
-    }
+    // Registered *before* the sweep below. A value that arrives between the sweep
+    // and the park has to find this task on a list, or its wake is lost and the
+    // task never wakes up again.
+    sword_mutex_watch(guards, n, nodes);
 
-    if (has_default) return n;
-
-    // Every case a send, every channel closed: nothing will ever change, and
-    // parking here would be a hang with no explanation. A receive case is never
-    // in this position — a closed channel answers it.
-    bool hopeless = true;
-    for (int64_t i = 0; i < n && hopeless; i++) {
-      Chan *c = (Chan *)chans[i];
-      if (ops[i] == SWORD_CHAN_RECV) hopeless = false;
-      else if (!sword_chan_closed(c)) hopeless = false;
-    }
-    if (hopeless) {
-      fputs("sword: select cannot go on — every channel it sends to is closed\n",
-            stderr);
-      abort();
-    }
-
-    // Nothing could go. Count as a receiver on every receive case first — a
-    // handover looks for one before it hands over — then wait for any of them to
-    // change and look again.
+    // A handover hands over only when somebody is waiting for it, so say so before
+    // looking.
     for (int64_t i = 0; i < n; i++) {
       if (ops[i] != SWORD_CHAN_RECV) continue;
       Chan *c = (Chan *)chans[i];
       sword_mutex_lock(c->guard);
       c->waiting++;
-      sword_mutex_notify_all(c->guard); // a sender on a handover may be waiting
       sword_mutex_unlock(c->guard);
     }
 
-    void *guards[64];
-    int64_t count = n < 64 ? n : 64;
-    for (int64_t i = 0; i < count; i++)
-      guards[i] = ((Chan *)chans[i])->guard;
-    sword_mutex_park_any(guards, count);
+    int64_t chose = -1;
+    for (int64_t k = 0; k < n && chose < 0; k++) {
+      int64_t i = (int64_t)((start + (uint64_t)k) % (uint64_t)n);
+      Chan *c = (Chan *)chans[i];
+      if (ops[i] == SWORD_CHAN_SEND) {
+        if (sword_chan_try_send(c, values[i])) chose = i;
+        continue;
+      }
+      // A receive that finds the channel closed and empty has its answer, and the
+      // answer is "nothing more". That is the case firing, not the case waiting.
+      sword_mutex_lock(c->guard);
+      if (c->count > 0) {
+        take(c, values[i]);
+        sword_mutex_notify_all(c->guard);
+        *got = 1;
+        chose = i;
+      } else if (c->closed) {
+        *got = 0;
+        chose = i;
+      }
+      sword_mutex_unlock(c->guard);
+    }
+
+    bool leaving = chose >= 0 || has_default != 0;
+
+    // Every case a send, every channel closed: nothing will ever change, and
+    // parking would be a hang with no explanation. A receive case is never in this
+    // position — a closed channel answers it.
+    bool hopeless = !leaving;
+    for (int64_t i = 0; i < n && hopeless; i++) {
+      if (ops[i] == SWORD_CHAN_RECV) hopeless = false;
+      else if (!sword_chan_closed((Chan *)chans[i])) hopeless = false;
+    }
+
+    if (!leaving && !hopeless) sword_mutex_park();
 
     for (int64_t i = 0; i < n; i++) {
       if (ops[i] != SWORD_CHAN_RECV) continue;
@@ -239,6 +246,15 @@ int64_t sword_chan_select(void **chans, const int32_t *ops, void **values,
       sword_mutex_lock(c->guard);
       c->waiting--;
       sword_mutex_unlock(c->guard);
+    }
+    sword_mutex_unwatch(guards, n, nodes);
+
+    if (chose >= 0) return chose;
+    if (has_default) return n;
+    if (hopeless) {
+      fputs("sword: select cannot go on — every channel it sends to is closed\n",
+            stderr);
+      abort();
     }
   }
 }

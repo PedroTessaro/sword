@@ -4,7 +4,6 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <alloca.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -927,51 +926,63 @@ void sword_mutex_notify_all(void *blob) {
   }
 }
 
-// Puts the task down until any one of these guards is notified. The caller holds
-// none of them and re-checks everything afterwards: this says "something changed",
-// never what.
+// Waiting on several guards at once, in three steps, because the order is the
+// whole correctness argument.
 //
-// The order matters and is the whole correctness argument. The task is marked as
-// parking *before* it goes on any list, so a notify that lands between the
-// registration and the switch-out finds it in PARKING, leaves it alone, and the
-// handoff in `after_enter` queues it instead of parking it. Nothing is lost, and
-// the caller's second look is what turns "something changed" into "this changed".
-void sword_mutex_park_any(void **blobs, int64_t n) {
+// `watch` puts the task on every guard's list *before* the caller looks at what it
+// is waiting for. That is what makes it safe: a change that lands between the
+// caller's look and the park has to find somebody on a list, or the wake is lost
+// and the task sleeps for good. It cost one flaky test to learn that doing it the
+// other way round is wrong.
+//
+// The task is marked as parking before it goes on any list, so a notify arriving
+// during registration finds it in PARKING, leaves it alone, and the handoff in
+// `after_enter` queues it instead of parking it.
+int64_t sword_mutex_watch_bytes(void) { return (int64_t)sizeof(Selector); }
+
+void sword_mutex_watch(void **blobs, int64_t n, void *nodes) {
   Fiber *f = tl_fiber;
-  if (!f || n <= 0) {
-    // No task to put down: whoever is calling is outside the scheduler, and a
-    // short sleep is all that is honest here.
+  if (!f || n <= 0) return;
+  Selector *slots = (Selector *)nodes;
+  f->state.store(FIBER_PARKING, std::memory_order_release);
+  for (int64_t i = 0; i < n; i++) {
+    Guard *g = (Guard *)blobs[i];
+    slots[i].f = f;
+    sword_mutex_lock(g);
+    slots[i].next = g->selectors;
+    g->selectors = &slots[i];
+    sword_mutex_unlock(g);
+  }
+}
+
+// Returns at once if anything notified since `watch`: the state is no longer
+// PARKING, so the handoff queues the task rather than putting it down.
+void sword_mutex_park(void) {
+  Fiber *f = tl_fiber;
+  if (!f) {
+    // Outside a task there is nothing to put down, so this is a short sleep and
+    // the caller looks again — which is what a `select` outside the scheduler is.
     sword_blocking_enter();
     std::this_thread::sleep_for(std::chrono::microseconds(200));
     sword_blocking_exit();
     return;
   }
-
-  // On this task's stack, which stays put while the task is down.
-  Selector *nodes = (Selector *)alloca(sizeof(Selector) * (size_t)n);
-
-  f->state.store(FIBER_PARKING, std::memory_order_release);
-  for (int64_t i = 0; i < n; i++) {
-    Guard *g = (Guard *)blobs[i];
-    nodes[i].f = f;
-    sword_mutex_lock(g);
-    nodes[i].next = g->selectors;
-    g->selectors = &nodes[i];
-    sword_mutex_unlock(g);
-  }
-
   leave(f, false);
+}
 
-  // Awake again, possibly on another thread. The nodes come out under the same
-  // lock that put them in.
+void sword_mutex_unwatch(void **blobs, int64_t n, void *nodes) {
+  Fiber *f = tl_fiber;
+  if (!f || n <= 0) return;
+  Selector *slots = (Selector *)nodes;
   for (int64_t i = 0; i < n; i++) {
     Guard *g = (Guard *)blobs[i];
     sword_mutex_lock(g);
     Selector **link = &g->selectors;
-    while (*link && *link != &nodes[i]) link = &(*link)->next;
-    if (*link) *link = nodes[i].next;
+    while (*link && *link != &slots[i]) link = &(*link)->next;
+    if (*link) *link = slots[i].next;
     sword_mutex_unlock(g);
   }
+  f->state.store(FIBER_RUNNING, std::memory_order_release);
 }
 }
 

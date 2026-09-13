@@ -1774,6 +1774,12 @@ struct Checker {
       error(n->pos, "a select with no cases has nothing to wait for");
       return nullptr;
     }
+    // The runtime watches one guard per case out of a fixed array, and holding the
+    // language to the same number is better than finding out at run time.
+    if (n->kids.size() > 64) {
+      error(n->pos, "a select takes at most 64 cases");
+      return nullptr;
+    }
     bool seen_default = false;
     for (Node *arm : n->kids) {
       if (arm->form == 2) {

@@ -85,7 +85,13 @@ void sword_mutex_unlock(void *blob);
 void sword_mutex_wait(void *blob);
 void sword_mutex_notify(void *blob);
 void sword_mutex_notify_all(void *blob);
-// Waits for any one of several guards to be notified, holding none of them. The
-// caller re-checks afterwards: this reports that something changed, not what.
-void sword_mutex_park_any(void **blobs, int64_t n);
+// Waiting on several guards at once, in three steps. The caller provides
+// `sword_mutex_watch_bytes()` bytes per guard and keeps them alive across all
+// three. `watch` registers *before* the caller checks what it is waiting for,
+// which is what keeps a change that lands in between from being lost; `park` puts
+// the task down, and returns at once if anything notified since `watch`.
+int64_t sword_mutex_watch_bytes(void);
+void sword_mutex_watch(void **blobs, int64_t n, void *nodes);
+void sword_mutex_park(void);
+void sword_mutex_unwatch(void **blobs, int64_t n, void *nodes);
 }
