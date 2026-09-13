@@ -17,6 +17,62 @@ func ParseTarget(target string) Target {
     return Target{Path: target[0..cut], RawQuery: target[cut+1..target.len]}
 }
 
+// A URL split into the three things a request needs. Everything points into the
+// string it was parsed from, so nothing is copied and nothing is allocated.
+struct URL {
+    Host   string
+    Port   i32
+    Target string   // path and query together, which is what goes on the wire
+    TLS    bool     // `https`, which this package cannot speak yet
+}
+
+// `http://host:8080/path?q=1`, or just `/path?q=1` — a redirect is allowed to
+// send either, so both have to parse. A relative one keeps the host it came from,
+// which is why that is a parameter rather than a guess.
+func ParseURL(text string, fromHost string, fromPort i32) !URL {
+    mut rest := text
+    mut tls := false
+    mut host := fromHost
+    mut port := fromPort
+
+    if strings.HasPrefix(rest, "http://") {
+        rest = rest[7..rest.len]
+    } else if strings.HasPrefix(rest, "https://") {
+        tls = true
+        rest = rest[8..rest.len]
+    } else if strings.HasPrefix(rest, "/") {
+        return URL{Host: host, Port: port, Target: rest, TLS: false}
+    } else {
+        // Neither absolute nor rooted: a relative path, which needs the target
+        // it came from to make sense of. Nothing here keeps that, so refuse it
+        // rather than resolve it wrongly.
+        return error.RelativeURL
+    }
+
+    cut := strings.IndexByte(rest, 47) // '/'
+    authority := rest[0..cut]
+    mut target := "/"
+    if cut != rest.len {
+        target = rest[cut..rest.len]
+    }
+
+    colon := strings.LastIndexByte(authority, 58) // ':'
+    if colon == authority.len {
+        host = authority
+        port = 443
+        if !tls {
+            port = 80
+        }
+    } else {
+        host = authority[0..colon]
+        port = i32(try strings.ParseU64(authority[colon+1..authority.len]))
+    }
+    if host.len == 0 {
+        return error.BadURL
+    }
+    return URL{Host: host, Port: port, Target: target, TLS: tls}
+}
+
 // The value of the first `name=` in a query string, still percent-encoded and
 // empty when the key is not there. Run it through Unescape if the value can
 // carry spaces or punctuation.

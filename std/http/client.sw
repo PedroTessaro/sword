@@ -10,6 +10,10 @@ import "std/time"
 // helpers come with a limit rather than none.
 const DefaultConnectTimeout = 10
 const DefaultReadTimeout = 30
+// Enough to get through the usual `http → https`, `/x → /x/` pair twice over.
+// A loop of redirects is a server misconfigured, and following it forever turns
+// that into the client's problem.
+const DefaultRedirects = 5
 
 // The body points into memory taken from the allocator that was passed in, so
 // it stays valid until that allocator is reset or freed.
@@ -25,11 +29,15 @@ struct ClientResponse {
 struct Client {
     Connect time.Duration
     Read    time.Duration
+    // How many redirects to follow before giving up. Zero hands the 3xx back as
+    // the answer, which is what a client that wants to decide for itself needs.
+    Redirects u64
 }
 
 func NewClient() Client {
     return Client{Connect: time.Seconds(DefaultConnectTimeout),
-                  Read: time.Seconds(DefaultReadTimeout)}
+                  Read: time.Seconds(DefaultReadTimeout),
+                  Redirects: DefaultRedirects}
 }
 
 // `HTTP/1.1 200 OK`
@@ -72,7 +80,29 @@ func readResponse(mut c *net.Conn, mut buf []u8) !ClientResponse {
     out.Status = try parseStatusLine(cut.text)
     try parseHeaders(cut.rest, &out.Headers)
 
-    want := try bodyLength(&out.Headers)
+    // Chunked, a length, or neither. The third is not an error: a reply with no
+    // framing at all ends when the connection does, which is how HTTP/1.0
+    // answers and how a `Connection: close` reply is allowed to answer.
+    if isChunked(&out.Headers) {
+        got := try readChunked(c, buf, head, have)
+        out.Body = buf[head..head+got.body]
+        return out
+    }
+
+    length := out.Headers.Get("Content-Length")
+    if length.len == 0 {
+        for have < buf.len {
+            n := c.Read(buf[have..buf.len]) catch 0
+            if n == 0 {
+                break
+            }
+            have += n
+        }
+        out.Body = buf[head..have]
+        return out
+    }
+
+    want := try strings.ParseU64(length)
     if head + want > buf.len {
         return error.BodyTooLarge
     }
@@ -87,9 +117,64 @@ func readResponse(mut c *net.Conn, mut buf []u8) !ClientResponse {
     return out
 }
 
+// A 303 becomes a GET, and so do 301 and 302 in every client that exists — the
+// specification says otherwise and the web decided. 307 and 308 keep the method
+// and the body, which is what they were added for.
+func redirectsAs(status u64, method string) string {
+    if status == 307 || status == 308 {
+        return method
+    }
+    return "GET"
+}
+
+func followable(status u64) bool {
+    return status == 301 || status == 302 || status == 303 || status == 307 ||
+           status == 308
+}
+
+// Sends the request and follows up to `Redirects` of them. Each hop is a fresh
+// connection to whatever the Location said, which may be another host.
 func (c *Client) Do(host string, port i32, method string, target string,
                     contentType string, body []u8,
                     mut a mem.Allocator) !ClientResponse {
+    mut useHost := host
+    mut usePort := port
+    mut useMethod := method
+    mut useTarget := target
+    mut useBody := body
+    // Out here rather than in the loop: `useBody` outlives an iteration.
+    mut empty := [0]u8{}
+
+    mut hop u64 = 0
+    for {
+        res := try c.once(useHost, usePort, useMethod, useTarget, contentType,
+                          useBody, a)
+        if hop >= c.Redirects || !followable(res.Status) {
+            return res
+        }
+        where := res.Headers.Get("Location")
+        if where.len == 0 {
+            return res
+        }
+        next := try ParseURL(where, useHost, usePort)
+        if next.TLS {
+            return error.NoTLS
+        }
+        useMethod = redirectsAs(res.Status, useMethod)
+        if useMethod == "GET" {
+            useBody = empty[..]
+        }
+        useHost = next.Host
+        usePort = next.Port
+        useTarget = next.Target
+        hop += 1
+    }
+}
+
+// One request, one connection, one answer.
+func (c *Client) once(host string, port i32, method string, target string,
+                      contentType string, body []u8,
+                      mut a mem.Allocator) !ClientResponse {
     mut req := try bytes.New(a, 512)
     try req.WriteString(method)
     try req.WriteByte(32)

@@ -1,0 +1,132 @@
+// expect: 42
+// expect-output: client follows and decodes
+// The client could not read what this package's own server sends: a reply framed
+// with chunks came back empty, because only Content-Length was understood. And a
+// redirect was handed back as the answer rather than followed.
+
+import "std/http"
+import "std/io"
+import "std/mem"
+import "std/strings"
+
+struct Site {
+    n u64
+}
+
+func (h *Site) Serve(req *http.Request, mut res *http.Response) !void {
+    if req.Path == "/here" {
+        res.Status = 302
+        try res.SetHeader("Location", "/there")
+        return
+    }
+    if req.Path == "/far" {
+        res.Status = 301
+        // Absolute, which a redirect is allowed to be.
+        try res.SetHeader("Location", "http://127.0.0.1:0/there")
+        return
+    }
+    if req.Path == "/loop" {
+        res.Status = 302
+        try res.SetHeader("Location", "/loop")
+        return
+    }
+    // Chunked, with no length anybody could have known in advance.
+    try res.Stream(200)
+    for i in 0..3 {
+        try res.Printf("piece{} ", i)
+    }
+}
+
+func serve(s *http.Server, h *Site) !void {
+    try s.ServeWith(h, 32)
+}
+
+func drive(port i32, mut score *atomic[u64], s *http.Server) !void {
+    mut backing := [65536]u8{}
+    mut arena := mem.NewArena(backing[..])
+
+    // Chunked, read directly.
+    first := http.Get("127.0.0.1", port, "/there", &arena) catch {
+        s.Close()
+        return
+    }
+    if first.Status == 200 && string(first.Body) == "piece0 piece1 piece2 " {
+        score.Add(1)
+    }
+
+    // A relative redirect, followed to the same place.
+    arena.Reset()
+    second := http.Get("127.0.0.1", port, "/here", &arena) catch {
+        s.Close()
+        return
+    }
+    if second.Status == 200 && strings.Contains(string(second.Body), "piece2") {
+        score.Add(2)
+    }
+
+    // A loop of them stops at the limit rather than running forever, and what
+    // comes back is the redirect itself.
+    arena.Reset()
+    mut client := http.NewClient()
+    client.Redirects = 2
+    third := client.Get("127.0.0.1", port, "/loop", &arena) catch {
+        s.Close()
+        return
+    }
+    if third.Status == 302 {
+        score.Add(4)
+    }
+
+    // And a client told not to follow hands the 3xx straight back.
+    arena.Reset()
+    mut plain := http.NewClient()
+    plain.Redirects = 0
+    fourth := plain.Get("127.0.0.1", port, "/here", &arena) catch {
+        s.Close()
+        return
+    }
+    if fourth.Status == 302 && fourth.Headers.Get("Location") == "/there" {
+        score.Add(8)
+    }
+
+    s.Close()
+}
+
+func main() !int {
+    mut h := Site{n: 0}
+    mut srv := try http.Listen(0)
+    port := srv.Port()
+
+    mut score := atomic[u64](0)
+    scope {
+        spawn serve(&srv, &h)
+        spawn drive(port, &score, &srv)
+    }
+
+    if score.Load() != 15 {
+        try io.Printf("score {}\n", score.Load())
+        return 1
+    }
+
+    // Absolute and relative URLs both parse, which is what following needs.
+    abs := try http.ParseURL("http://example.com:8080/a/b?c=1", "other", 1)
+    if abs.Host != "example.com" || abs.Port != 8080 ||
+       abs.Target != "/a/b?c=1" {
+        return 2
+    }
+    bare := try http.ParseURL("http://example.com/x", "other", 1)
+    if bare.Port != 80 {
+        return 3
+    }
+    rel := try http.ParseURL("/only/a/path", "keep.me", 99)
+    if rel.Host != "keep.me" || rel.Port != 99 || rel.Target != "/only/a/path" {
+        return 4
+    }
+    secure := try http.ParseURL("https://example.com/x", "other", 1)
+    if !secure.TLS || secure.Port != 443 {
+        return 5
+    }
+
+    try io.Print("client follows and decodes\n")
+    return 42
+}
