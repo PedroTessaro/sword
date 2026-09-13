@@ -144,6 +144,7 @@ func drive(port i32, mut score *atomic[u64], s *http.Server) !void {
     mut client := http.NewClient()
     client.TLS.CAFile = certPath
     fetched := client.GetTLS("127.0.0.1", port, "/hello/client", &arena) catch {
+        client.Close()
         ctx.Free()
         s.Close()
         return
@@ -152,6 +153,9 @@ func drive(port i32, mut score *atomic[u64], s *http.Server) !void {
        strings.Contains(string(fetched.Body), "hello client") {
         score.Add(8)
     }
+    // The client keeps the connection it used, which holds a task on the server
+    // for as long as it is open. Closing is what lets the server drain.
+    client.Close()
 
     // And a client that will not trust it gets nowhere, which is the same
     // certificate and a different answer.
@@ -218,7 +222,9 @@ func main() !int {
     }
     // Two of those were served on one connection, so more requests than
     // connections is the shape to expect.
-    if srv.Served() < 5 || srv.Accepted() < 4 {
+    // Fewer connections than requests: the client's second and third requests
+    // went down a connection that was already open.
+    if srv.Served() < 5 || srv.Accepted() < 3 {
         return 4
     }
     // http → https, followed. Two servers, and a Location built where there is

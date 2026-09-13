@@ -1,0 +1,151 @@
+// expect: 42
+// expect-output: connections were reused
+// A client keeps the connection it used, so a second call to the same place costs
+// no handshake. Two things are checked: that it is actually reused — fewer
+// connections than requests — and that a kept connection which turns out to be
+// gone is noticed and retried rather than reported as a failure, because a socket
+// that has been idle may have been closed without a word.
+
+import "std/http"
+import "std/io"
+import "std/mem"
+import "std/net"
+import "std/strings"
+
+struct Site {
+    n u64
+}
+
+func (h *Site) Serve(req *http.Request, mut res *http.Response) !void {
+    if req.Path == "/long" {
+        try res.Stream(200)
+        for i in 0..4 {
+            try res.Printf("piece{} ", i)
+        }
+        return
+    }
+    try res.Printf("path {}\n", req.Path)
+}
+
+func serve(s *http.Server, h *Site) !void {
+    try s.ServeWith(h, 8)
+}
+
+func call(port i32, mut score *atomic[u64], s *http.Server) !void {
+    mut backing := [262144]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut client := http.NewClient()
+
+    mut answered u64 = 0
+    for i in 0..3 {
+        arena.Reset()
+        res := client.Get("127.0.0.1", port, "/one", &arena) catch break
+        if res.Status == 200 && strings.Contains(string(res.Body), "path /one") {
+            answered += 1
+        }
+    }
+    if answered == 3 {
+        score.Add(1)
+    }
+
+    // A chunked reply on a connection that is then used again: the framing has to
+    // end exactly where it says, or the next response would be read as part of it.
+    arena.Reset()
+    long := client.Get("127.0.0.1", port, "/long", &arena) catch {
+        client.Close()
+        s.Close()
+        return
+    }
+    if strings.Contains(string(long.Body), "piece0 ") &&
+       strings.Contains(string(long.Body), "piece3 ") {
+        score.Add(2)
+    }
+    arena.Reset()
+    after := client.Get("127.0.0.1", port, "/after", &arena) catch {
+        client.Close()
+        s.Close()
+        return
+    }
+    if strings.Contains(string(after.Body), "path /after") {
+        score.Add(4)
+    }
+
+    // Five requests, and the server should have accepted far fewer connections.
+    if s.Accepted() < 5 {
+        score.Add(8)
+    }
+
+    // A client that keeps a connection holds a task on the server, so closing is
+    // what lets the server drain.
+    client.Close()
+    s.Close()
+}
+
+// A server that answers one request per connection while *saying* it will keep it
+// open, which is the shape of a connection the far end closed while it was idle.
+// The client cannot know until it tries.
+func liar(l *net.Listener, mut served *atomic[u64]) !void {
+    // Exactly as many as the client will make: one more and this task would wait
+    // for a connection that never comes.
+    for i in 0..3 {
+        mut c := l.Accept() catch break
+        mut buf := [1024]u8{}
+        n := c.Read(buf[..]) catch 0
+        if n > 0 {
+            c.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok") catch {}
+            served.Add(1)
+        }
+        c.Close()
+    }
+}
+
+func repeat(port i32, mut score *atomic[u64], mut served *atomic[u64]) !void {
+    mut backing := [131072]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut client := http.NewClient()
+
+    mut got u64 = 0
+    for i in 0..3 {
+        arena.Reset()
+        res := client.Get("127.0.0.1", port, "/x", &arena) catch break
+        if res.Status == 200 && string(res.Body) == "ok" {
+            got += 1
+        }
+    }
+    client.Close()
+    // Every one answered, even though every connection was dead by the time the
+    // next request went out.
+    if got == 3 && served.Load() == 3 {
+        score.Add(16)
+    }
+}
+
+func main() !int {
+    mut h := Site{n: 0}
+    mut srv := try http.Listen(0)
+    port := srv.Port()
+
+    mut score := atomic[u64](0)
+    scope {
+        spawn serve(&srv, &h)
+        spawn call(port, &score, &srv)
+    }
+
+    mut l := try net.Listen(0)
+    liarPort := l.Port()
+    mut served := atomic[u64](0)
+    scope {
+        spawn liar(&l, &served)
+        spawn repeat(liarPort, &score, &served)
+    }
+    l.Close()
+
+    if score.Load() != 31 {
+        try io.Printf("score {} accepted {} served {}\n", score.Load(),
+                      srv.Accepted(), served.Load())
+        return 1
+    }
+    try io.Printf("connections were reused: 5 requests over {} connections\n",
+                  srv.Accepted())
+    return 42
+}
