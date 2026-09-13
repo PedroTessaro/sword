@@ -69,6 +69,10 @@ struct Response {
     Status  u64
     Headers Headers
     body    bytes.Buffer
+    // Set by the server. A streaming response writes through it as the handler
+    // goes, rather than being collected and measured at the end.
+    conn      ?*net.Conn
+    streaming bool
 }
 
 // A handler is an interface rather than a function value, the same way Go's
@@ -93,17 +97,95 @@ func (mut r *Response) SetHeader(name string, value string) !void {
     try r.Headers.Set(name, value)
 }
 
+// Sends the head now and switches to chunked, for a response whose length is
+// not known in advance — a long list, a file being read, an event stream. After
+// this every write goes out as its own chunk instead of being collected.
+//
+//     try res.SetHeader("Content-Type", "text/event-stream")
+//     try res.Stream(200)
+//     for update := feed.Recv() {
+//         try res.Printf("data: {}\n\n", update)
+//     }
+func (mut r *Response) Stream(status u64) !void {
+    if r.streaming {
+        return
+    }
+    c := r.conn orelse return error.NotStreamable
+    r.Status = status
+    r.streaming = true
+
+    mut head := r.body
+    head.Reset()
+    try head.WriteString("HTTP/1.1 ")
+    try head.WriteU64(status)
+    try head.WriteByte(32)
+    try head.WriteString(StatusText(status))
+    try head.WriteString("\r\nTransfer-Encoding: chunked\r\n")
+    try writeHeaders(&head, &r.Headers)
+    try head.WriteString("\r\n")
+    try c.Write(head.Bytes())
+    head.Reset()
+    r.body = head
+}
+
+// `<length in hex>\r\n`, built backwards into the caller's space and then
+// turned round, which is how a number becomes digits with no allocator.
+func chunkHead(size u64, mut into []u8) u64 {
+    mut digits := [16]u8{}
+    mut count u64 = 0
+    mut left := size
+    if left == 0 {
+        digits[0] = 48
+        count = 1
+    }
+    for left > 0 {
+        d := u8(left % 16)
+        if d < 10 {
+            digits[count] = 48 + d
+        } else {
+            digits[count] = 87 + d
+        }
+        left = left / 16
+        count += 1
+    }
+    for i in 0..count {
+        into[i] = digits[count - 1 - i]
+    }
+    into[count] = 13
+    into[count+1] = 10
+    return count + 2
+}
+
+// Sends whatever has been written so far as one chunk. A streaming response is
+// otherwise built exactly like a buffered one; the difference is only that the
+// buffer is emptied onto the wire instead of measured at the end.
+func (mut r *Response) flush() !void {
+    if !r.streaming || r.body.Len() == 0 {
+        return
+    }
+    c := r.conn orelse return error.NotStreamable
+    mut head := [24]u8{}
+    n := chunkHead(r.body.Len(), head[..])
+    try c.Write(head[0..n])
+    try c.Write(r.body.Bytes())
+    try c.WriteString("\r\n")
+    r.body.Reset()
+}
+
 func (mut r *Response) Write(p []u8) !void {
     try r.body.Write(p)
+    try r.flush()
 }
 
 func (mut r *Response) WriteString(s string) !void {
     try r.body.WriteString(s)
+    try r.flush()
 }
 
 // Formats straight into the body; `{}` takes the next argument.
 func (mut r *Response) Printf(format string, args ...any) !void {
-    try fmt.Format(&r.body, format, args...)
+    try fmt.Format(&r.body, format, args)
+    try r.flush()
 }
 
 func (mut r *Response) Text(status u64, s string) !void {
@@ -168,6 +250,12 @@ func readRequest(mut c *net.Conn, mut buf []u8, mut req *Request) !u64 {
     try parseRequestLine(cut.text, req)
     try parseHeaders(cut.rest, &req.Headers)
 
+    if isChunked(&req.Headers) {
+        got := try readChunked(c, buf, head, have)
+        req.Body = buf[head..head+got.body]
+        return got.used
+    }
+
     want := try bodyLength(&req.Headers)
     if head + want > buf.len {
         return error.BodyTooLarge
@@ -181,6 +269,68 @@ func readRequest(mut c *net.Conn, mut buf []u8, mut req *Request) !u64 {
     }
     req.Body = buf[head..head+want]
     return head + want
+}
+
+// What a decoded chunked body came to, and how much of the buffer it took. Two
+// numbers rather than a pointer parameter: the framing is interleaved with the
+// data, so the caller cannot work the second one out from the first.
+struct chunked {
+    body u64
+    used u64
+}
+
+// Decodes a chunked body in place. A chunk's bytes always sit further along than
+// where they end up, because the framing before them is dropped, so this can
+// compact as it goes without a second buffer.
+func readChunked(mut c *net.Conn, mut buf []u8, head u64,
+                 already u64) !chunked {
+    mut have := already
+    mut out := head // where decoded bytes land
+    mut at := head  // where the next size line starts
+
+    for {
+        mut stop := lineEnd(string(buf[0..have]), at)
+        for stop == 0 {
+            if have >= buf.len {
+                return error.HeadTooLarge
+            }
+            n := try c.Read(buf[have..buf.len])
+            if n == 0 {
+                return error.Truncated
+            }
+            have += n
+            stop = lineEnd(string(buf[0..have]), at)
+        }
+
+        size := try chunkSize(string(buf[at..stop]))
+        at = stop + 2
+
+        // The last chunk is empty; what follows is trailers nobody reads and
+        // the blank line, neither of which the body needs.
+        if size == 0 {
+            return chunked{body: out - head, used: have}
+        }
+        if out + size > buf.len {
+            return error.BodyTooLarge
+        }
+
+        for have < at + size + 2 {
+            if have >= buf.len {
+                return error.BodyTooLarge
+            }
+            n := try c.Read(buf[have..buf.len])
+            if n == 0 {
+                return error.Truncated
+            }
+            have += n
+        }
+        for i in 0..size {
+            buf[out + i] = buf[at + i]
+        }
+        out += size
+        at += size + 2
+    }
+    return chunked{body: out - head, used: have}
 }
 
 // HTTP/1.1 keeps the connection open unless told otherwise; HTTP/1.0 is the
@@ -198,6 +348,13 @@ func wantsKeepAlive(req *Request) bool {
 
 func writeResponse(mut c *net.Conn, mut res *Response, keep bool,
                    mut out *bytes.Buffer) !void {
+    // A streaming response has already sent its head and its chunks; all that
+    // is left is the one that says there are no more.
+    if res.streaming {
+        try res.flush()
+        try c.WriteString("0\r\n\r\n")
+        return
+    }
     out.Reset()
     try out.WriteString("HTTP/1.1 ")
     try out.WriteU64(res.Status)
@@ -240,7 +397,8 @@ func handleConn(mut c *net.Conn, h Handler, mut a mem.Allocator,
         }
 
         body.Reset()
-        mut res := Response{Status: 200, Headers: NewHeaders(), body: body}
+        mut res := Response{Status: 200, Headers: NewHeaders(), body: body,
+                            conn: c, streaming: false}
         h.Serve(&req, &res) catch {
             res.Status = 500
             s.failed.Add(1)

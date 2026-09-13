@@ -81,6 +81,30 @@ func (mut b *Buffer) WriteString(s string) !void {
 
 // Decimal, no padding. Writing the digits backwards into a scratch array and
 // reversing avoids needing to know the length up front.
+// Lower-case hex, no padding — the shape a chunk's length is written in.
+func (mut b *Buffer) WriteHex(v u64) !void {
+    if v == 0 {
+        try b.WriteByte(48)
+        return
+    }
+    mut digits := [16]u8{}
+    mut n u64 = 0
+    mut left := v
+    for left > 0 {
+        d := u8(left % 16)
+        if d < 10 {
+            digits[n] = 48 + d
+        } else {
+            digits[n] = 87 + d
+        }
+        left = left / 16
+        n += 1
+    }
+    for i in 0..n {
+        try b.WriteByte(digits[n - 1 - i])
+    }
+}
+
 func (mut b *Buffer) WriteU64(v u64) !void {
     if v == 0 {
         try b.WriteByte(48)

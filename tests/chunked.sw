@@ -1,0 +1,105 @@
+// expect: 42
+// expect-output: chunked both ways
+// A request whose length is only known chunk by chunk, and a response whose
+// length is not known at all. Without this the body of the first was silently
+// ignored and the second had to be built whole in memory before it could be
+// sent.
+
+import "std/http"
+import "std/io"
+import "std/net"
+import "std/strings"
+
+struct Echo {
+    n u64
+}
+
+func (h *Echo) Serve(req *http.Request, mut res *http.Response) !void {
+    if req.Path == "/stream" {
+        try res.Stream(200)
+        for i in 0..4 {
+            try res.Printf("part{}\n", i)
+        }
+        return
+    }
+    // Whatever arrived, back out again — which only says anything if the
+    // chunked framing was decoded.
+    try res.Write(req.Body)
+    res.Status = 200
+}
+
+func serve(s *http.Server, h *Echo) !void {
+    try s.ServeWith(h, 32)
+}
+
+// By hand, because the client in std/http does not send chunked.
+func drive(port i32, mut sent *atomic[u64], mut back *atomic[u64],
+           s *http.Server) !void {
+    mut c := net.Dial("127.0.0.1", port) catch return
+    try c.WriteString("POST /echo HTTP/1.1\r\nHost: x\r\n")
+    try c.WriteString("Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+    try c.WriteString("5\r\nhello\r\n")
+    try c.WriteString("1\r\n \r\n")
+    try c.WriteString("5\r\nworld\r\n")
+    try c.WriteString("0\r\n\r\n")
+
+    mut buf := [2048]u8{}
+    mut have u64 = 0
+    for {
+        n := c.Read(buf[have..buf.len]) catch 0
+        if n == 0 {
+            break
+        }
+        have += n
+    }
+    c.Close()
+    reply := string(buf[0..have])
+    if strings.Contains(reply, "hello world") {
+        sent.Store(1)
+    }
+
+    // And a response whose length nobody knew.
+    mut d := net.Dial("127.0.0.1", port) catch return
+    try d.WriteString("GET /stream HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+    mut room := [2048]u8{}
+    mut got u64 = 0
+    for {
+        n := d.Read(room[got..room.len]) catch 0
+        if n == 0 {
+            break
+        }
+        got += n
+    }
+    d.Close()
+    streamed := string(room[0..got])
+    if strings.Contains(streamed, "Transfer-Encoding: chunked") &&
+       strings.Contains(streamed, "part0") &&
+       strings.Contains(streamed, "part3") &&
+       strings.Contains(streamed, "0\r\n\r\n") {
+        back.Store(1)
+    }
+    s.Close()
+}
+
+func main() !int {
+    mut sent := atomic[u64](0)
+    mut back := atomic[u64](0)
+
+    mut h := Echo{n: 0}
+    mut srv := try http.Listen(0)
+    port := srv.Port()
+
+    scope {
+        spawn serve(&srv, &h)
+        spawn drive(port, &sent, &back, &srv)
+    }
+
+    if sent.Load() != 1 {
+        return 1
+    }
+    if back.Load() != 1 {
+        return 2
+    }
+    try io.Print("chunked both ways\n")
+    return 42
+}

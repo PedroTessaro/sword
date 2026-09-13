@@ -119,6 +119,56 @@ func parseHeaders(block string, mut into *Headers) !void {
     }
 }
 
+func isChunked(h *Headers) bool {
+    return strings.EqualFold(h.Get("Transfer-Encoding"), "chunked")
+}
+
+func hexValue(c u8) !u64 {
+    if c >= 48 && c <= 57 {
+        return u64(c - 48)
+    }
+    if c >= 97 && c <= 102 {
+        return u64(c - 97 + 10)
+    }
+    if c >= 65 && c <= 70 {
+        return u64(c - 65 + 10)
+    }
+    return error.BadChunk
+}
+
+// A chunk's size line is hex, and may carry extensions after a semicolon that
+// nobody has ever used for anything. Everything up to the first non-digit is
+// the size.
+func chunkSize(line string) !u64 {
+    mut size u64 = 0
+    mut digits u64 = 0
+    for i in 0..line.len {
+        c := line[i]
+        if c == 59 || c == 32 { // ';' or a stray space
+            break
+        }
+        size = size * 16 + (try hexValue(c))
+        digits += 1
+    }
+    if digits == 0 {
+        return error.BadChunk
+    }
+    return size
+}
+
+// Where the CRLF after `from` ends, or zero when it is not in what has been
+// read yet.
+func lineEnd(s string, from u64) u64 {
+    mut i := from
+    for i + 1 < s.len {
+        if s[i] == 13 && s[i+1] == 10 {
+            return i
+        }
+        i += 1
+    }
+    return 0
+}
+
 func bodyLength(h *Headers) !u64 {
     got := h.Get("Content-Length")
     if got.len == 0 {
