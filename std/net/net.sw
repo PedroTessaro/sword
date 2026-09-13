@@ -103,6 +103,13 @@ func DialTimeout(host string, port i32, limit time.Duration) !Conn {
 
 // The most any single wait on this connection may take. A zero duration waits
 // as long as it takes, which is what a socket does by default.
+// The descriptor underneath, for a layer that has to speak to the socket itself
+// rather than through this one — `std/tls` hands it to OpenSSL. Whoever takes it
+// does not own it: the connection still closes it.
+func (c *Conn) Fd() i32 {
+    return c.fd
+}
+
 func (c *Conn) SetTimeout(limit time.Duration) !void {
     if sword_net_timeout(c.fd, limit.AsMillis()) < 0 {
         return error.TimeoutNotSet
