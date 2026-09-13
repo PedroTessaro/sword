@@ -1668,6 +1668,105 @@ struct Lowerer {
     cur = exit_bb;
   }
 
+  // `select`. Three arrays go to the runtime — the channels, what each case
+  // wants, and where its value lives — and what comes back is the index of the
+  // case that went. The runtime does the send or the receive itself, under the
+  // channel's own lock: choosing first and acting afterwards would leave a gap
+  // where a `default` could still end up waiting.
+  void select_stmt(Node *n) {
+    Type *opaque = types.rawptr(types.u8_ty);
+    std::vector<Node *> cases;
+    Node *fallback = nullptr;
+    for (Node *arm : n->kids) {
+      if (arm->form == 2) fallback = arm;
+      else cases.push_back(arm);
+    }
+
+    int64_t count = (int64_t)cases.size();
+    Type *chan_array = types.array(opaque, count > 0 ? count : 1);
+    Type *op_array = types.array(types.named("i32"), count > 0 ? count : 1);
+    int chans = alloca_slot(chan_array);
+    int ops = alloca_slot(op_array);
+    int values = alloca_slot(chan_array);
+
+    std::vector<int> slots;
+    for (size_t i = 0; i < cases.size(); i++) {
+      Node *arm = cases[i];
+      int at = constant((int64_t)i, types.usize_ty);
+      store(expr(arm->lhs), gep_index(chans, at, opaque), opaque);
+      store(constant(arm->form == 1 ? 1 : 0, types.named("i32")),
+            gep_index(ops, at, types.named("i32")), types.named("i32"));
+
+      // A send's value has to be somewhere the runtime can copy from; a
+      // receive's needs somewhere to land. Same slot either way.
+      Type *carried = arm->form == 1
+                          ? arm->type
+                          : const_cast<Type *>(opt_payload(arm->type));
+      int slot = alloca_slot(carried);
+      if (arm->form == 1) assign_into(slot, arm->rhs, carried);
+      else zero(slot, carried);
+      slots.push_back(slot);
+      store(slot, gep_index(values, at, opaque), opaque);
+    }
+
+    int got = alloca_slot(types.named("i32"));
+    store(constant(0, types.named("i32")), got, types.named("i32"));
+
+    int chosen = call_runtime(
+        "sword_chan_select",
+        {chans, ops, values, constant(count, types.named("i64")),
+         constant(fallback ? 1 : 0, types.named("i32")), got},
+        types.named("i64"));
+
+    int exit_bb = new_block();
+    std::vector<int> arms;
+    for (size_t i = 0; i < cases.size(); i++) arms.push_back(new_block());
+    int fallback_bb = fallback ? new_block() : exit_bb;
+
+    for (size_t i = 0; i < cases.size(); i++) {
+      int same = binop(IR_EQ, chosen, constant((int64_t)i, types.named("i64")),
+                       types.bool_ty);
+      int next_bb = new_block();
+      cond_branch(same, arms[i], next_bb);
+      cur = next_bb;
+    }
+    branch(fallback_bb);
+
+    for (size_t i = 0; i < cases.size(); i++) {
+      cur = arms[i];
+      scopes.emplace_back();
+      Node *arm = cases[i];
+      if (arm->form == 0 && arm->sym) {
+        // The binding is a `?T`: the value if one came, nothing if the channel
+        // was closed. Which of the two is what `got` says.
+        Type *box = arm->type;
+        Type *carried = const_cast<Type *>(opt_payload(box));
+        int slot = alloca_slot(box);
+        arm->sym->slot = slot;
+        int had = binop(IR_NE, load(got, types.named("i32")),
+                        constant(0, types.named("i32")), types.bool_ty);
+        store(had, gep_named(slot, box, "has"), types.bool_ty);
+        int inner = gep_named(slot, box, "value");
+        if (is_aggregate(carried)) copy(inner, slots[i], carried);
+        else store(load(slots[i], carried), inner, carried);
+      }
+      stmt(arm->body);
+      emit_defers(scopes.size() - 1, false);
+      scopes.pop_back();
+      branch(exit_bb);
+    }
+
+    if (fallback) {
+      cur = fallback_bb;
+      scopes.emplace_back();
+      stmt(fallback->body);
+      emit_defers(scopes.size() - 1, false);
+      scopes.pop_back();
+      branch(exit_bb);
+    }
+    cur = exit_bb;
+  }
+
   // `for x := optional { }`. The optional is evaluated afresh each turn, which
   // is what makes it a loop rather than an `if`.
   void optional_loop(Node *n) {
@@ -1831,6 +1930,10 @@ struct Lowerer {
 
     case ND_IF:
       if_stmt(n);
+      break;
+
+    case ND_SELECT:
+      select_stmt(n);
       break;
 
     case ND_FOR:

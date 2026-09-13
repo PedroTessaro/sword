@@ -23,7 +23,9 @@ enum NodeKind {
   ND_CONST_DECL,
   ND_ERROR_DECL, // kids name the errors; each kid's text is its message
   ND_RECV,       // `<-ch`, an expression: the next value, or nothing
-  ND_SEND,       // `ch <- v`, a statement that can fail
+  ND_SEND,       // `ch <- v`, an expression that can fail
+  ND_SELECT,     // kids are the cases
+  ND_SELECT_CASE, // form: 0 receive, 1 send, 2 default
   ND_FIELD_DECL,
 
   ND_BLOCK,

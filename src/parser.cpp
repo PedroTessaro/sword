@@ -591,6 +591,63 @@ struct Parser {
     return n;
   }
 
+  // select {
+  // case v := <-jobs:   the value, or nothing when the channel closed
+  // case <-quit:        the same, thrown away
+  // case out <- value:  when there is room for it
+  // default:           when none of them could go
+  // }
+  Node *select_stmt() {
+    Node *n = make(ND_SELECT, advance().pos);
+    if (!expect(TK_LBRACE, "to open a select")) return nullptr;
+
+    skip_terms();
+    while (kind() != TK_RBRACE && kind() != TK_EOF) {
+      Node *arm = make(ND_SELECT_CASE, peek().pos);
+      if (match(TK_DEFAULT)) {
+        arm->form = 2;
+      } else if (match(TK_CASE)) {
+        // `v := <-ch` is the only shape that starts with a name and `:=`.
+        if (kind() == TK_IDENT && kind(1) == TK_DEFINE) {
+          arm->name_pos = peek().pos;
+          arm->name = advance().text;
+          advance(); // :=
+          if (kind() != TK_RECV) {
+            fail("a select case binds the value of a receive: 'v := <-ch'");
+            return nullptr;
+          }
+          advance(); // <-
+          arm->form = 0;
+          arm->lhs = expr();
+          if (!arm->lhs) return nullptr;
+        } else {
+          Node *first = expr();
+          if (!first) return nullptr;
+          if (first->kind == ND_RECV) {
+            arm->form = 0;
+            arm->lhs = first->lhs; // the channel, without the binding
+          } else if (first->kind == ND_SEND) {
+            arm->form = 1;
+            arm->lhs = first->lhs;
+            arm->rhs = first->rhs;
+          } else {
+            fail("a select case is a receive or a send, nothing else");
+            return nullptr;
+          }
+        }
+      } else {
+        fail("expected 'case' or 'default'");
+        return nullptr;
+      }
+      if (!expect(TK_COLON, "after a select case")) return nullptr;
+      arm->body = case_body();
+      n->kids.push_back(arm);
+      skip_terms();
+    }
+    expect(TK_RBRACE, "to close a select");
+    return n;
+  }
+
   Node *case_body() {
     Node *n = make(ND_BLOCK, peek().pos);
     skip_terms();
@@ -732,6 +789,7 @@ struct Parser {
     case TK_LBRACE: return block();
     case TK_IF: return if_stmt();
     case TK_SWITCH: return switch_stmt();
+    case TK_SELECT: return select_stmt();
     case TK_FOR: return for_stmt();
     case TK_PARALLEL: {
       Pos at = advance().pos;

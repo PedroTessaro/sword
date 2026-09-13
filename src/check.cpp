@@ -1750,6 +1750,88 @@ struct Checker {
     return owner->name.compare(0, mark.size(), mark) == 0;
   }
 
+  // What a channel carries. The struct behind `chan[T]` keeps its state as bytes,
+  // so the element type is read back off the signature of `Recv`, which is the
+  // one place it survives.
+  Type *channel_elem(Type *chan_type) {
+    const Type *owner = chan_type->kind == TY_PTR ? chan_type->elem : chan_type;
+    auto methods = prog.methods.find(owner->name);
+    if (methods == prog.methods.end()) return nullptr;
+    auto recv = methods->second.find("Recv");
+    if (recv == methods->second.end() || !recv->second->type) return nullptr;
+    Type *ret = recv->second->type->ret;
+    if (!ret || !is_optional(ret)) return nullptr;
+    return const_cast<Type *>(opt_payload(ret));
+  }
+
+  // `select` waits on several channels at once and runs the case that could go.
+  // The cases are rewritten here as far as they can be: the channel becomes the
+  // address of its state, which is what the runtime is handed, and the binding
+  // becomes a `?T` — the same thing `<-ch` produces, because a closed channel is
+  // an answer and the body has to be able to see it.
+  Type *check_select(Node *n) {
+    if (n->kids.empty()) {
+      error(n->pos, "a select with no cases has nothing to wait for");
+      return nullptr;
+    }
+    bool seen_default = false;
+    for (Node *arm : n->kids) {
+      if (arm->form == 2) {
+        if (seen_default) {
+          error(arm->pos, "a select has one 'default' at most");
+          return nullptr;
+        }
+        seen_default = true;
+        check_stmt(arm->body);
+        continue;
+      }
+
+      Type *chan_type = check_expr(arm->lhs);
+      if (!chan_type) return nullptr;
+      if (!is_channel(chan_type)) {
+        error(arm->lhs->pos, "a select case takes a channel, not %s",
+              type_str(chan_type).c_str());
+        return nullptr;
+      }
+      Type *elem = channel_elem(chan_type);
+      if (!elem) {
+        error(arm->lhs->pos, "cannot tell what this channel carries");
+        return nullptr;
+      }
+
+      if (arm->form == 1) {
+        if (!check_expr(arm->rhs)) return nullptr;
+        if (!convert(arm->rhs, elem)) {
+          error(arm->rhs->pos, "this channel carries %s, not %s",
+                type_str(elem).c_str(), type_str(arm->rhs->type).c_str());
+          return nullptr;
+        }
+        arm->type = elem;
+      } else {
+        arm->type = types.opt(elem);
+      }
+
+      // The channel expression becomes the address of its state. Everything the
+      // runtime needs is that pointer, and the rewrite keeps lowering from having
+      // to know about the package behind a channel.
+      Node *address = ast.make(ND_CALL, arm->lhs->pos);
+      Node *field = ast.make(ND_FIELD, arm->lhs->pos);
+      field->lhs = arm->lhs;
+      field->name = "Address";
+      field->name_pos = arm->lhs->pos;
+      address->lhs = field;
+      if (!check_expr(address)) return nullptr;
+      arm->lhs = address;
+
+      push_scope();
+      if (arm->form == 0 && !arm->name.empty())
+        arm->sym = declare(arm->name, arm->type, false, arm->name_pos);
+      check_stmt(arm->body);
+      pop_scope();
+    }
+    return types.void_ty;
+  }
+
   Type *check_recv(Node *n) {
     Type *from = check_expr(n->lhs);
     if (!from) return nullptr;
@@ -2821,6 +2903,10 @@ struct Checker {
 
     case ND_LOCK:
       check_lock(n);
+      break;
+
+    case ND_SELECT:
+      check_select(n);
       break;
 
     case ND_SWITCH:

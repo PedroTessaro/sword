@@ -525,6 +525,8 @@ struct Emitter {
         {"sword_mutex_unlock", "declare void @sword_mutex_unlock(ptr)"},
         {"sword_mutex_wait", "declare void @sword_mutex_wait(ptr)"},
         {"sword_mutex_notify", "declare void @sword_mutex_notify(ptr)"},
+        {"sword_chan_select",
+         "declare i64 @sword_chan_select(ptr, ptr, ptr, i64, i32, ptr)"},
         {"sword_mutex_notify_all",
          "declare void @sword_mutex_notify_all(ptr)"},
     };
