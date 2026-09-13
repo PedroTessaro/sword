@@ -63,6 +63,8 @@ setup and what the build needs.
 
 ## Learn it
 
+- **[Why Sword](docs/why.md)** — what the design buys against Go, C and Rust, and
+  what it costs. Read this before the tour if you are deciding whether to care.
 - **[A tour of Sword](docs/tour.md)** — start here. Every section is a program
   you can run, and they build on each other from hello world to parallel code.
 - **[Concurrency](docs/concurrency.md)** — how tasks, partitions and the race
