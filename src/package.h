@@ -83,11 +83,15 @@ bool exported(const std::string &name);
 void set_overlay(const std::string &path, std::string text);
 void clear_overlay(const std::string &path);
 
+// What a load is for. A build leaves the `*_test.sw` files out; `shield test`
+// takes them in and writes the entry point that runs their `Test*` functions.
+// An editor wants the test files too — somebody is editing one — but not an
+// entry point it never asked for, and no complaint about a package that has no
+// `main` because it is a library.
+enum LoadMode { LOAD_BUILD, LOAD_TESTS, LOAD_EDITOR };
+
 // `input` is a directory (the whole package) or a single .sw file. Parses it
 // and everything it imports, in dependency order.
-// `with_tests` includes the `*_test.sw` files, which an ordinary build leaves
-// out, and writes the entry point that runs whatever `Test*` functions they
-// declare.
 bool load_program(const std::string &input,
                   const std::vector<std::string> &search, Program &out,
-                  bool with_tests = false);
+                  LoadMode mode = LOAD_BUILD);

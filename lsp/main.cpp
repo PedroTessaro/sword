@@ -76,9 +76,14 @@ struct Server {
     capture_diagnostics(&fresh->diagnostics);
 
     std::string path = path_of(uri);
-    std::vector<std::string> search{directory_of(path)};
+    // The *directory*, not the file. A file belongs to its package, and a name
+    // declared in a sibling file is not undefined just because the editor has
+    // this one open — reporting it as undefined was the single most misleading
+    // thing this server did.
+    std::string dir = directory_of(path);
+    std::vector<std::string> search{dir};
     for (const std::string &root : package_roots()) search.push_back(root);
-    load_program(path, search, fresh->prog);
+    load_program(dir, search, fresh->prog, LOAD_EDITOR);
     // A file that failed to parse still has whatever came before the error,
     // which is enough to colour it.
     if (!fresh->prog.order.empty()) check(fresh->prog, fresh->types);

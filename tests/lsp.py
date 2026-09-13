@@ -72,9 +72,28 @@ def write(tmp, name, text):
 
 
 def main():
+    # A directory each: a file belongs to its package, and the server checks the
+    # whole package. Two `main` functions in one directory is a broken package,
+    # and it should say so rather than being a convenient fixture.
     tmp = tempfile.mkdtemp()
-    good = write(tmp, "good.sw", "func main() int {\n    x := 21\n    return x * 2\n}\n")
-    bad = write(tmp, "bad.sw", "func main() int {\n    return nope\n}\n")
+    good_dir = os.path.join(tmp, "good")
+    bad_dir = os.path.join(tmp, "bad")
+    pkg_dir = os.path.join(tmp, "pkg")
+    for d in (good_dir, bad_dir, pkg_dir):
+        os.mkdir(d)
+    good = write(good_dir, "good.sw", "func main() int {\n    x := 21\n    return x * 2\n}\n")
+    bad = write(bad_dir, "bad.sw", "func main() int {\n    return nope\n}\n")
+
+    # Two files, one package: the name comes from the other file, and used to be
+    # reported as undefined because only the open file was ever loaded.
+    write(pkg_dir, "helper.sw",
+          "struct Point {\n    X i64\n    Y i64\n}\n\n"
+          "func twice(n i64) i64 {\n    return n * 2\n}\n")
+    together = write(pkg_dir, "main.sw",
+                     "func main() int {\n"
+                     "    p := Point{X: 3, Y: 4}\n"
+                     "    return int(twice(p.X) + p.Y)\n"
+                     "}\n")
 
     client = Client()
     reply = client.send("initialize", {"processId": None, "rootUri": None}) or client.read()
@@ -108,6 +127,16 @@ def main():
     )
     note = client.until(lambda m: m.get("method") == "textDocument/publishDiagnostics")
     check("clean file reports nothing", note and not note["params"]["diagnostics"])
+
+    client.send(
+        "textDocument/didOpen",
+        {"textDocument": {"uri": "file://" + together, "languageId": "sword",
+                          "version": 1, "text": open(together).read()}},
+        want_reply=False,
+    )
+    note = client.until(lambda m: m.get("method") == "textDocument/publishDiagnostics")
+    diags = note["params"]["diagnostics"] if note else []
+    check("a sibling file's names are not undefined", not diags, str(diags))
 
     client.send("textDocument/semanticTokens/full",
                 {"textDocument": {"uri": "file://" + good}})

@@ -57,7 +57,7 @@ struct Loader {
   Program &prog;
   const std::vector<std::string> &search;
   std::vector<std::string> visiting;
-  bool tests = false;
+  LoadMode mode = LOAD_BUILD;
   std::string label; // what the user named on the command line
 
   Loader(Program &p, const std::vector<std::string> &s) : prog(p), search(s) {}
@@ -177,9 +177,10 @@ struct Loader {
         if (c == '/') c = '.';
     }
 
-    if (!parse_files(pkg, sword_files(dir, tests && import_path.empty())))
+    if (!parse_files(pkg, sword_files(dir, mode != LOAD_BUILD && import_path.empty())))
       return nullptr;
-    if (tests && import_path.empty() && !add_test_main(pkg)) return nullptr;
+    if (mode == LOAD_TESTS && import_path.empty() && !add_test_main(pkg))
+      return nullptr;
 
     for (const std::string &path : pkg.imports) {
       std::string found_dir = locate(path);
@@ -214,9 +215,9 @@ bool exported(const std::string &name) {
 
 bool load_program(const std::string &input,
                   const std::vector<std::string> &search, Program &out,
-                  bool with_tests) {
+                  LoadMode mode) {
   Loader loader(out, search);
-  loader.tests = with_tests;
+  loader.mode = mode;
   loader.label = input;
 
   if (is_directory(input)) return loader.load("", input, Pos{}) != nullptr;
@@ -228,7 +229,7 @@ bool load_program(const std::string &input,
   pkg.dir = parent_of(input);
   pkg.prefix = "main.";
   if (!loader.parse_files(pkg, {input})) return false;
-  if (with_tests && !loader.add_test_main(pkg)) return false;
+  if (mode == LOAD_TESTS && !loader.add_test_main(pkg)) return false;
 
   for (const std::string &path : pkg.imports) {
     std::string dir = loader.locate(path);

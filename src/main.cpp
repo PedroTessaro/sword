@@ -211,7 +211,9 @@ int main(int argc, char **argv) {
   for (const std::string &root : package_roots()) search.push_back(root);
 
   Program prog;
-  if (!load_program(input, search, prog, testing)) return 1;
+  if (!load_program(input, search, prog,
+                    testing ? LOAD_TESTS : LOAD_BUILD))
+    return 1;
 
   TypeTable types;
   if (!check(prog, types)) return 1;
