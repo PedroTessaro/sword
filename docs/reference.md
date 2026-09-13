@@ -66,7 +66,9 @@ import "path/to/package"
 `mut` on a parameter or receiver means the callee may write through it. Only a
 mutable binding can be passed to one.
 
-A name is exported from its package when it starts with a capital letter.
+A name is exported from its package when it starts with a capital letter. That
+covers a struct's fields as well: a type can be public and its insides private,
+which is why `time.Duration` has methods rather than a reachable `ns`.
 
 ## Statements
 

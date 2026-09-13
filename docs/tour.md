@@ -909,7 +909,23 @@ func main() int {
 
 A name is visible outside its package when it starts with a capital letter.
 That applies to `extern` declarations too, so a package can wrap a C function
-without exposing it.
+without exposing it, and to the fields of a struct — a type can be public with
+its insides private:
+
+```sword
+package time
+
+struct Duration {
+    ns i64                          // nobody outside reads or writes this
+}
+
+func (d Duration) AsMillis() i64 {  // this is the way in
+    return d.ns / 1000000
+}
+```
+
+`time.Duration{ns: 0}` from another package is a compile error, and so is
+`d.ns`. Inside `std/time` both are ordinary code.
 
 Imports are searched for next to the file being compiled first, then wherever
 the compiler keeps its standard library. Import cycles are a compile error.
