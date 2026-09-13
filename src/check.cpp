@@ -1163,7 +1163,15 @@ struct Checker {
               // reinterpret freely. `*T` converts out to one, never back in:
               // that would fabricate a non-null guarantee.
               (from->kind == TY_RAWPTR && target->kind == TY_RAWPTR) ||
-              (from->kind == TY_PTR && target->kind == TY_RAWPTR);
+              (from->kind == TY_PTR && target->kind == TY_RAWPTR) ||
+              // An address as a number, and back. An allocator written in Sword
+              // needs it — aligning memory means arithmetic on where it is, and
+              // there is no other way to ask. Only at full width: a narrower
+              // integer would drop half of an address without saying so.
+              (from->kind == TY_RAWPTR && is_integer(target) &&
+               target->bits == 64) ||
+              (is_integer(from) && from->bits == 64 &&
+               target->kind == TY_RAWPTR);
     if (!ok) {
       error(n->pos, "cannot convert %s to %s", type_str(from).c_str(),
             type_str(target).c_str());
