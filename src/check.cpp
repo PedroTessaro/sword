@@ -88,6 +88,28 @@ struct Checker {
     return found->second;
   }
 
+  // A struct type's name carries the package it was declared in, so this is
+  // where a field access finds out whether it is at home. Types the compiler
+  // synthesizes — error unions, optionals, `shared[T]` — carry no package and
+  // belong to whoever holds one.
+  bool declared_here(const Type *t) {
+    // A generic instance carries its type arguments after a '$', and those have
+    // packages of their own; only the part before it says where it was declared.
+    std::string name = t->name.substr(0, t->name.find('$'));
+    if (name.size() <= pkg.prefix.size()) return true;
+    if (name.find('.') == std::string::npos) return true;
+    if (name.compare(0, pkg.prefix.size(), pkg.prefix) != 0) return false;
+    // A longer path that merely starts the same is a different package.
+    return name.find('.', pkg.prefix.size()) == std::string::npos;
+  }
+
+  // A field is reachable from outside its package on the same terms as a type
+  // or a function: only if it starts uppercase. Without this a package could
+  // publish a type and keep nothing about it to itself.
+  bool field_reachable(const Type *owner, const std::string &name) {
+    return exported(name) || declared_here(owner);
+  }
+
   // Plain name: a bound type parameter wins, then the package's own types,
   // then the builtins.
   Type *lookup_type(const std::string &name) {
@@ -1775,6 +1797,11 @@ struct Checker {
             n->name.c_str());
       return nullptr;
     }
+    if (!field_reachable(base, n->name)) {
+      error(n->pos, "field '%s' of %s is not exported by its package",
+            n->name.c_str(), type_str(base).c_str());
+      return nullptr;
+    }
     return n->type = field->type;
   }
 
@@ -1877,6 +1904,11 @@ struct Checker {
       if (!field) {
         error(init->pos, "%s has no field '%s'", n->name.c_str(),
               init->name.c_str());
+        return nullptr;
+      }
+      if (!field_reachable(type, init->name)) {
+        error(init->pos, "field '%s' of %s is not exported by its package",
+              init->name.c_str(), shown_name(type->name).c_str());
         return nullptr;
       }
       if (!seen.insert(init->name).second) {
