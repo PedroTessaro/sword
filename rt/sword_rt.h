@@ -78,4 +78,14 @@ struct sword_stats {
 };
 
 void sword_runtime_stats(struct sword_stats *out);
+
+// Mutex and condition, on a blob of SWORD_GUARD_SIZE bytes the caller owns.
+void sword_mutex_lock(void *blob);
+void sword_mutex_unlock(void *blob);
+void sword_mutex_wait(void *blob);
+void sword_mutex_notify(void *blob);
+void sword_mutex_notify_all(void *blob);
+// Waits for any one of several guards to be notified, holding none of them. The
+// caller re-checks afterwards: this reports that something changed, not what.
+void sword_mutex_park_any(void **blobs, int64_t n);
 }

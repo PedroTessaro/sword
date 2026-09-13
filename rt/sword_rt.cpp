@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <alloca.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -766,12 +767,24 @@ Task *fresh_task() {
 // Plain fields with explicit atomic builtins rather than std::atomic, because
 // nothing constructs this: it comes into existence as sixteen zero bytes,
 // wherever the `shared` around it happens to live.
+// A task waiting on several guards at once, which is what `select` is. One of
+// these per (task, guard) pair, living on the waiting task's own stack for as
+// long as it waits — the task is parked, so the stack is not going anywhere.
+struct Selector {
+  Fiber *f;
+  Selector *next;
+};
+
 struct Guard {
   int32_t held;
   uint64_t owner; // which thread, so locking twice is a diagnostic not a hang
   // Tasks waiting for this value to change, newest first. Only ever touched
   // with the guard held, so the list needs no atomics of its own.
   Fiber *waiters;
+  // Tasks waiting on this value *and others*. They are woken but not removed:
+  // the node belongs to the task, and it takes its own nodes out once it is
+  // awake and has decided what to do.
+  Selector *selectors;
 };
 
 static_assert(sizeof(Guard) <= SWORD_GUARD_SIZE, "guard blob too small");
@@ -877,27 +890,87 @@ void sword_mutex_wait(void *blob) {
   sword_mutex_lock(blob);
 }
 
-void sword_mutex_notify(void *blob) {
-  Guard *g = (Guard *)blob;
-  Fiber *f = g->waiters;
-  if (!f) return;
-  g->waiters = f->waiting_next;
-  f->waiting_next = nullptr;
+// Waking a fiber that is already awake is not a mistake: only the move out of
+// PARKED queues it, so a second wake is a no-op. That is what lets a selector be
+// notified by any of the guards it is on.
+void wake_one(Fiber *f) {
   if (f->state.exchange(FIBER_READY, std::memory_order_acq_rel) == FIBER_PARKED)
     make_runnable(f);
 }
 
+void wake_selectors(Guard *g) {
+  for (Selector *s = g->selectors; s; s = s->next) wake_one(s->f);
+}
+
+void sword_mutex_notify(void *blob) {
+  Guard *g = (Guard *)blob;
+  // A selector is waiting for anything to change here, so it is told even when
+  // the notify was meant for one particular waiter.
+  wake_selectors(g);
+  Fiber *f = g->waiters;
+  if (!f) return;
+  g->waiters = f->waiting_next;
+  f->waiting_next = nullptr;
+  wake_one(f);
+}
+
 void sword_mutex_notify_all(void *blob) {
   Guard *g = (Guard *)blob;
+  wake_selectors(g);
   Fiber *f = g->waiters;
   g->waiters = nullptr;
   while (f) {
     Fiber *next = f->waiting_next;
     f->waiting_next = nullptr;
-    if (f->state.exchange(FIBER_READY, std::memory_order_acq_rel) ==
-        FIBER_PARKED)
-      make_runnable(f);
+    wake_one(f);
     f = next;
+  }
+}
+
+// Puts the task down until any one of these guards is notified. The caller holds
+// none of them and re-checks everything afterwards: this says "something changed",
+// never what.
+//
+// The order matters and is the whole correctness argument. The task is marked as
+// parking *before* it goes on any list, so a notify that lands between the
+// registration and the switch-out finds it in PARKING, leaves it alone, and the
+// handoff in `after_enter` queues it instead of parking it. Nothing is lost, and
+// the caller's second look is what turns "something changed" into "this changed".
+void sword_mutex_park_any(void **blobs, int64_t n) {
+  Fiber *f = tl_fiber;
+  if (!f || n <= 0) {
+    // No task to put down: whoever is calling is outside the scheduler, and a
+    // short sleep is all that is honest here.
+    sword_blocking_enter();
+    std::this_thread::sleep_for(std::chrono::microseconds(200));
+    sword_blocking_exit();
+    return;
+  }
+
+  // On this task's stack, which stays put while the task is down.
+  Selector *nodes = (Selector *)alloca(sizeof(Selector) * (size_t)n);
+
+  f->state.store(FIBER_PARKING, std::memory_order_release);
+  for (int64_t i = 0; i < n; i++) {
+    Guard *g = (Guard *)blobs[i];
+    nodes[i].f = f;
+    sword_mutex_lock(g);
+    nodes[i].next = g->selectors;
+    g->selectors = &nodes[i];
+    sword_mutex_unlock(g);
+  }
+
+  leave(f, false);
+
+  // Awake again, possibly on another thread. The nodes come out under the same
+  // lock that put them in.
+  for (int64_t i = 0; i < n; i++) {
+    Guard *g = (Guard *)blobs[i];
+    sword_mutex_lock(g);
+    Selector **link = &g->selectors;
+    while (*link && *link != &nodes[i]) link = &(*link)->next;
+    if (*link) *link = nodes[i].next;
+    sword_mutex_unlock(g);
   }
 }
 }
