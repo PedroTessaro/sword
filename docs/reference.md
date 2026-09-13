@@ -219,7 +219,7 @@ func (s *shared[T]) NotifyAll()   // wake all of them
 ```
 
 `Wait` is what turns a mutex into something a queue can be built out of — it is
-what `std/chan` is written on. A caller loops rather than testing once, because
+what a channel is written on. A caller loops rather than testing once, because
 what it waited for may be gone again by the time it wakes.
 
 No `mut` is needed anywhere, the same way an atomic needs none: the type says it
@@ -698,25 +698,36 @@ Tests run at the same time, 64 at once by default; `shield test <path> -p 1`
 puts them back in order. `t.Mem` is an arena of that test's own. `t.Arg` is what `RunWith` handed the
 subtest, since a body cannot capture anything.
 
-### `std/chan`
+### Channels
 
-A queue tasks hand values through. See [Concurrency](concurrency.md#channels).
+A queue tasks hand values through, and part of the language rather than a package
+to import. See [Concurrency](concurrency.md#channels).
 
 ```sword
-func New[T](mut a mem.Allocator, capacity u64) !Chan[T]
-func (c *Chan[T]) Send(v T) !void       // waits while full; fails once closed
-func (c *Chan[T]) Recv() ?T             // waits while empty; nil once drained
-func (c *Chan[T]) TrySend(v T) bool
-func (c *Chan[T]) TryRecv() ?T
-func (c *Chan[T]) Close()               // twice is harmless
-func (c *Chan[T]) Len() u64
-func (c *Chan[T]) Cap() u64
-func (c *Chan[T]) Closed() bool
-func (mut c *Chan[T]) Free(mut a mem.Allocator)
+mut ch := try chan[T](&arena, capacity)  // capacity 0 is a handover
+try ch <- v                              // waits while full; fails once closed
+v := <-ch                                // ?T: waits while empty, nil once drained
+for v := <-ch { }                        // until it closes
+close(ch)                                // twice is harmless
 ```
 
-None of the receivers is `mut`: a channel is reached by every task that shares
-it, and the state behind it is a `shared` value.
+`<-` is one token, so `a < -b` needs the space. The rest are ordinary methods:
+
+```sword
+func (c Chan[T]) TrySend(v T) bool      // false rather than a wait
+func (c Chan[T]) TryRecv() ?T
+func (c Chan[T]) Len() u64
+func (c Chan[T]) Cap() u64              // 0 for a handover
+func (c Chan[T]) Closed() bool
+func (c Chan[T]) Free(mut a mem.Allocator)
+```
+
+A channel is a handle: copying one copies the handle, both copies are the same
+channel, and it goes to a task by value. Its memory comes from the allocator you
+pass, which is why there is no `make`.
+
+No receiver is `mut`, because every task that shares a channel reaches it at once
+and the state behind it is a `shared` value.
 
 ### `std/fs`
 

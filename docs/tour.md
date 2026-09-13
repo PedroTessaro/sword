@@ -1021,42 +1021,51 @@ A queue tasks hand values through, when what they need is not a slice each but a
 stream:
 
 ```sword
-import "std/chan"
 import "std/io"
 import "std/mem"
 
-func worker(jobs *chan.Chan[u64], mut sum *atomic[u64]) !void {
-    for job := jobs.Recv() {
+func worker(jobs chan[u64], mut sum *atomic[u64]) !void {
+    for job := <-jobs {
         sum.Add(job * job)
     }
 }
 
-func fill(jobs *chan.Chan[u64]) !void {
+func fill(jobs chan[u64]) !void {
     for i in 0..10 {
-        try jobs.Send(u64(i))
+        try jobs <- u64(i)
     }
-    jobs.Close()
+    close(jobs)
 }
 
 func main() !int {
     mut backing := [16384]u8{}
     mut arena := mem.NewArena(backing[..])
-    mut jobs := try chan.New[u64](&arena, 4)
+    mut jobs := try chan[u64](&arena, 4)
     mut sum := atomic[u64](0)
 
     scope {
-        spawn worker(&jobs, &sum)
-        spawn worker(&jobs, &sum)
-        spawn fill(&jobs)
+        spawn worker(jobs, &sum)
+        spawn worker(jobs, &sum)
+        spawn fill(jobs)
     }
     try io.Printf("sum of squares: {}\n", sum.Load())
     return 0
 }
 ```
 
-`for job := jobs.Recv()` runs while there is something there, and closing the
-channel is what ends it. A send waits while the channel is full, which is how a
-fast producer is held to a slow consumer's pace rather than filling memory.
+Three forms: `jobs <- v` sends, `<-jobs` receives, `close(jobs)` says there will
+be no more. A receive answers `?T` — nil once the channel is closed and empty —
+which is why `for job := <-jobs` is the ordinary optional loop and not something
+new. A send takes a `try` because it can fail: sending into a closed channel is a
+mistake rather than a wait.
+
+A channel is a handle, so it goes to a task by value and both copies are the same
+channel. The memory comes from the allocator you hand it, like everything else —
+there is no `make` here. A capacity of zero makes it a handover instead of a
+queue: the sender waits until a receiver has taken the value.
+
+A send waits while the channel is full, which is how a fast producer is held to a
+slow consumer's pace rather than filling memory.
 
 ## The outside world
 

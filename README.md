@@ -98,7 +98,7 @@ structs, floating point, top-level constants, atomics, mutex-protected
 `shared[T]` with wait and notify, structs, enums, slices, strings, pointers,
 optionals, error unions, `switch` with completeness checking over an enum,
 `defer`, packages, and the whole concurrency story with a work-stealing
-scheduler behind it.
+scheduler behind it, channels included.
 
 The standard library covers memory (`std/mem`), byte buffers (`std/bytes`),
 byte-level strings (`std/strings`), generic containers (`std/collections`),

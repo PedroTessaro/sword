@@ -647,11 +647,10 @@ A queue tasks hand values through. A send waits while it is full, a receive wait
 while it is empty, and waiting costs a stack rather than a thread:
 
 ```sword
-import "std/chan"
 import "std/mem"
 
-func worker(jobs *chan.Chan[u64], mut done *atomic[u64]) !void {
-    for job := jobs.Recv() {
+func worker(jobs chan[u64], mut done *atomic[u64]) !void {
+    for job := <-jobs {
         done.Add(job)
     }
 }
@@ -659,29 +658,55 @@ func worker(jobs *chan.Chan[u64], mut done *atomic[u64]) !void {
 func main() !int {
     mut backing := [65536]u8{}
     mut arena := mem.NewArena(backing[..])
-    mut jobs := try chan.New[u64](&arena, 8)
+    mut jobs := try chan[u64](&arena, 8)
     mut done := atomic[u64](0)
 
     scope {
         for w in 0..4 {
-            spawn worker(&jobs, &done)
+            spawn worker(jobs, &done)
         }
-        spawn fill(&jobs)
+        spawn fill(jobs)
     }
     return int(done.Load() % 100)
 }
 
-func fill(jobs *chan.Chan[u64]) !void {
+func fill(jobs chan[u64]) !void {
     for i in 0..100 {
-        try jobs.Send(u64(i))
+        try jobs <- u64(i)
     }
-    jobs.Close()
+    close(jobs)
 }
 ```
 
 Four consumers on one channel, and every value reaches exactly one of them.
-`for job := jobs.Recv()` runs while there is something there — closing the
-channel is what ends all four loops.
+`for job := <-jobs` runs while there is something there — closing the channel is
+what ends all four loops.
+
+Three forms and nothing else to learn: `jobs <- v` sends, `<-jobs` receives, and
+`close(jobs)` says there will be no more. A receive answers `?T`, which is how a
+closed channel is told apart from a value without a second return or a flag — and
+why `for job := <-jobs` is the loop rather than a special one.
+
+A send can fail, which is why it takes a `try`: sending into a closed channel is a
+mistake rather than a wait. A receive cannot fail — there is nothing to fail at —
+so it takes nothing.
+
+**A channel is a handle.** Copying one copies the handle and both copies are the
+same channel, so it goes to a task by value and no pointer is involved. The memory
+behind it comes from the allocator you pass, like everything else here; there is
+no `make`, because nothing in this language allocates without being asked.
+
+**Capacity zero is a handover.** Not a queue with no room — a meeting point: the
+sender waits until a receiver has actually taken the value:
+
+```sword
+mut hand := try chan[u64](&arena, 0)
+```
+
+That is the one to reach for when the point is that the two tasks are at the same
+place at the same time, rather than that a value got queued. On one of these
+`TrySend` answers false unless a receiver is already waiting, because the
+alternative would be exactly the wait it promises not to do.
 
 **Closing is the end of the stream.** What is already in the channel is still
 received; after that every receive answers nil, and a send fails rather than
@@ -694,8 +719,13 @@ that takes five milliseconds per value holds the producer to the consumer's pace
 eats the machine. `TrySend` and `TryRecv` are there for when waiting is not
 wanted.
 
-It is a library rather than a keyword, written on two things the language
-already has: a `shared` value for the state, and `Wait` and `Notify` on it.
+Underneath, a channel is written in Sword on two things the language already has:
+a `shared` value for the state, and `Wait` and `Notify` on it. `chan[T]`, `<-` and
+`close` are the compiler's way of saying so without making you import it.
+
+What is missing: `select`, for waiting on several channels at once. It needs the
+channel to be able to lock all of them and enqueue on all of them, which is a
+runtime job rather than a library one — see the design notes.
 
 ### Wait and Notify
 
