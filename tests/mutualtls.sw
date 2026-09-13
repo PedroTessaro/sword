@@ -1,0 +1,233 @@
+// expect: 42
+// expect-output: mutual tls checked
+// TLS the other way round: the server asks who is calling. One authority signs two
+// identities, and the server accepts a client because that authority vouched for it
+// — then says its name, which is the only reason to ask in the first place.
+//
+// The three answers that matter are all here: a client with the right certificate
+// gets in and is named, a client with none is refused when the server requires one,
+// and a server that asks for one without an authority to check it against is a
+// mistake rather than a setting.
+
+import "std/fs"
+import "std/http"
+import "std/io"
+import "std/mem"
+import "std/net"
+import "std/strings"
+import "std/tls"
+
+const ca = "/tmp/sword_mtls_ca_cert.pem"
+const caKey = "/tmp/sword_mtls_ca_key.pem"
+const serverCert = "/tmp/sword_mtls_server_cert.pem"
+const serverKey = "/tmp/sword_mtls_server_key.pem"
+const clientCert = "/tmp/sword_mtls_client_cert.pem"
+const clientKey = "/tmp/sword_mtls_client_key.pem"
+
+// Answers one connection, reporting who turned up.
+func serve(l *net.Listener, ctx *tls.Context, mut named *atomic[u64],
+           mut anonymous *atomic[u64], mut refused *atomic[u64]) !void {
+    mut raw := l.Accept() catch return
+    mut c := tls.Server(ctx, raw) catch {
+        // A handshake the server turned down. There is no HTTP here to answer
+        // with, and a client that offered nothing would not understand one.
+        refused.Add(1)
+        return
+    }
+    mut room := [256]u8{}
+    if name := c.PeerName(room[..]) {
+        if strings.Contains(name, "worker-7") && c.Verified() {
+            named.Add(1)
+        }
+    } else {
+        anonymous.Add(1)
+    }
+    c.WriteString("ok") catch {}
+    c.Close()
+}
+
+// Calls once, presenting the certificate it was given — or none, when both are
+// empty.
+func call(port i32, cert string, key string, mut ok *atomic[u64]) !void {
+    mut conf := tls.NewConfig()
+    conf.CAFile = ca
+    conf.CertFile = cert
+    conf.KeyFile = key
+    mut ctx := tls.ClientContext(conf) catch return
+    mut c := tls.Dial(&ctx, "127.0.0.1", port) catch {
+        ctx.Free()
+        return
+    }
+    mut back := [32]u8{}
+    n := c.Read(back[..]) catch 0
+    if string(back[0..n]) == "ok" {
+        ok.Add(1)
+    }
+    c.Close()
+    ctx.Free()
+}
+
+// A server that answers only whoever it can name, which is the point of asking.
+struct Site {
+    n u64
+}
+
+func (h *Site) Serve(req *http.Request, mut res *http.Response) !void {
+    if req.PeerName.len == 0 {
+        try res.Text(401, "who are you\n")
+        return
+    }
+    try res.Printf("hello {}\n", req.PeerName)
+}
+
+func serveHTTP(s *http.Server, h *Site) !void {
+    try s.ServeWith(h, 8)
+}
+
+func fetch(port i32, mut ok *atomic[u64], s *http.Server) !void {
+    mut backing := [262144]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut client := http.NewClient()
+    client.TLS.CAFile = ca
+    client.TLS.CertFile = clientCert
+    client.TLS.KeyFile = clientKey
+
+    res := client.GetTLS("127.0.0.1", port, "/", &arena) catch {
+        client.Close()
+        s.Close()
+        return
+    }
+    if res.Status == 200 && strings.Contains(string(res.Body), "worker-7") {
+        ok.Add(1)
+    }
+    client.Close()
+    s.Close()
+}
+
+func main() !int {
+    if !tls.Available() {
+        // Without OpenSSL there is nothing to authenticate with, and every entry
+        // point has to say so rather than half-work.
+        mut said u64 = 0
+        tls.SignedBy("x", ca, caKey, serverCert, serverKey, false) catch {
+            said += 1
+        }
+        mut conf := tls.NewServerConfig(serverCert, serverKey)
+        conf.ClientCA = ca
+        conf.Clients = tls.Ask.Required
+        tls.ServerContextWith(conf) catch {
+            said += 1
+        }
+        if said != 2 {
+            return 1
+        }
+        try io.Print("mutual tls checked: this build has no TLS\n")
+        return 42
+    }
+
+    // One authority. It signs itself, and then signs the two identities that will
+    // check each other through it.
+    try tls.SelfSigned("sword-test-authority", ca, caKey)
+    try tls.SignedBy("127.0.0.1", ca, caKey, serverCert, serverKey, false)
+    try tls.SignedBy("worker-7", ca, caKey, clientCert, clientKey, true)
+
+    // Asking for a certificate with nothing to check it against is refused. It
+    // reads like security and is not, which is the only reason this is an error
+    // rather than a default.
+    mut careless := tls.NewServerConfig(serverCert, serverKey)
+    careless.Clients = tls.Ask.Required
+    mut caught := false
+    tls.ServerContextWith(careless) catch {
+        caught = true
+    }
+    if !caught {
+        return 2
+    }
+
+    mut strict := tls.NewServerConfig(serverCert, serverKey)
+    strict.ClientCA = ca
+    strict.Clients = tls.Ask.Required
+    mut ctx := try tls.ServerContextWith(strict)
+
+    mut named := atomic[u64](0)
+    mut anonymous := atomic[u64](0)
+    mut refused := atomic[u64](0)
+
+    // The client that has what the server asked for.
+    mut welcomed := atomic[u64](0)
+    mut l := try net.Listen(0)
+    scope {
+        spawn serve(&l, &ctx, &named, &anonymous, &refused)
+        spawn call(l.Port(), clientCert, clientKey, &welcomed)
+    }
+    l.Close()
+    if welcomed.Load() != 1 || named.Load() != 1 {
+        try io.Printf("welcomed {} named {}\n", welcomed.Load(), named.Load())
+        return 3
+    }
+
+    // The client that has not. The server requires one, so the handshake does not
+    // finish and neither end gets to say anything.
+    mut turned_away := atomic[u64](0)
+    mut closed := try net.Listen(0)
+    scope {
+        spawn serve(&closed, &ctx, &named, &anonymous, &refused)
+        spawn call(closed.Port(), "", "", &turned_away)
+    }
+    closed.Close()
+    if turned_away.Load() != 0 || refused.Load() != 1 {
+        try io.Printf("turned away {} refused {}\n", turned_away.Load(),
+                      refused.Load())
+        return 4
+    }
+
+    // The same client, against a server that only asks. It gets in, and the
+    // handler is the one that has to notice there is nobody behind the connection.
+    mut lenient := tls.NewServerConfig(serverCert, serverKey)
+    lenient.ClientCA = ca
+    lenient.Clients = tls.Ask.Optional
+    mut open := try tls.ServerContextWith(lenient)
+
+    mut got_in := atomic[u64](0)
+    mut casual := try net.Listen(0)
+    scope {
+        spawn serve(&casual, &open, &named, &anonymous, &refused)
+        spawn call(casual.Port(), "", "", &got_in)
+    }
+    casual.Close()
+    open.Free()
+    ctx.Free()
+    if got_in.Load() != 1 || anonymous.Load() != 1 {
+        try io.Printf("got in {} anonymous {}\n", got_in.Load(),
+                      anonymous.Load())
+        return 5
+    }
+
+    // And the whole way up: an HTTPS server that asks, and a handler that reads
+    // the name off the request rather than guessing from the address.
+    mut conf := tls.NewServerConfig(serverCert, serverKey)
+    conf.ClientCA = ca
+    conf.Clients = tls.Ask.Required
+
+    mut site := Site{n: 0}
+    mut srv := try http.ListenWith(0, conf)
+    mut answered := atomic[u64](0)
+    scope {
+        spawn serveHTTP(&srv, &site)
+        spawn fetch(srv.Port(), &answered, &srv)
+    }
+    srv.Free()
+    if answered.Load() != 1 {
+        return 6
+    }
+
+    fs.Remove(ca) catch {}
+    fs.Remove(caKey) catch {}
+    fs.Remove(serverCert) catch {}
+    fs.Remove(serverKey) catch {}
+    fs.Remove(clientCert) catch {}
+    fs.Remove(clientKey) catch {}
+
+    try io.Print("mutual tls checked: named, refused, anonymous and over http\n")
+    return 42
+}
