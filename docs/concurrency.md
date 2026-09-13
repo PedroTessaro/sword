@@ -595,10 +595,82 @@ into that: the point is only that the lock is not going to be your bottleneck.
 What is missing: no read-only lock, so two readers still take turns, and no
 try-lock, so there is no way to do something else instead of waiting.
 
-## What is not here yet
+## Channels
 
-**Channels.** The syntax is reserved and the design is settled, but nothing is
-implemented.
+A queue tasks hand values through. A send waits while it is full, a receive waits
+while it is empty, and waiting costs a stack rather than a thread:
+
+```sword
+import "std/chan"
+import "std/mem"
+
+func worker(jobs *chan.Chan[u64], mut done *atomic[u64]) !void {
+    for job := jobs.Recv() {
+        done.Add(job)
+    }
+}
+
+func main() !int {
+    mut backing := [65536]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut jobs := try chan.New[u64](&arena, 8)
+    mut done := atomic[u64](0)
+
+    scope {
+        for w in 0..4 {
+            spawn worker(&jobs, &done)
+        }
+        spawn fill(&jobs)
+    }
+    return int(done.Load() % 100)
+}
+
+func fill(jobs *chan.Chan[u64]) !void {
+    for i in 0..100 {
+        try jobs.Send(u64(i))
+    }
+    jobs.Close()
+}
+```
+
+Four consumers on one channel, and every value reaches exactly one of them.
+`for job := jobs.Recv()` runs while there is something there — closing the
+channel is what ends all four loops.
+
+**Closing is the end of the stream.** What is already in the channel is still
+received; after that every receive answers nil, and a send fails rather than
+waiting for a reader who will never come. Closing twice is harmless, because
+whoever closes is often not whoever knows.
+
+**The capacity is the backpressure.** A channel of one slot against a consumer
+that takes five milliseconds per value holds the producer to the consumer's pace
+— which is the point, and the alternative is an unbounded queue that eventually
+eats the machine. `TrySend` and `TryRecv` are there for when waiting is not
+wanted.
+
+It is a library rather than a keyword, written on two things the language
+already has: a `shared` value for the state, and `Wait` and `Notify` on it.
+
+### Wait and Notify
+
+Those two are worth knowing on their own, because a channel is not the only
+queue anyone ever wants. Both are called with the lock held; `Wait` lets go of
+it, puts the task down, and takes it back before returning:
+
+```sword
+lock r := &box {
+    for r.count == 0 {
+        box.Wait()          // the lock is somebody else's while this waits
+    }
+    take(r)
+}
+```
+
+A caller loops rather than testing once, because what it was waiting for may
+have been taken again by the time it wakes. `Notify` wakes one waiter and
+`NotifyAll` wakes all of them.
+
+## What is not here yet
 
 **Memory with no name behind it.** The checker compares accesses by the binding
 they come from. A slice returned straight out of a call, never bound to

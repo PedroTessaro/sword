@@ -966,6 +966,49 @@ lock m := table {
 
 The brace releases it, and so does every other way out of the block.
 
+## Channels
+
+A queue tasks hand values through, when what they need is not a slice each but a
+stream:
+
+```sword
+import "std/chan"
+import "std/io"
+import "std/mem"
+
+func worker(jobs *chan.Chan[u64], mut sum *atomic[u64]) !void {
+    for job := jobs.Recv() {
+        sum.Add(job * job)
+    }
+}
+
+func fill(jobs *chan.Chan[u64]) !void {
+    for i in 0..10 {
+        try jobs.Send(u64(i))
+    }
+    jobs.Close()
+}
+
+func main() !int {
+    mut backing := [16384]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut jobs := try chan.New[u64](&arena, 4)
+    mut sum := atomic[u64](0)
+
+    scope {
+        spawn worker(&jobs, &sum)
+        spawn worker(&jobs, &sum)
+        spawn fill(&jobs)
+    }
+    try io.Printf("sum of squares: {}\n", sum.Load())
+    return 0
+}
+```
+
+`for job := jobs.Recv()` runs while there is something there, and closing the
+channel is what ends it. A send waits while the channel is full, which is how a
+fast producer is held to a slow consumer's pace rather than filling memory.
+
 ## The outside world
 
 A program that cannot be told anything is not much use. `std/os` has the
@@ -1024,6 +1067,16 @@ func main() !int {
 
 `fs.Size` gives an optional, because a path that is not there has no size and a
 number would be a lie. `fs.ReadStdin` takes whatever was piped in.
+
+`std/os` also has signals, which is how a server is asked to stop:
+
+```sword
+try os.Catch(os.Signal.Terminate)
+sig := try os.WaitSignal()
+```
+
+`WaitSignal` is an ordinary wait — it costs a stack and not a thread — so it
+sits in a task beside the work it is going to interrupt.
 
 `std/time` has the clocks. Two of them: `Now` reads a clock that only counts
 forward, for measuring, and `Unix` reads the wall clock, for stamping.

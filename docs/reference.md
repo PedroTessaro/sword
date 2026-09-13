@@ -205,6 +205,18 @@ the value, which is what makes the race checker's exemption safe. Inside the
 block the name is a mutable `*T`; the brace releases the lock, and so does a
 `return`, a `break`, a `continue` or a `try` that fails.
 
+Three operations beside `lock`, all called with the lock held:
+
+```sword
+func (s *shared[T]) Wait()        // let go, wait to be told, take it back
+func (s *shared[T]) Notify()      // wake one waiter
+func (s *shared[T]) NotifyAll()   // wake all of them
+```
+
+`Wait` is what turns a mutex into something a queue can be built out of — it is
+what `std/chan` is written on. A caller loops rather than testing once, because
+what it waited for may be gone again by the time it wakes.
+
 No `mut` is needed anywhere, the same way an atomic needs none: the type says it
 will be written by whoever holds the lock, so the binding's mutability has
 nothing left to say. A shared may also sit in a struct field, and the struct
@@ -581,7 +593,23 @@ func Args(mut into []string) []string
 func Env(name string) ?string     // nil when unset
 func EnvOr(name string, fallback string) string
 func Exit(code i32)               // no defers run, no output is flushed
+
+enum Signal i32 { Hangup = 1, Interrupt = 2, Quit = 3, Terminate = 15 }
+
+func Catch(sig Signal) !void      // start catching it
+func WaitSignal() !Signal         // the next one, without holding a thread
+func Kill(pid u64, sig Signal) !void
+
+func MaxFiles() u64               // descriptors this process may open
+func RaiseMaxFiles(want u64) !u64 // 0 asks for the hard limit
+func Pid() u64
+func Cpus() u64
+func Hostname() ?string
 ```
+
+A signal handler may do almost nothing safely, so a signal arrives down a pipe
+and `WaitSignal` is an ordinary task parked on the other end. That is the whole
+of a graceful shutdown: wait, call `Close`, let the scope drain.
 
 `Args` fills an array you supply instead of allocating, and returns the part of
 it that was used:
@@ -648,6 +676,26 @@ Tests run at the same time, 64 at once by default; `shield test <path> -p 1`
 puts them back in order. `t.Mem` is an arena of that test's own. `t.Arg` is what `RunWith` handed the
 subtest, since a body cannot capture anything.
 
+### `std/chan`
+
+A queue tasks hand values through. See [Concurrency](concurrency.md#channels).
+
+```sword
+func New[T](mut a mem.Allocator, capacity u64) !Chan[T]
+func (c *Chan[T]) Send(v T) !void       // waits while full; fails once closed
+func (c *Chan[T]) Recv() ?T             // waits while empty; nil once drained
+func (c *Chan[T]) TrySend(v T) bool
+func (c *Chan[T]) TryRecv() ?T
+func (c *Chan[T]) Close()               // twice is harmless
+func (c *Chan[T]) Len() u64
+func (c *Chan[T]) Cap() u64
+func (c *Chan[T]) Closed() bool
+func (mut c *Chan[T]) Free(mut a mem.Allocator)
+```
+
+None of the receivers is `mut`: a channel is reached by every task that shares
+it, and the state behind it is a `shared` value.
+
 ### `std/fs`
 
 ```sword
@@ -699,7 +747,8 @@ func (s Stats) Running() i64      // Started - Finished
 TCP over the loopback interface. Port 0 asks the operating system to choose.
 
 ```sword
-func Listen(port i32) !Listener
+func Listen(port i32) !Listener                        // loopback only
+func ListenOn(host string, port i32, share bool) !Listener
 func (l *Listener) Port() i32
 func (l *Listener) Accept() !Conn
 func (l *Listener) Close()                   // wakes a blocked Accept
@@ -712,6 +761,7 @@ func (c *Conn) ClearDeadline() !void
 func (c *Conn) Read(mut into []u8) !u64      // 0 means the peer is done
 func (c *Conn) Write(from []u8) !void
 func (c *Conn) WriteString(s string) !void
+func (c *Conn) Peer(mut into []u8) !Peer   // { Address, Port }
 func (c *Conn) Close()
 ```
 
@@ -721,15 +771,16 @@ by a couple of orders of magnitude. See [Concurrency](concurrency.md#waiting).
 
 ### `std/http`
 
-HTTP/1.1 with keep-alive, routing and timeouts. No TLS and no chunked transfer
-encoding.
+HTTP/1.1 with keep-alive, routing, timeouts and chunked transfer encoding. No
+TLS.
 
 ```sword
 interface Handler {
     Serve(req *Request, mut res *Response) !void
 }
 
-func Listen(port i32) !Server
+func Listen(port i32) !Server                        // loopback only
+func ListenOn(host string, port i32, share bool) !Server
 func (s *Server) Port() i32
 func (s *Server) Serve(h Handler) !void      // up to 1024 connections at once
 func (s *Server) ServeWith(h Handler, most u64) !void
@@ -740,8 +791,9 @@ func (s *Server) Failed() u64                // of those, handlers that failed
 func (s *Server) Close()                     // stops accepting, then drains
 ```
 
-A `Request` carries `Method`, `Target`, `Path`, `RawQuery`, `Proto`, `Headers`
-and `Body`. `Target` is the request line unchanged; `Path` and `RawQuery` are
+A `Request` carries `Method`, `Target`, `Path`, `RawQuery`, `Proto`,
+`RemoteAddr`, `Headers` and `Body`. A body sent with `Transfer-Encoding:
+chunked` is decoded before the handler sees it. `Target` is the request line unchanged; `Path` and `RawQuery` are
 its two halves. The strings point into the connection's read buffer, so they are
 valid for as long as the handler runs.
 
@@ -773,6 +825,7 @@ func Escape(s string, mut into []u8) !string
 ```
 
 ```sword
+func (mut r *Response) Stream(status u64) !void   // switch to chunked
 func (mut r *Response) Printf(format string, args ...any) !void
 func (mut r *Response) Text(status u64, s string) !void
 func (mut r *Response) JSON(status u64, s string) !void
@@ -849,4 +902,4 @@ left out of every other build. See [Testing](testing.md).
 
 ## Reserved but not implemented
 
-`chan`. The word is taken; the feature is not there.
+Nothing, now that `chan` is a package rather than a keyword.

@@ -1,8 +1,8 @@
 # Writing an HTTP server
 
 `std/http` is a small HTTP/1.1 server and client, written in Sword on top of
-`std/net`. It does keep-alive, routing with path parameters, query strings and
-timeouts; it does not do TLS or chunked transfer encoding.
+`std/net`. It does keep-alive, routing with path parameters, query strings,
+timeouts and chunked transfer encoding; it does not do TLS.
 
 ## A server
 
@@ -113,6 +113,83 @@ runs out.
 A request is capped at 32 headers and 8 KiB of head. Past that the connection is
 dropped rather than grown, which keeps a hostile client from deciding how much
 memory the server uses.
+
+## Streaming a reply
+
+A response is normally collected, measured and sent with a `Content-Length`. When
+the length is not known in advance — a long list, a file being read, an event
+stream — say so and every write goes out as its own chunk:
+
+```sword
+func (h *Feed) Serve(req *http.Request, mut res *http.Response) !void {
+    try res.SetHeader("Content-Type", "text/event-stream")
+    try res.Stream(200)
+    for update := h.updates.Recv() {
+        try res.Printf("data: {}\n\n", update)
+    }
+}
+```
+
+`Stream` sends the head immediately, so headers set after it are too late. The
+handler returning ends the body. Nothing else about writing changes — `Write`,
+`WriteString` and `Printf` do what they always did, they just leave rather than
+accumulate.
+
+A request arriving with `Transfer-Encoding: chunked` is decoded before the
+handler sees it, in place in the read buffer: a chunk's bytes always sit further
+along than where they end up, so no second buffer is needed.
+
+## Shutting down on a signal
+
+This is what a server's last ten lines look like:
+
+```sword
+import "std/http"
+import "std/os"
+
+struct Health {
+    started i64
+}
+
+func (h *Health) Serve(req *http.Request, mut res *http.Response) !void {
+    try res.Text(200, "ok\n")
+}
+
+func serve(s *http.Server, m *http.Mux) !void {
+    try s.Serve(m)
+}
+
+func shutdown(s *http.Server) !void {
+    try os.Catch(os.Signal.Terminate)
+    try os.Catch(os.Signal.Interrupt)
+    sig := try os.WaitSignal()
+    s.Close()
+}
+
+func main() !int {
+    mut health := Health{started: 0}
+    mut srv := try http.ListenOn("", 8080, true)
+    mut mux := http.NewMux()
+    try mux.Get("/health", &health)
+
+    scope {
+        spawn serve(&srv, &mux)
+        spawn shutdown(&srv)
+    }
+    return 0
+}
+```
+
+`WaitSignal` is an ordinary task: a signal handler may do almost nothing safely,
+so one writes a byte down a pipe and the waiting is reading the other end —
+which costs a stack and not a thread, like every other wait here.
+
+`Close` stops the accept loop, and the `scope` then waits for every connection
+still being served. Nothing is interrupted; requests in flight finish.
+
+`ListenOn("", 8080, true)` binds every interface and lets another process hold
+the same port, which is how one is replaced by another without dropping
+anything in between.
 
 ## Watching it run
 
@@ -302,7 +379,6 @@ writing the same thing".
 
 ## What is missing
 
-No TLS, and no `Transfer-Encoding: chunked` — a request or response has to
-carry a `Content-Length`, so a reply whose length is not known up front has to
-be buffered before it is sent. There is no cookie or form parsing, and the
-client does not follow redirects or keep connections alive between calls.
+No TLS. There is no cookie or form parsing, and the client does not follow
+redirects, keep connections alive between calls, or send chunked itself — the
+server reads chunked requests but the client does not write them.

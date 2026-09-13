@@ -95,9 +95,10 @@ Sword compiles to native code through LLVM and the language is usable, but it
 is young. Working today: functions with variadic parameters and function values,
 methods, interfaces with dynamic dispatch, generics over both functions and
 structs, floating point, top-level constants, atomics, mutex-protected
-`shared[T]`, structs, enums, slices, strings, pointers, optionals, error unions,
-`switch` with completeness checking over an enum, `defer`, packages, and the
-whole concurrency story with a work-stealing scheduler behind it.
+`shared[T]` with wait and notify, structs, enums, slices, strings, pointers,
+optionals, error unions, `switch` with completeness checking over an enum,
+`defer`, packages, and the whole concurrency story with a work-stealing
+scheduler behind it.
 
 The standard library covers memory (`std/mem`), byte buffers (`std/bytes`),
 byte-level strings (`std/strings`), generic containers (`std/collections`),
@@ -112,7 +113,7 @@ holding a thread: the descriptor goes to a poller and the worker moves on.
 Measured, on ten cores — 4000 concurrent keep-alive connections at 84 000
 requests a second on twelve threads, and 2000 idle ones in 65 MiB.
 
-Not there yet: channels and TLS.
+Not there yet: TLS.
 
 ## License
 
