@@ -89,6 +89,8 @@ test: $(BIN) $(LSP) $(RT) $(RTFLAGS)
 
 # Installed layout: binaries in bin/, the runtime archive in lib/sword and the
 # standard library in share/sword, which is where the compiler looks for them.
+# Editor support goes beside it, without what npm and the VS Code extension's test
+# download into the tree: the second is a whole copy of VS Code.
 install: all
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -d $(DESTDIR)$(PREFIX)/lib/sword
@@ -98,7 +100,8 @@ install: all
 	install -m 644 $(RT) $(DESTDIR)$(PREFIX)/lib/sword/$(RT)
 	install -m 644 $(RTFLAGS) $(DESTDIR)$(PREFIX)/lib/sword/$(RTFLAGS)
 	cp -R std/. $(DESTDIR)$(PREFIX)/share/sword/std/
-	cp -R editors $(DESTDIR)$(PREFIX)/share/sword/
+	tar -cf - --exclude node_modules --exclude .vscode-test --exclude '*.vsix' editors | \
+	    tar -xf - -C $(DESTDIR)$(PREFIX)/share/sword
 	@echo
 	@echo "Installed to $(DESTDIR)$(PREFIX)."
 	@echo "If 'shield' is not found, add $(PREFIX)/bin to your PATH."

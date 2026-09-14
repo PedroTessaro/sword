@@ -4,11 +4,14 @@
 *.ll
 *.o
 *.swp
+*.vsix
 *~
 a.out
 CLAUDE.md
 docs/design.md
+editors/vscode/dist/
 editors/vscode/node_modules/
+editors/vscode/.vscode-test/
 libsword_rt.a
 libsword_rt.flags
 rt/.tls-off

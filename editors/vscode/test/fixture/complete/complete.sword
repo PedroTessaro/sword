@@ -1,0 +1,8 @@
+import "std/mem"
+
+func main() int {
+    mut sys := mem.NewSystem()
+    mut xs := mem.Alloc[u64](&sys, 4) orelse return 1
+    mem.Free(&sys, xs)
+    return 0
+}

@@ -1,13 +1,22 @@
 {
   "name": "sword",
   "displayName": "Sword",
-  "description": "Language support for Sword: diagnostics and theme-aware semantic highlighting.",
+  "description": "The Sword language: diagnostics, completion and semantic colouring from swordls, and running programs and tests.",
   "version": "0.1.0",
-  "publisher": "sword",
-  "engines": { "vscode": "^1.75.0" },
+  "publisher": "tessaro",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PedroTessaro/sword",
+    "directory": "editors/vscode"
+  },
+  "homepage": "https://github.com/PedroTessaro/sword",
+  "bugs": "https://github.com/PedroTessaro/sword/issues",
+  "keywords": ["sword", "shield", "swordls", "systems programming", "concurrency"],
+  "engines": { "vscode": "^1.91.0" },
   "categories": ["Programming Languages"],
   "activationEvents": ["onLanguage:sword"],
-  "main": "./extension.js",
+  "main": "./dist/extension.js",
   "contributes": {
     "languages": [
       {
@@ -24,6 +33,40 @@
         "path": "./syntaxes/sword.tmLanguage.json"
       }
     ],
+    "commands": [
+      {
+        "command": "sword.runFile",
+        "title": "Run File",
+        "category": "Sword",
+        "icon": "$(play)"
+      },
+      {
+        "command": "sword.runTests",
+        "title": "Run Tests in Package",
+        "category": "Sword",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "sword.runTest",
+        "title": "Run Test",
+        "category": "Sword"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        { "command": "sword.runFile", "when": "editorLangId == sword" },
+        { "command": "sword.runTests", "when": "editorLangId == sword" },
+        { "command": "sword.runTest", "when": "false" }
+      ],
+      "editor/title/run": [
+        { "command": "sword.runFile", "when": "resourceLangId == sword", "group": "navigation@1" },
+        { "command": "sword.runTests", "when": "resourceLangId == sword", "group": "navigation@2" }
+      ],
+      "editor/context": [
+        { "command": "sword.runFile", "when": "resourceLangId == sword", "group": "sword@1" },
+        { "command": "sword.runTests", "when": "resourceLangId == sword", "group": "sword@2" }
+      ]
+    },
     "configurationDefaults": {
       "[sword]": {
         "editor.tabSize": 4,
@@ -36,12 +79,29 @@
         "sword.serverPath": {
           "type": "string",
           "default": "swordls",
-          "description": "Path to the swordls binary."
+          "description": "The language server: a name looked up on PATH, or a path."
+        },
+        "sword.shieldPath": {
+          "type": "string",
+          "default": "shield",
+          "description": "The compiler, used to run programs and tests: a name looked up on PATH, or a path."
         }
       }
     }
   },
+  "scripts": {
+    "build": "esbuild extension.js --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js",
+    "vscode:prepublish": "npm run build -- --minify",
+    "package": "vsce package --no-dependencies",
+    "test": "npm run build && node test/run.js"
+  },
   "dependencies": {
-    "vscode-languageclient": "^9.0.1"
+    "vscode-languageclient": "^10.1.1"
+  },
+  "devDependencies": {
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.2",
+    "ovsx": "^1.2.0"
   }
 }
