@@ -34,7 +34,7 @@
       "patterns": [
         {
           "name": "keyword.control.sword",
-          "match": "\\b(if|else|for|in|switch|case|default|return|break|continue|try|catch|orelse|defer|errdefer|scope|spawn|lock|parallel|reduce)\\b"
+          "match": "\\b(if|else|for|in|switch|case|select|default|return|break|continue|try|catch|orelse|defer|errdefer|scope|spawn|lock|parallel|reduce)\\b"
         },
         {
           "name": "keyword.declaration.sword",
