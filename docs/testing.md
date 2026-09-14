@@ -190,6 +190,16 @@ shield test foo_test.sword       # a single file
 shield test std/json -o /tmp/jt  # keep the binary
 ```
 
+`-run` narrows a run to the tests it names, and can be given more than once:
+
+```sh
+shield test std/strings -run TestTrimSpace -run TestEqual
+```
+
+The name is the whole name, not a pattern. One that is not a test in the package
+stops the build, because a typo that ran nothing and passed would read as good
+news.
+
 The exit status is zero only when nothing failed, so it drops into a build
 without ceremony. `make test` in this repository runs the compiler's own tests,
 the language server's, and then every `std/*/*_test.sword` package.

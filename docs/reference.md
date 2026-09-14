@@ -1078,6 +1078,7 @@ shield test <file.sword | directory> [options]
   --mode=<m>      debug | safe | fast | small, default safe
   -O<level>       override the optimisation level
   -p <n>          test only: how many tests may run at once
+  -run <name>     test only: run just this test; repeat for more
   --emit-tokens   stop after lexing
   --emit-ast      stop after parsing and checking
   --emit-ir       stop after lowering, print Sword IR
