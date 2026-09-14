@@ -316,6 +316,19 @@ void watch_for_overflow() {
     sigaction(SIGBUS, &sa, &g_was_bus);
   });
   if (tl_alt.base) return;
+  // A thread may already have one, and then it belongs to somebody else: ASan
+  // gives each of its threads an alternate stack and, when the thread ends, takes
+  // back whatever it finds registered. Replacing that registration means ASan
+  // unmaps memory of ours and leaves its own mapped but forgotten — and the
+  // address it forgot goes back into its allocator, which then writes into a page
+  // that is no longer there. It cost an afternoon: a sanitized run died inside the
+  // allocator, on a thread the sanitizer no longer recognised, with no stack to
+  // show for it. Our handler needs a few hundred bytes, so anybody else's will do.
+  stack_t have;
+  memset(&have, 0, sizeof(have));
+  if (sigaltstack(nullptr, &have) == 0 && have.ss_sp &&
+      !(have.ss_flags & SS_DISABLE))
+    return;
   // The handler writes one short line and leaves, so this is roomy already.
   size_t want = MINSIGSTKSZ > 32 * 1024 ? (size_t)MINSIGSTKSZ : 32 * 1024;
   size_t size = round_up(want, page_size());
