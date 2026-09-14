@@ -147,6 +147,7 @@ make CXXFLAGS="-std=c++17 -g -O1 -fsanitize=address,undefined -Wall -Wextra"
 make test
 ```
 
-`make test` runs two suites: the language tests in `tests/*.sword`, each
-declaring its expected exit status or compile error in a comment, and an LSP
-test that drives the real server over stdio.
+`make test` runs four suites: the language tests in `tests/*.sword`, each
+declaring its expected exit status or compile error in a comment; an LSP test
+that drives the real server over stdio; the standard library's own tests; and
+the editors' indentation, for whichever of vim, Neovim and Emacs is installed.
