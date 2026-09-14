@@ -70,5 +70,36 @@ for target in "$tmp/alone/old.sw" "$tmp/alone" "$tmp/mixed"; do
     fi
 done
 
+# `shield test -run` keeps the tests it names and refuses a name that is not
+# one: a package with a passing and a failing test tells the three apart.
+mkdir -p "$tmp/picked"
+cat > "$tmp/picked/picked_test.sword" <<'EOF'
+import "std/testing"
+
+func TestPasses(mut t *testing.T) !void {
+    try t.Equal(1 + 1, 2)
+}
+
+func TestFails(mut t *testing.T) !void {
+    try t.Equal(1 + 1, 3)
+}
+EOF
+picked() { # expected exit, expected text, arguments
+    want=$1 text=$2
+    shift 2
+    out=$("$shield" test "$tmp/picked" "$@" 2>&1)
+    got=$?
+    if [ "$got" != "$want" ] || ! echo "$out" | grep -qF "$text"; then
+        echo "FAIL shield test $*: exit $got, want $want with '$text'"
+        echo "$out" | sed 's/^/     /'
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+}
+picked 0 "ok    1 tests" -run TestPasses
+picked 1 "2 tests, 1 failed" -run TestPasses -run TestFails
+picked 1 "no test 'TestPass'" -run TestPass
+
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
