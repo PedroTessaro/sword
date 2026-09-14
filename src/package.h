@@ -91,7 +91,9 @@ void clear_overlay(const std::string &path);
 enum LoadMode { LOAD_BUILD, LOAD_TESTS, LOAD_EDITOR };
 
 // `input` is a directory (the whole package) or a single .sword file. Parses it
-// and everything it imports, in dependency order.
+// and everything it imports, in dependency order. `only` narrows a test build to
+// the tests it names.
 bool load_program(const std::string &input,
                   const std::vector<std::string> &search, Program &out,
-                  LoadMode mode = LOAD_BUILD);
+                  LoadMode mode = LOAD_BUILD,
+                  const std::vector<std::string> &only = {});

@@ -27,6 +27,7 @@ void usage() {
         "\n"
         "  -o <path>      output binary (default: a.out)\n"
         "  -p <n>         test only: how many tests may run at once\n"
+        "  -run <name>    test only: run just this test; repeat for more\n"
         "  -I <dir>       add a directory to the package search path\n"
         "  --mode=<m>     debug | safe | fast | small (default safe)\n"
         "                 debug and safe check bounds and integer overflow\n"
@@ -149,6 +150,7 @@ int main(int argc, char **argv) {
   int first = testing ? 2 : 1;
   bool named = false; // whether -o asked for a particular path
   std::string forwarded; // options the test binary reads for itself
+  std::vector<std::string> only; // `-run`: the tests to keep
   if (testing) output = "";
 
   for (int i = first; i < argc; i++) {
@@ -173,6 +175,8 @@ int main(int argc, char **argv) {
     else if (!strcmp(arg, "--emit-llvm")) stage = STAGE_LLVM;
     else if (testing && !strcmp(arg, "-p") && i + 1 < argc)
       forwarded += " -p " + std::string(argv[++i]);
+    else if (testing && !strcmp(arg, "-run") && i + 1 < argc)
+      only.push_back(argv[++i]);
     else if (!strcmp(arg, "-h") || !strcmp(arg, "--help")) { usage(); return 0; }
     else if (arg[0] == '-') { usage(); return 1; }
     else input = arg;
@@ -212,7 +216,7 @@ int main(int argc, char **argv) {
 
   Program prog;
   if (!load_program(input, search, prog,
-                    testing ? LOAD_TESTS : LOAD_BUILD))
+                    testing ? LOAD_TESTS : LOAD_BUILD, only))
     return 1;
 
   TypeTable types;

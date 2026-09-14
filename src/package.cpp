@@ -75,6 +75,7 @@ struct Loader {
   std::vector<std::string> visiting;
   LoadMode mode = LOAD_BUILD;
   std::string label; // what the user named on the command line
+  std::vector<std::string> only; // the tests asked for by name; empty is all
 
   Loader(Program &p, const std::vector<std::string> &s) : prog(p), search(s) {}
 
@@ -96,6 +97,21 @@ struct Loader {
       fprintf(stderr, "shield: no 'Test...' functions in '%s'\n",
               label.empty() ? pkg.dir.c_str() : label.c_str());
       return false;
+    }
+    // A name that matches nothing is a mistake, not a run of zero tests that
+    // passes: a typo must not look like success.
+    for (const std::string &name : only) {
+      if (std::find(found.begin(), found.end(), name) != found.end()) continue;
+      fprintf(stderr, "shield: no test '%s' in '%s'\n", name.c_str(),
+              label.empty() ? pkg.dir.c_str() : label.c_str());
+      return false;
+    }
+    if (!only.empty()) {
+      std::vector<std::string> picked;
+      for (const std::string &name : found)
+        if (std::find(only.begin(), only.end(), name) != only.end())
+          picked.push_back(name);
+      found = picked;
     }
 
     // Testing a program means not running it: its own main is renamed out of
@@ -233,10 +249,11 @@ bool exported(const std::string &name) {
 
 bool load_program(const std::string &input,
                   const std::vector<std::string> &search, Program &out,
-                  LoadMode mode) {
+                  LoadMode mode, const std::vector<std::string> &only) {
   Loader loader(out, search);
   loader.mode = mode;
   loader.label = input;
+  loader.only = only;
 
   if (is_directory(input)) return loader.load("", input, Pos{}) != nullptr;
 
