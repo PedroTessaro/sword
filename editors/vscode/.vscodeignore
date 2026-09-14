@@ -1,0 +1,6 @@
+# The package ships the bundle in dist/, which already carries its dependencies.
+extension.js
+node_modules/**
+test/**
+.vscode-test/**
+*.vsix

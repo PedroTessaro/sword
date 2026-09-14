@@ -1,0 +1,60 @@
+# Publishes editors/vscode when a tag named vscode-v<version> is pushed: to the
+# Visual Studio Marketplace, to Open VSX, which is where Cursor and VSCodium
+# install from, and as a file on a GitHub release. The tag has to name the
+# version in package.json, so a tag cannot publish something other than what it
+# says.
+#
+# It needs two repository secrets. VSCE_PAT is an Azure DevOps personal access
+# token with the Marketplace (Manage) scope, for the publisher `tessaro`. OVSX_PAT
+# is an access token from open-vsx.org, for the namespace `tessaro`.
+name: VS Code extension
+
+on:
+  push:
+    tags: ["vscode-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+
+      - name: The tag names the version in package.json
+        run: |
+          want="vscode-v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "$want" ]; then
+            echo "the tag is $GITHUB_REF_NAME but package.json says $want"
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npx vsce package --no-dependencies --out sword.vsix
+
+      - name: Visual Studio Marketplace
+        run: npx vsce publish --no-dependencies --packagePath sword.vsix
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      - name: Open VSX
+        run: npx ovsx publish sword.vsix
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+
+      - name: GitHub release
+        run: >
+          gh release create "$GITHUB_REF_NAME" sword.vsix
+          --title "VS Code extension ${GITHUB_REF_NAME#vscode-v}"
+          --notes "Install Sword from the Extensions view, or download sword.vsix and run Extensions: Install from VSIX."
+        env:
+          GH_TOKEN: ${{ github.token }}
