@@ -1,7 +1,7 @@
 {
   "name": "sword",
   "displayName": "Sword",
-  "description": "The Sword language: diagnostics, completion and semantic colouring from swordls, and running programs and tests.",
+  "description": "The Sword language: diagnostics, completion and semantic colouring from swordls, running programs and tests, snippets.",
   "version": "0.1.0",
   "publisher": "tessaro",
   "license": "MIT",
@@ -14,7 +14,7 @@
   "bugs": "https://github.com/PedroTessaro/sword/issues",
   "keywords": ["sword", "shield", "swordls", "systems programming", "concurrency"],
   "engines": { "vscode": "^1.91.0" },
-  "categories": ["Programming Languages"],
+  "categories": ["Programming Languages", "Snippets"],
   "activationEvents": ["onLanguage:sword"],
   "main": "./dist/extension.js",
   "contributes": {
@@ -31,6 +31,12 @@
         "language": "sword",
         "scopeName": "source.sword",
         "path": "./syntaxes/sword.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "sword",
+        "path": "./snippets/sword.json"
       }
     ],
     "commands": [

@@ -129,6 +129,13 @@ const checks = {
     assert.strictEqual(await exitOf(terminal, 'Sword: run'), 42);
   },
 
+  async 'a snippet expands'() {
+    const document = await scratch('');
+    await vscode.commands.executeCommand('editor.action.insertSnippet', { langId: 'sword', name: 'Test' });
+    assert.match(document.getText(), /^func TestName\(mut t \*testing\.T\) !void \{\n {4}\n\}$/);
+    await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+  },
+
   async 'Enter follows the scope, and a switch label comes back out'() {
     const text = await typed(
       'func main() int {\nswitch 1 {\ncase 1:\nif true {\nreturn 1\n}\ndefault:\nreturn 0\n}\n}'

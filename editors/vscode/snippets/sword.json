@@ -1,0 +1,47 @@
+{
+  "Function": {
+    "prefix": "func",
+    "body": ["func ${1:name}($2) ${3:!void} {", "\t$0", "}"],
+    "description": "A function"
+  },
+  "Method": {
+    "prefix": "method",
+    "body": ["func (${1:mut s} *${2:Type}) ${3:name}($4) ${5:!void} {", "\t$0", "}"],
+    "description": "A method on a struct"
+  },
+  "Main": {
+    "prefix": "main",
+    "body": ["func main() !int {", "\t$0", "\treturn 0", "}"],
+    "description": "The entry point; its result is the exit status"
+  },
+  "Test": {
+    "prefix": "test",
+    "body": ["func Test${1:Name}(mut t *testing.T) !void {", "\t$0", "}"],
+    "description": "A test, in a _test.sword file that imports std/testing"
+  },
+  "Scope": {
+    "prefix": "scope",
+    "body": ["scope {", "\tfor ${1:i} in 0..${2:n} {", "\t\tspawn ${3:work}($4)", "\t}", "}"],
+    "description": "Tasks that all finish at the closing brace"
+  },
+  "Lock": {
+    "prefix": "lock",
+    "body": ["lock ${1:value} := ${2:&state} {", "\t$0", "}"],
+    "description": "Hold a shared[T] for the block"
+  },
+  "Switch": {
+    "prefix": "switch",
+    "body": ["switch ${1:value} {", "case ${2:first}:", "\t$0", "default:", "}"],
+    "description": "A switch"
+  },
+  "Select": {
+    "prefix": "select",
+    "body": ["select {", "case ${1:v} := <-${2:ch}:", "\t$0", "}"],
+    "description": "Wait on several channels at once"
+  },
+  "Error": {
+    "prefix": "error",
+    "body": ["error ${1:Name} = \"${2:what went wrong}\""],
+    "description": "Declare an error"
+  }
+}
