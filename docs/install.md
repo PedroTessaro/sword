@@ -129,7 +129,7 @@ program finds packages that live beside it.
 type and semantic tokens, which let the editor colour a name by what it
 actually is — a type, a function, a parameter — using your own colour scheme.
 
-Setup for Neovim, Vim and VS Code is in [`editors/`](../editors/README.md).
+Setup for Neovim, Vim, VS Code and Emacs is in [`editors/`](../editors/README.md).
 The short version for Neovim:
 
 ```lua

@@ -23,7 +23,8 @@ mut arena := mem.NewArena(backing[..])
 ```
 
 Each editor below also gets a plain regex grammar, used before the server
-attaches and whenever it is not running.
+attaches and whenever it is not running, and indentation that follows the
+language — see [where a new line lands](#where-a-new-line-lands).
 
 ## Neovim
 
@@ -36,6 +37,10 @@ sword.setup{}           -- finds swordls on PATH or beside the repository
 
 If you installed with `make install`, the paths are
 `~/.local/share/sword/editors/vim` and `~/.local/share/sword/editors/nvim`.
+
+The `editors/vim` directory is what indents: four spaces, a new line placed by
+the brackets around it, and a comment that carries on when you press Enter
+inside one. Neovim turns filetype indentation on by default.
 
 Neovim's built-in LSP client already handles semantic tokens and completion, so no
 plugin is needed. To check both are on, with a `.sw` file open:
@@ -58,7 +63,11 @@ semantic tokens need one of the usual plugins.
 
 ```vim
 set runtimepath+=/path/to/sword/editors/vim
+filetype plugin indent on
 ```
+
+The second line is what loads the indentation. Without it Enter copies the line
+above at best, which is right until the first brace.
 
 One thing to know: vim's own filetype detection claims `*.sw` for Sway, and it
 runs first. The `ftdetect` file here uses `setfiletype`, which does not
@@ -136,6 +145,92 @@ it sits when the extension is inside the compiler's own tree.
 To see how a token was classified, run `Developer: Inspect Editor Tokens and
 Scopes` from the command palette. The *semantic token type* field is what the
 server sent; *textmate scopes* is the fallback.
+
+## Emacs
+
+Emacs 29 or later.
+
+```elisp
+(add-to-list 'load-path "/path/to/sword/editors/emacs")
+(require 'sword-mode)
+```
+
+If you installed with `make install`, the path is
+`~/.local/share/sword/editors/emacs`.
+
+`sword-mode` takes `*.sw` files, colours them, indents them, and offers the
+functions, types, errors and constants of a file to `imenu`. It registers
+`swordls` with Eglot and with lsp-mode as soon as either one is loaded, so what
+is left is starting one of them.
+
+With Eglot, which comes with Emacs:
+
+```elisp
+(add-hook 'sword-mode-hook #'eglot-ensure)
+```
+
+Eglot paints semantic tokens itself from version 1.20 on, which is the one Emacs
+31 comes with; on 29 or 30, a newer Eglot from GNU ELPA does the same. An older
+one brings diagnostics and completion, and the colouring stays with the mode's
+grammar.
+
+With [lsp-mode](https://github.com/emacs-lsp/lsp-mode):
+
+```elisp
+(setq lsp-semantic-tokens-enable t)
+(add-hook 'sword-mode-hook #'lsp-deferred)
+```
+
+lsp-mode asks once which directory is the project. Any directory holding the
+file is a good answer: the server works out the package from the file's own
+directory, not from the project.
+
+The server is `sword-server-command` — a name looked up on PATH, `swordls` by
+default, or a full path — and failing that the `swordls` two directories above
+the mode, which is where it sits inside the compiler's own tree.
+
+To see how a name was painted, put the cursor on it and run `M-x describe-char`.
+With the server attached the face is one of `eglot-semantic-parameter`,
+`lsp-face-semhl-namespace` and the like; `font-lock-` faces are the fallback.
+
+## Where a new line lands
+
+Vim, Neovim and Emacs place a line the same way. It goes one level in from the
+statement that opened the bracket it is inside, which puts the body of a
+signature broken over two lines back at the indentation of the `func`. The labels
+of a `switch` sit at the level of the `switch`. A bracket with something already
+after it on its line is lined up with instead, and so is a condition carried
+onto the next line after `if`, `for`, `return` or `switch`:
+
+```sword
+func (mut s *Server) handle(name string, limit u64,
+                            verbose bool) !u64 {
+    switch s.kind {
+    case Shape.Round:
+        s.n += 1
+    default:
+        s.n = 0
+    }
+    reply := Reply{Status: 200,
+                   Body: s.body}
+    mut room := mem.Alloc[u8](&s.arena, 64) orelse
+        return error.OutOfMemory
+    if s.open &&
+       s.n < limit {
+        return s.n
+    }
+    return 0
+}
+```
+
+`=` in vim and `indent-region` in Emacs apply the same rule to lines that are
+already written. A line inside `/* */` that starts with `*` goes under the star
+of the `/*`; any other line in a comment is left where you put it.
+
+VS Code indents by rules simpler than these: a line after an open bracket goes
+one level in, and a closing bracket, a `case` and a `default` come back out. It
+does not line up under a bracket or under a condition, so those lines are yours
+to align.
 
 ## What the server classifies
 
