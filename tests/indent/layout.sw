@@ -1,0 +1,95 @@
+// Laid out the way the editors lay it out. tests/indent.sh takes the leading
+// space off every line, has each editor put it back, and expects this file.
+
+import "std/io"
+import "std/mem"
+
+error Busy = "the server is busy"
+
+const Pages = 16 *
+    4096
+
+enum Shape u8 {
+    Round
+    Square
+}
+
+struct Server {
+    open bool
+    n    u64
+    kind Shape
+}
+
+struct Point {
+    X, Y i64
+}
+
+func (mut s *Server) handle(name string, port i32, limit u64,
+                            verbose bool) !u64 {
+    if !s.open {
+        return error.Busy
+    }
+    switch s.kind {
+    case Shape.Round:
+        if s.n > limit {
+            s.n = 0
+        } else if s.n == limit {
+            s.n += 1
+        } else {
+            s.n += 2
+        }
+    case Shape.Square:
+        s.n = 1
+    }
+    return s.n
+}
+
+func bump(mut hits *atomic[u64], n u64) {
+    for i in 0..n {
+        hits.Add(1)
+    }
+}
+
+func far(a i64, b i64) bool {
+    return a > 1000 || b > 1000 ||
+           a + b > 1000
+}
+
+func main() !int {
+    mut sys := mem.NewSystem()
+    mut hits := atomic[u64](0)
+
+    // Braces in a string or a comment are not brackets: { ( [
+    brace := "{ ( ["
+    mut s := Server{open: true, n: 0,
+                    kind: Shape.Round}
+    corners := [2]Point{
+        Point{X: 0, Y: 0},
+        Point{X: 1, Y: 1},
+    }
+
+    scope {
+        for i in 0..4 {
+            spawn bump(&hits, 10)
+        }
+    }
+
+    got := s.handle(
+        "local", 8080, 5, false) catch 0
+    mut room := mem.Alloc[u64](&sys, 4) orelse
+        return 1
+    defer mem.Free(&sys, room)
+
+    /*
+     * A block comment carries on its column of stars.
+     */
+    if hits.Load() == 40 &&
+       brace.len == 5 &&
+       corners[1].X == 1 {
+        room[0] = got
+    }
+    if far(Pages, 1) {
+        try io.Println("indentation laid out")
+    }
+    return 42
+}

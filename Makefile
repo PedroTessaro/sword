@@ -85,6 +85,7 @@ test: $(BIN) $(LSP) $(RT) $(RTFLAGS)
 	@./tests/run.sh
 	@./tests/lsp.sh
 	@./tests/std.sh
+	@./tests/indent.sh
 
 # Installed layout: binaries in bin/, the runtime archive in lib/sword and the
 # standard library in share/sword, which is where the compiler looks for them.
