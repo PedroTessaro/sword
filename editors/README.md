@@ -124,15 +124,25 @@ With [coc.nvim](https://github.com/neoclide/coc.nvim), in `coc-settings.json`:
 
 ## VS Code
 
+Install **Sword** from the Extensions view. It is `tessaro.sword`, on the Visual
+Studio Marketplace and on Open VSX, which is where Cursor and VSCodium look. It
+needs `shield` and `swordls` installed, and [its own page](vscode/README.md) lists
+what it does: besides what the server gives, running a file, running a package's
+tests or a single one, and snippets.
+
+To run it from this tree instead:
+
 ```sh
 cd editors/vscode
 npm install
-ln -s "$PWD" ~/.vscode/extensions/sword-0.1.0
+npm run build
+ln -s "$PWD" ~/.vscode/extensions/tessaro.sword-0.1.0
 ```
 
-Reopen VS Code and open a `.sword` file. The extension looks for `swordls` on
-PATH, at `sword.serverPath`, or two directories above itself — which is where
-it sits when the extension is inside the compiler's own tree.
+Reopen VS Code and open a `.sword` file. The extension uses `sword.serverPath`
+and `sword.shieldPath` when they are set, then the `swordls` and `shield` two
+directories above itself — which is where they are when it sits inside the
+compiler's own tree — and then PATH.
 
 To see how a token was classified, run `Developer: Inspect Editor Tokens and
 Scopes` from the command palette. The *semantic token type* field is what the
