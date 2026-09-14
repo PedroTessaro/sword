@@ -13,7 +13,7 @@
       {
         "id": "sword",
         "aliases": ["Sword", "sword"],
-        "extensions": [".sw"],
+        "extensions": [".sword"],
         "configuration": "./language-configuration.json"
       }
     ],

@@ -27,7 +27,7 @@ function activate(context) {
     { run: { command }, debug: { command } },
     {
       documentSelector: [{ scheme: 'file', language: 'sword' }],
-      synchronize: { fileEvents: workspace.createFileSystemWatcher('**/*.sw') },
+      synchronize: { fileEvents: workspace.createFileSystemWatcher('**/*.sword') },
     }
   );
   client.start().catch((err) => {

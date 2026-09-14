@@ -306,7 +306,7 @@ A signature broken over three lines opens its body at the indent of the
   (lsp-register-client
    (make-lsp-client
     :new-connection (lsp-stdio-connection #'sword-server-path)
-    :activation-fn (lambda (filename &optional _) (string-match-p "\\.sw\\'" filename))
+    :activation-fn (lambda (filename &optional _) (string-match-p "\\.sword\\'" filename))
     :server-id 'swordls)))
 
 
@@ -330,7 +330,7 @@ A signature broken over three lines opens its body at the indent of the
   (imenu-add-to-menubar "Sword"))
 
 ;;;###autoload
-(add-to-list 'auto-mode-alist '("\\.sw\\'" . sword-mode))
+(add-to-list 'auto-mode-alist '("\\.sword\\'" . sword-mode))
 
 (provide 'sword-mode)
 

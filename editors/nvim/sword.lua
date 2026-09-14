@@ -19,7 +19,7 @@ function M.setup(opts)
   opts = opts or {}
   local cmd = find_server(opts.server)
 
-  vim.filetype.add({ extension = { sw = 'sword' } })
+  vim.filetype.add({ extension = { sword = 'sword' } })
 
   vim.api.nvim_create_autocmd('FileType', {
     pattern = 'sword',

@@ -1,1 +1,1 @@
-au BufRead,BufNewFile *.sw set filetype=sword
+au BufRead,BufNewFile *.sword setfiletype sword
