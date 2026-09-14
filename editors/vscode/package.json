@@ -24,6 +24,12 @@
         "path": "./syntaxes/sword.tmLanguage.json"
       }
     ],
+    "configurationDefaults": {
+      "[sword]": {
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true
+      }
+    },
     "configuration": {
       "title": "Sword",
       "properties": {
