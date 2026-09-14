@@ -16,7 +16,7 @@ func main() !int {
 ```
 
 ```sh
-shield hello.sw -o hello
+shield hello.sword -o hello
 ./hello
 ```
 
@@ -971,18 +971,18 @@ checking:
 
 ## Packages
 
-A package is a directory. Every `.sw` file in it shares one scope, so there are
-no headers, no forward declarations, and no ordering rules:
+A package is a directory. Every `.sword` file in it shares one scope, so there
+are no headers, no forward declarations, and no ordering rules:
 
 ```
 myproject/
-  main.sw
+  main.sword
   shapes/
-    shape.sw
-    square.sw
+    shape.sword
+    square.sword
 ```
 
-In `main.sw`:
+In `main.sword`:
 
 ```sword
 import "shapes"
@@ -1016,8 +1016,8 @@ func (d Duration) AsMillis() i64 {  // this is the way in
 Imports are searched for next to the file being compiled first, then wherever
 the compiler keeps its standard library. Import cycles are a compile error.
 
-Pointing the compiler at a single `.sw` file compiles that file alone — it will
-not quietly pull in its neighbours. Point it at a directory to compile the
+Pointing the compiler at a single `.sword` file compiles that file alone — it
+will not quietly pull in its neighbours. Point it at a directory to compile the
 whole package.
 
 ## Tasks
@@ -1241,10 +1241,10 @@ loop you care about most. Rather than deciding for the whole language, the mode
 decides per build:
 
 ```sh
-shield program.sw --mode=debug    # checks, no optimisation
-shield program.sw --mode=safe     # checks, optimised (the default)
-shield program.sw --mode=fast     # no checks
-shield program.sw --mode=small    # no checks, optimised for size
+shield program.sword --mode=debug    # checks, no optimisation
+shield program.sword --mode=safe     # checks, optimised (the default)
+shield program.sword --mode=fast     # no checks
+shield program.sword --mode=small    # no checks, optimised for size
 ```
 
 `+%`, `-%` and `*%` wrap on overflow and are never checked, in any mode. That
@@ -1259,10 +1259,10 @@ source, no annotations.
 Every stage of the compiler will show you its work:
 
 ```sh
-shield program.sw --emit-tokens
-shield program.sw --emit-ast
-shield program.sw --emit-ir      # Sword's own IR
-shield program.sw --emit-llvm    # what gets handed to LLVM
+shield program.sword --emit-tokens
+shield program.sword --emit-ast
+shield program.sword --emit-ir      # Sword's own IR
+shield program.sword --emit-llvm    # what gets handed to LLVM
 ```
 
 `--emit-ir` is the one worth knowing about. It prints struct layouts with real
@@ -1270,7 +1270,7 @@ offsets, which is the quickest way to see what the field reordering did.
 
 ## Testing
 
-A file ending `_test.sw` beside your code holds its tests, and `shield test`
+A file ending `_test.sword` beside your code holds its tests, and `shield test`
 finds them:
 
 ```sword

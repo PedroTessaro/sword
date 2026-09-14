@@ -42,8 +42,8 @@ The `editors/vim` directory is what indents: four spaces, a new line placed by
 the brackets around it, and a comment that carries on when you press Enter
 inside one. Neovim turns filetype indentation on by default.
 
-Neovim's built-in LSP client already handles semantic tokens and completion, so no
-plugin is needed. To check both are on, with a `.sw` file open:
+Neovim's built-in LSP client already handles semantic tokens and completion, so
+no plugin is needed. To check both are on, with a `.sword` file open:
 
 ```
 :lua =vim.lsp.get_clients({ bufnr = 0 })[1].server_capabilities.semanticTokensProvider
@@ -68,14 +68,6 @@ filetype plugin indent on
 
 The second line is what loads the indentation. Without it Enter copies the line
 above at best, which is right until the first brace.
-
-One thing to know: vim's own filetype detection claims `*.sw` for Sway, and it
-runs first. The `ftdetect` file here uses `setfiletype`, which does not
-override an existing choice, so set it yourself:
-
-```vim
-autocmd BufRead,BufNewFile *.sw set filetype=sword
-```
 
 With [vim-lsp](https://github.com/prabirshrestha/vim-lsp):
 
@@ -138,7 +130,7 @@ npm install
 ln -s "$PWD" ~/.vscode/extensions/sword-0.1.0
 ```
 
-Reopen VS Code and open a `.sw` file. The extension looks for `swordls` on
+Reopen VS Code and open a `.sword` file. The extension looks for `swordls` on
 PATH, at `sword.serverPath`, or two directories above itself — which is where
 it sits when the extension is inside the compiler's own tree.
 
@@ -158,7 +150,7 @@ Emacs 29 or later.
 If you installed with `make install`, the path is
 `~/.local/share/sword/editors/emacs`.
 
-`sword-mode` takes `*.sw` files, colours them, indents them, and offers the
+`sword-mode` takes `*.sword` files, colours them, indents them, and offers the
 functions, types, errors and constants of a file to `imenu`. It registers
 `swordls` with Eglot and with lsp-mode as soon as either one is loaded, so what
 is left is starting one of them.

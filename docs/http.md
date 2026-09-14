@@ -634,7 +634,8 @@ scope {
 
 `drive` makes its requests, writes what it found into a slice the parent owns,
 and then calls `server.Close()` — which is what lets the scope join and the
-program finish. `tests/http.sw` and `tests/httpkeepalive.sw` are exactly this.
+program finish. `tests/http.sword` and `tests/httpkeepalive.sword` are exactly
+this.
 
 Both tasks are handed `&server`, and neither takes it as `mut`: serving and
 closing only read the descriptor. Mark either parameter `mut` and the race

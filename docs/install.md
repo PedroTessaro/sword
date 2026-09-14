@@ -88,7 +88,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc   # or ~/.bashrc
 ## Checking it works
 
 ```sh
-cat > hello.sw <<'EOF'
+cat > hello.sword <<'EOF'
 import "std/io"
 
 func main() !int {
@@ -97,7 +97,7 @@ func main() !int {
 }
 EOF
 
-shield hello.sw -o hello
+shield hello.sword -o hello
 ./hello
 ```
 
@@ -117,7 +117,7 @@ configuration. It checks, in order:
 `SWORD_ROOT` is the escape hatch if you put things somewhere unusual:
 
 ```sh
-SWORD_ROOT=/opt/sword/share/sword shield program.sw -o program
+SWORD_ROOT=/opt/sword/share/sword shield program.sword -o program
 ```
 
 Imports also resolve relative to the file being compiled, which is how a
@@ -147,6 +147,6 @@ make CXXFLAGS="-std=c++17 -g -O1 -fsanitize=address,undefined -Wall -Wextra"
 make test
 ```
 
-`make test` runs two suites: the language tests in `tests/*.sw`, each declaring
-its expected exit status or compile error in a comment, and an LSP test that
-drives the real server over stdio.
+`make test` runs two suites: the language tests in `tests/*.sword`, each
+declaring its expected exit status or compile error in a comment, and an LSP
+test that drives the real server over stdio.

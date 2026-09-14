@@ -685,7 +685,7 @@ not compile — bind the duration first.
 
 ### `std/testing`
 
-Tests live in `*_test.sw` beside the code and are found by name: `Test...`
+Tests live in `*_test.sword` beside the code and are found by name: `Test...`
 taking one `*T`. See [Testing](testing.md).
 
 ```sword
@@ -1070,8 +1070,8 @@ the request may already have been carried out.
 ## Command line
 
 ```
-shield <file.sw | directory> [options]
-shield test <file.sw | directory> [options]
+shield <file.sword | directory> [options]
+shield test <file.sword | directory> [options]
 
   -o <path>       output binary, default a.out
   -I <dir>        another directory to search for packages
@@ -1084,9 +1084,9 @@ shield test <file.sw | directory> [options]
   --emit-llvm     print the LLVM IR
 ```
 
-A `.sw` file compiles alone. A directory compiles as one package.
+A `.sword` file compiles alone. A directory compiles as one package.
 
-`shield test` builds the package together with its `*_test.sw` files behind a
+`shield test` builds the package together with its `*_test.sword` files behind a
 generated entry point, runs it, and hands back its exit status. Those files are
 left out of every other build. See [Testing](testing.md).
 

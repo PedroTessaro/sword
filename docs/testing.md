@@ -1,10 +1,10 @@
 # Testing
 
-Tests live beside the code they test, in files ending `_test.sw`. `shield test`
-builds them together with the package, runs them, and reports.
+Tests live beside the code they test, in files ending `_test.sword`.
+`shield test` builds them together with the package, runs them, and reports.
 
 ```sword
-// std/strings/strings_test.sw
+// std/strings/strings_test.sword
 package strings
 
 import "std/testing"
@@ -29,9 +29,9 @@ The test file says `package strings`, so it sees the package's own names —
 `TrimSpace`, not `strings.TrimSpace`. It is inside the package, which also means
 it can test what the package does not export.
 
-**A `_test.sw` file is left out of every ordinary build.** That is what lets the
-tests sit next to the code: a program that imports `std/strings` does not carry
-them, and cannot see them.
+**A `_test.sword` file is left out of every ordinary build.** That is what lets
+the tests sit next to the code: a program that imports `std/strings` does not
+carry them, and cannot see them.
 
 ## Failing
 
@@ -186,13 +186,13 @@ see is a test nobody ever comes back to.
 ```sh
 shield test std/strings          # one package
 shield test ./mypkg              # any directory
-shield test foo_test.sw          # a single file
+shield test foo_test.sword       # a single file
 shield test std/json -o /tmp/jt  # keep the binary
 ```
 
 The exit status is zero only when nothing failed, so it drops into a build
 without ceremony. `make test` in this repository runs the compiler's own tests,
-the language server's, and then every `std/*/*_test.sw` package.
+the language server's, and then every `std/*/*_test.sword` package.
 
 Testing a program rather than a library works too: its `main` is set aside for
 the run, not called.
