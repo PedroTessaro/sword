@@ -27,20 +27,35 @@ std::string last_segment(const std::string &path) {
   return cut == std::string::npos ? path : path.substr(cut + 1);
 }
 
-bool is_test_file(const std::string &name) {
-  const std::string suffix = "_test.sw";
+bool ends_with(const std::string &name, const std::string &suffix) {
   return name.size() > suffix.size() &&
          name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
-std::vector<std::string> sword_files(const std::string &dir, bool with_tests) {
-  std::vector<std::string> files;
+bool is_test_file(const std::string &name) {
+  return ends_with(name, "_test.sword");
+}
+
+// Sword files used to end in .sw, which GitHub counts as Sway. One left behind
+// would otherwise be skipped without a word, and whatever it declared would
+// turn up as undefined somewhere else, so it stops the build and says why.
+bool reject_stale(const std::string &path) {
+  if (!ends_with(path, ".sw")) return false;
+  fprintf(stderr, "shield: '%s' ends in .sw; Sword files end in .sword\n",
+          path.c_str());
+  return true;
+}
+
+// The package's files, or false when a file in the directory was refused.
+bool sword_files(const std::string &dir, bool with_tests,
+                 std::vector<std::string> &files) {
+  std::vector<std::string> stale;
   DIR *handle = opendir(dir.c_str());
-  if (!handle) return files;
+  if (!handle) return true;
   while (dirent *entry = readdir(handle)) {
     std::string name = entry->d_name;
-    if (name.size() < 4 || name.compare(name.size() - 3, 3, ".sw") != 0)
-      continue;
+    if (ends_with(name, ".sw")) stale.push_back(dir + "/" + name);
+    if (!ends_with(name, ".sword")) continue;
     // Tests live beside what they test, and an ordinary build must not drag
     // them into every program that imports the package.
     if (!with_tests && is_test_file(name)) continue;
@@ -50,7 +65,8 @@ std::vector<std::string> sword_files(const std::string &dir, bool with_tests) {
   // Directory order is not stable across filesystems; sort so that diagnostics
   // and generated code come out the same every time.
   std::sort(files.begin(), files.end());
-  return files;
+  std::sort(stale.begin(), stale.end());
+  return stale.empty() || !reject_stale(stale.front());
 }
 
 struct Loader {
@@ -110,7 +126,7 @@ struct Loader {
 
   bool parse_files(Package &pkg, const std::vector<std::string> &files) {
     if (files.empty()) {
-      fprintf(stderr, "shield: no .sw files in '%s'\n", pkg.dir.c_str());
+      fprintf(stderr, "shield: no .sword files in '%s'\n", pkg.dir.c_str());
       return false;
     }
     pkg.unit = prog.ast.make(ND_UNIT, Pos{});
@@ -177,7 +193,9 @@ struct Loader {
         if (c == '/') c = '.';
     }
 
-    if (!parse_files(pkg, sword_files(dir, mode != LOAD_BUILD && import_path.empty())))
+    std::vector<std::string> files;
+    if (!sword_files(dir, mode != LOAD_BUILD && import_path.empty(), files) ||
+        !parse_files(pkg, files))
       return nullptr;
     if (mode == LOAD_TESTS && import_path.empty() && !add_test_main(pkg))
       return nullptr;
@@ -224,6 +242,7 @@ bool load_program(const std::string &input,
 
   // A single file is its own package: compiling one file must not silently
   // pull in its neighbours.
+  if (reject_stale(input)) return false;
   out.packages.emplace_back();
   Package &pkg = out.packages.back();
   pkg.dir = parent_of(input);

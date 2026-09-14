@@ -9,7 +9,7 @@ shield="$root/shield"
 
 failed=0
 found=0
-for test_file in "$root"/std/*/*_test.sw; do
+for test_file in "$root"/std/*/*_test.sword; do
     [ -e "$test_file" ] || continue
     pkg=$(dirname "$test_file")
     found=$((found + 1))
@@ -20,7 +20,7 @@ for test_file in "$root"/std/*/*_test.sw; do
 done
 
 if [ "$found" -eq 0 ]; then
-    echo "no *_test.sw files under std/"
+    echo "no *_test.sword files under std/"
     exit 1
 fi
 [ "$failed" -eq 0 ]

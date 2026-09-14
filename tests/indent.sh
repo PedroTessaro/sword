@@ -1,5 +1,5 @@
 #!/bin/sh
-# The editors' indentation, checked against tests/indent/*.sw: the leading space
+# The editors' indentation, checked against tests/indent/*.sword: the leading space
 # comes off every line, each editor that is installed puts it back, and the
 # answer has to be the file. An editor that is not here, or does not start, is
 # skipped and says so rather than passing quietly.
@@ -81,12 +81,12 @@ for editor in vim nvim emacs; do
     fi
     bad=""
     : > "$tmp/diffs"
-    for want in "$root"/tests/indent/*.sw; do
+    for want in "$root"/tests/indent/*.sword; do
         name=$(basename "$want")
         sed 's/^[ 	]*//' "$want" > "$tmp/$name"
-        rm -f "$tmp/got.sw"
-        reindent "$editor" "$tmp/$name" "$tmp/got.sw"
-        if ! diff -u "$want" "$tmp/got.sw" >> "$tmp/diffs" 2>&1; then
+        rm -f "$tmp/got.sword"
+        reindent "$editor" "$tmp/$name" "$tmp/got.sword"
+        if ! diff -u "$want" "$tmp/got.sword" >> "$tmp/diffs" 2>&1; then
             bad="$bad $name"
         fi
     done

@@ -81,15 +81,15 @@ def main():
     pkg_dir = os.path.join(tmp, "pkg")
     for d in (good_dir, bad_dir, pkg_dir):
         os.mkdir(d)
-    good = write(good_dir, "good.sw", "func main() int {\n    x := 21\n    return x * 2\n}\n")
-    bad = write(bad_dir, "bad.sw", "func main() int {\n    return nope\n}\n")
+    good = write(good_dir, "good.sword", "func main() int {\n    x := 21\n    return x * 2\n}\n")
+    bad = write(bad_dir, "bad.sword", "func main() int {\n    return nope\n}\n")
 
     # Two files, one package: the name comes from the other file, and used to be
     # reported as undefined because only the open file was ever loaded.
-    write(pkg_dir, "helper.sw",
+    write(pkg_dir, "helper.sword",
           "struct Point {\n    X i64\n    Y i64\n}\n\n"
           "func twice(n i64) i64 {\n    return n * 2\n}\n")
-    together = write(pkg_dir, "main.sw",
+    together = write(pkg_dir, "main.sword",
                      "func main() int {\n"
                      "    p := Point{X: 3, Y: 4}\n"
                      "    return int(twice(p.X) + p.Y)\n"

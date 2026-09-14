@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
-// A package is a directory: every .sw file in it shares one scope, so there
+// A package is a directory: every .sword file in it shares one scope, so there
 // are no headers and declaration order never matters.
 struct Package {
   std::string import_path; // "std/mem"; empty for the package being compiled
@@ -83,14 +83,14 @@ bool exported(const std::string &name);
 void set_overlay(const std::string &path, std::string text);
 void clear_overlay(const std::string &path);
 
-// What a load is for. A build leaves the `*_test.sw` files out; `shield test`
+// What a load is for. A build leaves the `*_test.sword` files out; `shield test`
 // takes them in and writes the entry point that runs their `Test*` functions.
 // An editor wants the test files too — somebody is editing one — but not an
 // entry point it never asked for, and no complaint about a package that has no
 // `main` because it is a library.
 enum LoadMode { LOAD_BUILD, LOAD_TESTS, LOAD_EDITOR };
 
-// `input` is a directory (the whole package) or a single .sw file. Parses it
+// `input` is a directory (the whole package) or a single .sword file. Parses it
 // and everything it imports, in dependency order.
 bool load_program(const std::string &input,
                   const std::vector<std::string> &search, Program &out,

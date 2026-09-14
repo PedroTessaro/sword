@@ -13,7 +13,7 @@ trap 'rm -rf "$tmp"' EXIT
 pass=0
 fail=0
 
-for src in "$root"/tests/*.sw; do
+for src in "$root"/tests/*.sword; do
     name=$(basename "$src")
     want_exit=$(sed -n 's|^// expect: *||p' "$src" | head -1)
     want_error=$(sed -n 's|^// expect-error: *||p' "$src" | head -1)
@@ -48,6 +48,22 @@ for src in "$root"/tests/*.sw; do
         fail=$((fail + 1))
     elif [ -n "$want_output" ] && ! echo "$output" | grep -qF "$want_output"; then
         echo "FAIL $name: output '$output', want '$want_output'"
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+done
+
+# A file still named .sw is refused by name — alone, as the only file of a
+# package, or beside .sword files — rather than skipped.
+mkdir -p "$tmp/alone" "$tmp/mixed"
+printf 'func main() int {\n    return 0\n}\n' > "$tmp/alone/old.sw"
+printf 'func main() int {\n    return helper()\n}\n' > "$tmp/mixed/main.sword"
+printf 'func helper() int {\n    return 0\n}\n' > "$tmp/mixed/old.sw"
+for target in "$tmp/alone/old.sw" "$tmp/alone" "$tmp/mixed"; do
+    out=$("$shield" "$target" -o "$tmp/prog" 2>&1)
+    if [ $? -eq 0 ] || ! echo "$out" | grep -qF "old.sw' ends in .sw; Sword files end in .sword"; then
+        echo "FAIL stale .sw in $(basename "$target"): $out"
         fail=$((fail + 1))
     else
         pass=$((pass + 1))

@@ -22,8 +22,8 @@ namespace {
 enum Stage { STAGE_TOKENS, STAGE_AST, STAGE_IR, STAGE_LLVM, STAGE_BINARY };
 
 void usage() {
-  fputs("usage: shield <file.sw | directory> [options]\n"
-        "       shield test <file.sw | directory> [options]\n"
+  fputs("usage: shield <file.sword | directory> [options]\n"
+        "       shield test <file.sword | directory> [options]\n"
         "\n"
         "  -o <path>      output binary (default: a.out)\n"
         "  -p <n>         test only: how many tests may run at once\n"
@@ -143,7 +143,7 @@ int main(int argc, char **argv) {
   Mode mode = MODE_SAFE;
   std::string opt_level;
 
-  // `shield test <path>` builds the package together with its `*_test.sw`
+  // `shield test <path>` builds the package together with its `*_test.sword`
   // files, behind an entry point that runs them, then runs it.
   bool testing = argc > 1 && !strcmp(argv[1], "test");
   int first = testing ? 2 : 1;
