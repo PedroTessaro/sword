@@ -264,7 +264,7 @@ char *put_number(char *out, size_t value) {
   return out;
 }
 
-void on_fault(int sig, siginfo_t *info, void *) {
+void on_fault(int sig, siginfo_t *info, void *ctx) {
   if (fault_in_guard(info->si_addr)) {
     char text[128];
     char *end = text;
@@ -277,10 +277,24 @@ void on_fault(int sig, siginfo_t *info, void *) {
     (void)wrote;
     _exit(134); // what a shell reports for a process killed by abort
   }
-  // Somebody else's fault. Put back whatever was handling it and return: the
-  // instruction runs again and the process dies the way it would have, with a
-  // sanitizer's report if one is watching.
-  sigaction(sig, sig == SIGBUS ? &g_was_bus : &g_was_segv, nullptr);
+  // Somebody else's fault, so it goes to whoever was handling it before us —
+  // a sanitizer, usually, and its report is better than anything we could say.
+  // Handing it on rather than putting it back matters: `sigaction` is for the
+  // whole process, so restoring it would leave every later overflow, on every
+  // thread, with no explanation because one wild pointer went past once.
+  const struct sigaction &prev = sig == SIGBUS ? g_was_bus : g_was_segv;
+  if ((prev.sa_flags & SA_SIGINFO) && prev.sa_sigaction) {
+    prev.sa_sigaction(sig, info, ctx);
+    return;
+  }
+  if (prev.sa_handler == SIG_IGN) return;
+  if (prev.sa_handler && prev.sa_handler != SIG_DFL) {
+    prev.sa_handler(sig);
+    return;
+  }
+  // Nobody was handling it: the default action is to die, and the way to get it
+  // is to let the instruction run again with the default back in place.
+  sigaction(sig, &prev, nullptr);
 }
 
 // Where the handler runs, one per thread, from mmap rather than the allocator: a
