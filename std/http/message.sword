@@ -156,7 +156,14 @@ func chunkSize(line string) !u64 {
         if c == 59 || c == 32 { // ';' or a stray space
             break
         }
-        size = size * 16 + (try hexValue(c))
+        digit := try hexValue(c)
+        // Sixteen hex digits fill a u64. A longer size is not one a buffer can
+        // hold, and shifting it in would stop the server rather than this
+        // connection.
+        if size > (18446744073709551615 - digit) / 16 {
+            return error.BadChunk
+        }
+        size = size * 16 + digit
         digits += 1
     }
     if digits == 0 {

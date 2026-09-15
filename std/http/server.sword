@@ -357,7 +357,9 @@ func readRequest(c net.Stream, mut buf []u8, mut req *Request) !u64 {
     }
 
     want := try bodyLength(&req.Headers)
-    if head + want > buf.len {
+    // Against the room left, never added to where the head ends: the length is
+    // the client's to choose, and a sum with it can overflow.
+    if want > buf.len - head {
         return error.BodyTooLarge
     }
     for have < head + want {
@@ -410,7 +412,7 @@ func readChunked(c net.Stream, mut buf []u8, head u64,
         if size == 0 {
             return chunked{body: out - head, used: have}
         }
-        if out + size > buf.len {
+        if size > buf.len - out {
             return error.BodyTooLarge
         }
 

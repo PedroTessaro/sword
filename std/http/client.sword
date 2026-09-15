@@ -169,7 +169,9 @@ func readResponse(c net.Stream, mut buf []u8) !reply {
     }
 
     want := try strings.ParseU64(length)
-    if head + want > buf.len {
+    // The server chooses the length, so it is compared with the room left
+    // rather than added to anything.
+    if want > buf.len - head {
         return error.BodyTooLarge
     }
     for have < head + want {

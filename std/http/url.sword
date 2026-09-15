@@ -70,7 +70,13 @@ func ParseURL(text string, fromHost string, fromPort i32) !URL {
         }
     } else {
         host = authority[0..colon]
-        port = i32(try strings.ParseU64(authority[colon+1..authority.len]))
+        number := try strings.ParseU64(authority[colon+1..authority.len])
+        // A port is sixteen bits. A larger number is not one, and converted
+        // anyway it would come out as some other port.
+        if number > 65535 {
+            return error.BadURL
+        }
+        port = i32(number)
     }
     if host.len == 0 {
         return error.BadURL
