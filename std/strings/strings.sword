@@ -120,7 +120,14 @@ func ParseU64(s string) !u64 {
         if c < 48 || c > 57 {
             return error.NotANumber
         }
-        value = value * 10 + u64(c - 48)
+        digit := u64(c - 48)
+        // Past the largest u64 there is no number to hand back, and in a checked
+        // build the multiplication would stop the whole program instead: the
+        // text is often somebody else's, a header or a document.
+        if value > (18446744073709551615 - digit) / 10 {
+            return error.NotANumber
+        }
+        value = value * 10 + digit
     }
     return value
 }
