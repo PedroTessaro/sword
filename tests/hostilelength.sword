@@ -1,0 +1,131 @@
+// expect: 42
+// expect-output: numbers from the other end are refused
+// A length, a chunk size or a status code is whatever the other end sends. One
+// too long to fit used to overflow while it was parsed, and in a checked build
+// that stopped the whole process: a single request took a server down, a single
+// reply a client. Each is now refused like any other malformed message, and the
+// process carries on serving.
+
+import "std/http"
+import "std/io"
+import "std/mem"
+import "std/net"
+import "std/strings"
+
+struct Hello {
+    n u64
+}
+
+func (h *Hello) Serve(req *http.Request, mut res *http.Response) !void {
+    try res.Text(200, "hello")
+}
+
+func serve(s *http.Server, h *Hello) !void {
+    try s.ServeWith(h, 32)
+}
+
+// Raw bytes out, and whatever comes back until the other end closes.
+func ask(port i32, request string, mut into []u8) !u64 {
+    mut c := try net.Dial("127.0.0.1", port)
+    try c.WriteString(request)
+    mut have u64 = 0
+    for {
+        n := c.Read(into[have..into.len]) catch 0
+        if n == 0 {
+            break
+        }
+        have += n
+    }
+    c.Close()
+    return have
+}
+
+func attack(port i32, mut score *atomic[u64], s *http.Server) !void {
+    mut room := [4096]u8{}
+    hostile := [4]string{
+        "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 99999999999999999999\r\n\r\n",
+        "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 18446744073709551615\r\n\r\n",
+        "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nfffffffffffffffffff\r\n",
+        "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nffffffffffffffff\r\n",
+    }
+    for request in hostile {
+        refused := ask(port, request, room[..]) catch 0
+        // Still there, and still answering somebody else.
+        n := ask(port, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", room[..]) catch 0
+        if strings.Contains(string(room[0..n]), "200 OK") {
+            score.Add(1)
+        }
+    }
+    s.Close()
+}
+
+// A server that answers one connection with a head it has made up.
+func lie(l *net.Listener, reply string) !void {
+    mut c := try l.Accept()
+    mut room := [1024]u8{}
+    heard := c.Read(room[..]) catch 0
+    c.WriteString(reply) catch {}
+    c.Close()
+}
+
+func believe(port i32, mut refused *atomic[u64]) !void {
+    mut backing := [16384]u8{}
+    mut arena := mem.NewArena(backing[..])
+    got := http.Get("127.0.0.1", port, "/", &arena) catch {
+        refused.Add(1)
+        return
+    }
+}
+
+func refusesURL(text string) bool {
+    got := http.ParseURL(text, "", 0) catch {
+        return true
+    }
+    return false
+}
+
+func main() !int {
+    mut h := Hello{n: 0}
+    mut srv := try http.Listen(0)
+    port := srv.Port()
+    mut score := atomic[u64](0)
+    scope {
+        spawn serve(&srv, &h)
+        spawn attack(port, &score, &srv)
+    }
+    if score.Load() != 4 {
+        try io.Printf("the server answered after {} of 4\n", score.Load())
+        return 1
+    }
+
+    replies := [3]string{
+        "HTTP/1.1 200 OK\r\nContent-Length: 99999999999999999999\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Length: 18446744073709551615\r\n\r\n",
+        "HTTP/1.1 99999999999999999999 OK\r\nContent-Length: 0\r\n\r\n",
+    }
+    for reply in replies {
+        mut l := try net.Listen(0)
+        at := l.Port()
+        mut refused := atomic[u64](0)
+        scope {
+            spawn lie(&l, reply)
+            spawn believe(at, &refused)
+        }
+        l.Close()
+        if refused.Load() != 1 {
+            return 2
+        }
+    }
+
+    // A port is sixteen bits; a larger one used to be cut down to some other
+    // port, and a long enough one overflowed like the lengths above.
+    if !refusesURL("http://example.com:70000/") || !refusesURL("http://example.com:99999999999999999999/") {
+        return 3
+    }
+    if refusesURL("http://example.com:65535/") {
+        return 4
+    }
+
+    try io.Print("numbers from the other end are refused\n")
+    return 42
+}

@@ -55,6 +55,27 @@ func TestHelpers(mut t *testing.T) !void {
     try t.Equal(doc.GetNumber(root, "name", -1.0), -1.0)
 }
 
+// An exponent is the document's to choose. One too long to count used to stop
+// the program, and one merely large ran a loop for as long as it said; both
+// are infinity or zero, the same as a short exponent past a double's range.
+func TestHugeExponents(mut t *testing.T) !void {
+    text := "[1e99999999999999999999, 1e-99999999999999999999, 1e999999999999, 1e400, 1e-400, 2.5e2]"
+    mut doc := try Parse([]u8(text), t.Mem)
+    root := doc.Root()
+    try t.Equal(doc.Len(root), 6)
+    want := [6]f64{1.0, 0.0, 1.0, 1.0, 0.0, 250.0}
+    for i in 0..6 {
+        at := doc.At(root, u64(i)) orelse return t.Fatalf("element {} is missing", i)
+        got := doc.Number(at)
+        if want[i] == 1.0 {
+            // Infinity is the only double larger than the largest finite one.
+            try t.Equal(got > 1.7976931348623157e308, true)
+        } else {
+            try t.Equal(got, want[i])
+        }
+    }
+}
+
 // Every one of these is malformed somewhere, and none of them may come back
 // with a document.
 func TestRejectsBadInput(mut t *testing.T) !void {

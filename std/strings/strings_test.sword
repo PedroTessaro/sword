@@ -42,10 +42,12 @@ func TestEqualFold(mut t *testing.T) !void {
 func TestParseU64(mut t *testing.T) !void {
     try t.Equal(try ParseU64("0"), 0)
     try t.Equal(try ParseU64("4095"), 4095)
+    try t.Equal(try ParseU64("18446744073709551615"), u64(18446744073709551615))
 
     // One input per subtest, so a failure says which one. The input travels in
-    // `t.Arg`, because a subtest body cannot capture anything.
-    bad := [4]string{"", "12a", "-1", " 7"}
+    // `t.Arg`, because a subtest body cannot capture anything. The last two do not
+    // fit in a u64, and used to stop the program instead of coming back refused.
+    bad := [6]string{"", "12a", "-1", " 7", "18446744073709551616", "99999999999999999999"}
     for s in bad {
         try t.RunWith(s, rejects, s)
     }
