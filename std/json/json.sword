@@ -308,8 +308,15 @@ func parseNumber(s string) !f64 {
             i += 1
         }
         mut power u64 = 0
+        // The exponent is the document's to choose. Counted in full, a long one
+        // overflows and a merely large one runs the loop below for as long as it
+        // says. From a thousand on, every mantissa a double can hold has already
+        // gone to infinity or to zero, so the rest of the digits are read and not
+        // counted.
         for i < s.len && s[i] >= 48 && s[i] <= 57 {
-            power = power * 10 + u64(s[i] - 48)
+            if power < 1000 {
+                power = power * 10 + u64(s[i] - 48)
+            }
             i += 1
         }
         for k in 0..power {
