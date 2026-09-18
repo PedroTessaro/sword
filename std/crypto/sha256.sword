@@ -1,0 +1,186 @@
+package crypto
+
+// SHA-256, FIPS 180-4. Nothing here allocates: a hasher is a value, a digest is
+// an array, and the caller decides where either one lives. That is deliberate —
+// this is the package a request handler reaches for, and a hash that needed an
+// arena would be a hash nobody uses on the hot path.
+
+const Sha256Size = 32
+const sha256Block = 64
+
+// The message schedule and the running state, plus whatever arrived that has
+// not filled a block yet. `total` counts bytes; the padding writes bits.
+struct Sha256 {
+    state  [8]u32
+    block  [64]u8
+    filled u64
+    total  u64
+}
+
+func NewSha256() Sha256 {
+    return Sha256{
+        state: [8]u32{0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+                      0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19},
+        block: [64]u8{},
+        filled: 0,
+        total: 0,
+    }
+}
+
+// Every addition in SHA-256 is modulo 2^32, and `+` is checked in debug and
+// safe builds — rightly, because a wrap nobody asked for is a bug. Here the
+// wrap is the specification, so it is written out: widened to u64 the sum
+// cannot overflow, and the mask is the wrap. One function, so the day the
+// language grows a wrapping operator there is one line to change.
+func add32(a u32, b u32) u32 {
+    return u32((u64(a) + u64(b)) & 0xffffffff)
+}
+
+// `n` is 1..31 in every call below. A rotate by the full width would shift a
+// u32 by 32, which has no answer.
+func rotr(x u32, n u32) u32 {
+    return (x >> n) | (x << (32 - n))
+}
+
+// The round constants, the first 32 bits of the fractional parts of the cube
+// roots of the first 64 primes. A `const` holds one scalar, so a table has to
+// arrive as a value; the compression function keeps it in a local.
+func roundConstants() [64]u32 {
+    return [64]u32{
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+        0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+        0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+        0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+        0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+        0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+        0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    }
+}
+
+func (mut h *Sha256) compress() {
+    k := roundConstants()
+    mut w := [64]u32{}
+
+    for i in 0..16 {
+        base := i * 4
+        w[i] = u32(h.block[base]) << 24 | u32(h.block[base + 1]) << 16 |
+               u32(h.block[base + 2]) << 8 | u32(h.block[base + 3])
+    }
+    for i in 16..64 {
+        s0 := rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3)
+        s1 := rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10)
+        w[i] = add32(add32(add32(w[i - 16], s0), w[i - 7]), s1)
+    }
+
+    mut a := h.state[0]
+    mut b := h.state[1]
+    mut c := h.state[2]
+    mut d := h.state[3]
+    mut e := h.state[4]
+    mut f := h.state[5]
+    mut g := h.state[6]
+    mut s := h.state[7]
+
+    for i in 0..64 {
+        // `~` is not an operator here, and xor with all ones is the same thing.
+        ch := (e & f) ^ ((e ^ 0xffffffff) & g)
+        big1 := rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)
+        t1 := add32(add32(add32(add32(s, big1), ch), k[i]), w[i])
+
+        maj := (a & b) ^ (a & c) ^ (b & c)
+        big0 := rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)
+        t2 := add32(big0, maj)
+
+        s = g
+        g = f
+        f = e
+        e = add32(d, t1)
+        d = c
+        c = b
+        b = a
+        a = add32(t1, t2)
+    }
+
+    h.state[0] = add32(h.state[0], a)
+    h.state[1] = add32(h.state[1], b)
+    h.state[2] = add32(h.state[2], c)
+    h.state[3] = add32(h.state[3], d)
+    h.state[4] = add32(h.state[4], e)
+    h.state[5] = add32(h.state[5], f)
+    h.state[6] = add32(h.state[6], g)
+    h.state[7] = add32(h.state[7], s)
+}
+
+// Takes any amount at a time: what completes a block is compressed, the rest
+// waits. A caller streaming a file never has to think about the block size.
+func (mut h *Sha256) Write(p []u8) {
+    h.total += p.len
+    mut at u64 = 0
+    for at < p.len {
+        mut n := p.len - at
+        room := sha256Block - h.filled
+        if n > room {
+            n = room
+        }
+        for j in 0..n {
+            h.block[h.filled + j] = p[at + j]
+        }
+        h.filled += n
+        at += n
+        if h.filled == sha256Block {
+            h.compress()
+            h.filled = 0
+        }
+    }
+}
+
+// Finishes the message and returns the digest. The hasher is spent afterwards:
+// padding is part of the message, so there is nothing sensible to append to.
+func (mut h *Sha256) Sum() [Sha256Size]u8 {
+    bits := h.total * 8
+
+    h.block[h.filled] = 0x80
+    h.filled += 1
+    // The length needs the last eight bytes. If they are gone, this block ends
+    // padded with zeros and the length opens the next one.
+    if h.filled > sha256Block - 8 {
+        for i in h.filled..sha256Block {
+            h.block[i] = 0
+        }
+        h.compress()
+        h.filled = 0
+    }
+    for i in h.filled..sha256Block - 8 {
+        h.block[i] = 0
+    }
+    for i in 0..8 {
+        h.block[sha256Block - 8 + i] = u8((bits >> u64((7 - i) * 8)) & 0xff)
+    }
+    h.compress()
+    h.filled = 0
+
+    mut out := [Sha256Size]u8{}
+    for i in 0..8 {
+        v := h.state[i]
+        out[i * 4] = u8((v >> 24) & 0xff)
+        out[i * 4 + 1] = u8((v >> 16) & 0xff)
+        out[i * 4 + 2] = u8((v >> 8) & 0xff)
+        out[i * 4 + 3] = u8(v & 0xff)
+    }
+    return out
+}
+
+func Sha256Of(data []u8) [Sha256Size]u8 {
+    mut h := NewSha256()
+    h.Write(data)
+    return h.Sum()
+}

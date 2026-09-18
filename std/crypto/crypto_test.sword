@@ -1,0 +1,73 @@
+package crypto
+
+import "std/testing"
+
+// Inside the package, so a failure names what the package declares.
+
+// The digest compared as text: a mismatch that prints two hex strings says
+// which one, and comparing 32 bytes one by one does not.
+func hex(d [Sha256Size]u8, mut into []u8) string {
+    digits := "0123456789abcdef"
+    for i in 0..Sha256Size {
+        into[i * 2] = digits[u64(d[i] >> 4)]
+        into[i * 2 + 1] = digits[u64(d[i] & 0x0f)]
+    }
+    return string(into[0..Sha256Size * 2])
+}
+
+// FIPS 180-4 and RFC 6234. The empty message matters more than it looks: it is
+// all padding, and nothing else exercises that path alone.
+func TestSha256Vectors(mut t *testing.T) !void {
+    mut buf := [64]u8{}
+
+    try t.Equal(hex(Sha256Of([]u8("")), buf[0..64]),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+    try t.Equal(hex(Sha256Of([]u8("abc")), buf[0..64]),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+
+    // 56 bytes: one byte of padding fits, the length does not, so this is the
+    // message that needs a second block for nothing but its own size.
+    try t.Equal(hex(Sha256Of([]u8(
+        "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")), buf[0..64]),
+        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1")
+
+    // 112 bytes: exactly two blocks of message, so the padding opens a third.
+    long := "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"
+    try t.Equal(hex(Sha256Of([]u8(long)), buf[0..64]),
+        "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1")
+}
+
+// The long vector, written a thousand bytes at a time: the answer is only right
+// if the buffering carries state across calls that do not land on a block.
+func TestSha256Streaming(mut t *testing.T) !void {
+    mut buf := [64]u8{}
+    mut chunk := [1000]u8{}
+    for i in 0..1000 {
+        chunk[i] = 97
+    }
+
+    mut h := NewSha256()
+    for i in 0..1000 {
+        h.Write(chunk[0..1000])
+    }
+    try t.Equal(hex(h.Sum(), buf[0..64]),
+        "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0")
+}
+
+// Every split of the same message has to give the same digest. 64 is the block
+// size and 55, 56, 57 surround the point where the length stops fitting.
+func TestSha256SplitsAgree(mut t *testing.T) !void {
+    mut want := [64]u8{}
+    mut got := [64]u8{}
+    message := []u8("the quick brown fox jumps over the lazy dog, twice over, which is enough bytes to cross a block boundary or three")
+
+    whole := hex(Sha256Of(message), want[0..64])
+    cuts := [6]u64{1, 55, 56, 57, 63, 64}
+    for i in 0..6 {
+        at := cuts[i]
+        mut h := NewSha256()
+        h.Write(message[0..at])
+        h.Write(message[at..message.len])
+        try t.Equal(hex(h.Sum(), got[0..64]), whole)
+    }
+}
