@@ -620,6 +620,41 @@ try w.EndArray()
 try w.EndObject()
 ```
 
+### `std/crypto`
+
+Nothing here allocates. A hasher is a value and a digest is an array of bytes,
+so hashing inside a request handler costs no arena and no allocator parameter.
+
+```sword
+const Sha256Size = 32
+
+func Sha256Of(data []u8) [Sha256Size]u8    // the whole message at once
+
+func NewSha256() Sha256
+func (mut h *Sha256) Write(p []u8)         // any amount at a time
+func (mut h *Sha256) Sum() [Sha256Size]u8
+```
+
+`Write` keeps whatever does not fill a block, so a file can be hashed as it is
+read rather than after it is read:
+
+```sword
+mut h := crypto.NewSha256()
+mut buf := [32768]u8{}
+for {
+    n := try file.Read(buf[0..32768])
+    if n == 0 {
+        break
+    }
+    h.Write(buf[0..n])
+}
+digest := h.Sum()
+```
+
+`Sum` finishes the message. The padding it writes is part of what was hashed,
+so there is nothing sensible to append afterwards: a hasher is spent once its
+digest has been taken, and another message needs another hasher.
+
 ### `std/os`
 
 ```sword
