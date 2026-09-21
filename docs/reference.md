@@ -612,6 +612,20 @@ bool or a string — so a table from a key code to a command needs no string to
 look itself up with. `NewMap` is the string case, which most of them are; a key
 of another kind is refused where the map is instantiated.
 
+Sorting, over a comparison that is an ordinary function value:
+
+```sword
+func Sort[T](mut xs []T, less func(T, T) bool)
+func BinarySearch[T](xs []T, target T, less func(T, T) bool) ?u64
+```
+
+`Sort` is an introsort — quicksort, insertion sort for short runs, heapsort
+once the recursion goes deeper than it should — so an adversarial input costs
+n log n rather than n². It allocates nothing and it is not stable.
+`BinarySearch` answers the leftmost index that compares equal, and nil when
+there is none; a slice that is not sorted by the same `less` gives a wrong
+answer rather than a slow one.
+
 ### `std/fmt`
 
 Everything writes into a sink rather than one particular buffer, so the same

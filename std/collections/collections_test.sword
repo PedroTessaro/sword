@@ -97,6 +97,109 @@ func label(mut t *testing.T, i u64) !string {
     return string(room[0..at])
 }
 
+func lessU64(a u64, b u64) bool {
+    return a < b
+}
+
+func lessText(a string, b string) bool {
+    mut i u64 = 0
+    for i < a.len && i < b.len {
+        if a[i] != b[i] {
+            return a[i] < b[i]
+        }
+        i += 1
+    }
+    return a.len < b.len
+}
+
+// A run long enough to go through every part of the sort: quicksort at the
+// top, insertion sort at the bottom, and the pivot choice in between.
+func TestSortAndSearch(mut t *testing.T) !void {
+    mut xs := [400]u64{}
+    mut seed u64 = 12345
+    for i in 0..xs.len {
+        seed = seed *% 6364136223846793005 +% 1442695040888963407
+        xs[i] = seed >> 33
+    }
+    Sort[u64](xs[..], lessU64)
+
+    for i in 1..xs.len {
+        try t.Require(xs[i - 1] <= xs[i])
+    }
+    // Every element is findable, and the answer is the element itself.
+    for i in 0..xs.len {
+        at := BinarySearch[u64](xs[..], xs[i], lessU64) orelse
+            return t.Fatalf("lost an element the sort kept")
+        try t.Equal(xs[at], xs[i])
+    }
+    // A value between two of them is not there. The generator is 31 bits wide,
+    // so nothing can equal this.
+    if found := BinarySearch[u64](xs[..], 1 << 62, lessU64) {
+        try t.Failf("found a value that is not in the slice")
+    }
+}
+
+// The shapes that break a careless sort: nothing, one, two, all the same, and
+// a slice that is already in order or exactly against it.
+func TestSortEdges(mut t *testing.T) !void {
+    mut none := [1]u64{7}
+    Sort[u64](none[0..0], lessU64)
+    Sort[u64](none[..], lessU64)
+    try t.Equal(none[0], 7)
+
+    mut two := [2]u64{2, 1}
+    Sort[u64](two[..], lessU64)
+    try t.Equal(two[0], 1)
+    try t.Equal(two[1], 2)
+
+    mut same := [40]u64{}
+    for i in 0..same.len {
+        same[i] = 5
+    }
+    Sort[u64](same[..], lessU64)
+    try t.Equal(same[0], 5)
+    try t.Equal(same[39], 5)
+
+    mut down := [64]u64{}
+    for i in 0..down.len {
+        down[i] = u64(down.len - i)
+    }
+    Sort[u64](down[..], lessU64)
+    for i in 1..down.len {
+        try t.Require(down[i - 1] <= down[i])
+    }
+    Sort[u64](down[..], lessU64) // already sorted, which is the other extreme
+    try t.Equal(down[0], 1)
+    try t.Equal(down[63], 64)
+}
+
+// The fallback the budget exists for. Reached by hand here: what makes
+// quicksort go quadratic depends on the pivot rule, and a test that has to
+// guess at one proves nothing.
+func TestHeapSortPath(mut t *testing.T) !void {
+    mut xs := [50]u64{}
+    for i in 0..xs.len {
+        xs[i] = u64((i * 37) % 50)
+    }
+    sortRange[u64](xs[..], lessU64, 0)
+    for i in 0..xs.len {
+        try t.Equal(xs[i], u64(i))
+    }
+}
+
+func TestSortStrings(mut t *testing.T) !void {
+    mut names := [5]string{"grace", "ada", "alan", "edsger", "ada"}
+    Sort[string](names[..], lessText)
+    try t.Equal(names[0], "ada")
+    try t.Equal(names[1], "ada")
+    try t.Equal(names[2], "alan")
+    try t.Equal(names[4], "grace")
+
+    at := BinarySearch[string](names[..], "edsger", lessText) orelse
+        return t.Fatalf("a name that is there was not found")
+    try t.Equal(names[at], "edsger")
+}
+
 // A key that is not a string: the table from a key code to what it does is the
 // case that asked for this.
 func TestMapOfNumbers(mut t *testing.T) !void {

@@ -1,0 +1,158 @@
+package collections
+
+// Introsort: quicksort while it behaves, insertion sort for short runs, and
+// heapsort once the recursion has gone deeper than it should. The last part is
+// what keeps an adversarial or already-sorted input from costing n², which a
+// plain quicksort in a standard library eventually meets.
+//
+// Nothing here allocates: the comparison is a function value, which carries no
+// state because nothing in Sword can. The order is not stable — two elements
+// neither of which is less than the other may come out either way round.
+func Sort[T](mut xs []T, less func(T, T) bool) {
+    if xs.len < 2 {
+        return
+    }
+    sortRange[T](xs, less, depthLimit(xs.len))
+}
+
+// Below this a quicksort is slower than walking the elements into place.
+const sortSmall = 12
+
+// Twice the depth a perfectly balanced quicksort would need. Past it the
+// partitioning is going badly enough to be worth giving up on.
+func depthLimit(n u64) u64 {
+    mut levels u64 = 0
+    mut left := n
+    for left > 1 {
+        left /= 2
+        levels += 1
+    }
+    return levels * 2
+}
+
+func sortRange[T](mut xs []T, less func(T, T) bool, budget u64) {
+    mut part := xs
+    mut left := budget
+    for part.len > sortSmall {
+        if left == 0 {
+            heapSort[T](part, less)
+            return
+        }
+        left -= 1
+        at := partition[T](part, less)
+        // The smaller side goes to the call and the larger one stays in the
+        // loop, which is what holds the recursion to log2(n) frames.
+        if at < part.len - at - 1 {
+            sortRange[T](part[0..at], less, left)
+            part = part[at + 1..part.len]
+        } else {
+            sortRange[T](part[at + 1..part.len], less, left)
+            part = part[0..at]
+        }
+    }
+    insertionSort[T](part, less)
+}
+
+// Lomuto, with the median of the first, middle and last element as the pivot:
+// three comparisons to stop an already-sorted slice from being the worst case.
+// Answers where the pivot ended up.
+func partition[T](mut xs []T, less func(T, T) bool) u64 {
+    last := xs.len - 1
+    mid := xs.len / 2
+    if less(xs[mid], xs[0]) {
+        swap[T](xs, 0, mid)
+    }
+    if less(xs[last], xs[mid]) {
+        swap[T](xs, mid, last)
+        if less(xs[mid], xs[0]) {
+            swap[T](xs, 0, mid)
+        }
+    }
+    // The three are in order now; the pivot goes to the end, out of the way.
+    swap[T](xs, mid, last)
+    pivot := xs[last]
+
+    mut at u64 = 0
+    for i in 0..last {
+        if less(xs[i], pivot) {
+            swap[T](xs, at, i)
+            at += 1
+        }
+    }
+    swap[T](xs, at, last)
+    return at
+}
+
+func insertionSort[T](mut xs []T, less func(T, T) bool) {
+    if xs.len < 2 {
+        return
+    }
+    for i in 1..xs.len {
+        mut j := i
+        for j > 0 && less(xs[j], xs[j - 1]) {
+            swap[T](xs, j, j - 1)
+            j -= 1
+        }
+    }
+}
+
+func heapSort[T](mut xs []T, less func(T, T) bool) {
+    mut i := xs.len / 2
+    for i > 0 {
+        i -= 1
+        siftDown[T](xs, i, xs.len, less)
+    }
+    mut end := xs.len
+    for end > 1 {
+        end -= 1
+        swap[T](xs, 0, end)
+        siftDown[T](xs, 0, end, less)
+    }
+}
+
+func siftDown[T](mut xs []T, from u64, end u64, less func(T, T) bool) {
+    mut root := from
+    for {
+        child := root * 2 + 1
+        if child >= end {
+            return
+        }
+        mut pick := child
+        if child + 1 < end && less(xs[child], xs[child + 1]) {
+            pick = child + 1
+        }
+        if !less(xs[root], xs[pick]) {
+            return
+        }
+        swap[T](xs, root, pick)
+        root = pick
+    }
+}
+
+func swap[T](mut xs []T, a u64, b u64) {
+    held := xs[a]
+    xs[a] = xs[b]
+    xs[b] = held
+}
+
+// Where `target` is, in a slice sorted by the same `less` — the leftmost of
+// them when several compare equal. Nil when it is not there. Nothing here can
+// check that the slice is sorted, and an unsorted one gives a wrong answer
+// rather than a slow one.
+func BinarySearch[T](xs []T, target T, less func(T, T) bool) ?u64 {
+    mut lo u64 = 0
+    mut hi := xs.len
+    for lo < hi {
+        mid := lo + (hi - lo) / 2
+        if less(xs[mid], target) {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    // lo is where it would go; whether it is there is one more comparison.
+    if lo < xs.len && !less(target, xs[lo]) {
+        return lo
+    }
+    return nil
+}
