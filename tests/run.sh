@@ -3,6 +3,10 @@
 #   // expect: <exit status>        must compile, run, and exit with that code
 #   // expect-output: <line>        stdout must contain that line
 #   // expect-error: <substring>    must fail to compile with that message
+#
+# Compiler output goes through printf rather than echo: /bin/sh here reads
+# backslash escapes in echo's argument, so a diagnostic that mentions '\x1b'
+# arrived at grep with an ESC in it and matched nothing.
 set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -24,9 +28,9 @@ for src in "$root"/tests/*.sword; do
         if [ $? -eq 0 ]; then
             echo "FAIL $name: compiled, expected error '$want_error'"
             fail=$((fail + 1))
-        elif ! echo "$out" | grep -qF "$want_error"; then
+        elif ! printf '%s\n' "$out" | grep -qF "$want_error"; then
             echo "FAIL $name: wrong error"
-            echo "$out" | sed 's/^/     /'
+            printf '%s\n' "$out" | sed 's/^/     /'
             fail=$((fail + 1))
         else
             pass=$((pass + 1))
@@ -46,7 +50,7 @@ for src in "$root"/tests/*.sword; do
     if [ "$got" != "$want_exit" ]; then
         echo "FAIL $name: exit $got, want $want_exit"
         fail=$((fail + 1))
-    elif [ -n "$want_output" ] && ! echo "$output" | grep -qF "$want_output"; then
+    elif [ -n "$want_output" ] && ! printf '%s\n' "$output" | grep -qF "$want_output"; then
         echo "FAIL $name: output '$output', want '$want_output'"
         fail=$((fail + 1))
     else
@@ -62,7 +66,7 @@ printf 'func main() int {\n    return helper()\n}\n' > "$tmp/mixed/main.sword"
 printf 'func helper() int {\n    return 0\n}\n' > "$tmp/mixed/old.sw"
 for target in "$tmp/alone/old.sw" "$tmp/alone" "$tmp/mixed"; do
     out=$("$shield" "$target" -o "$tmp/prog" 2>&1)
-    if [ $? -eq 0 ] || ! echo "$out" | grep -qF "old.sw' ends in .sw; Sword files end in .sword"; then
+    if [ $? -eq 0 ] || ! printf '%s\n' "$out" | grep -qF "old.sw' ends in .sw; Sword files end in .sword"; then
         echo "FAIL stale .sw in $(basename "$target"): $out"
         fail=$((fail + 1))
     else
@@ -122,9 +126,9 @@ picked() { # expected exit, expected text, arguments
     shift 2
     out=$("$shield" test "$tmp/picked" "$@" 2>&1)
     got=$?
-    if [ "$got" != "$want" ] || ! echo "$out" | grep -qF "$text"; then
+    if [ "$got" != "$want" ] || ! printf '%s\n' "$out" | grep -qF "$text"; then
         echo "FAIL shield test $*: exit $got, want $want with '$text'"
-        echo "$out" | sed 's/^/     /'
+        printf '%s\n' "$out" | sed 's/^/     /'
         fail=$((fail + 1))
     else
         pass=$((pass + 1))

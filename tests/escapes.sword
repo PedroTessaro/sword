@@ -1,0 +1,30 @@
+// expect: 0
+// A byte written by its value, which is what an ANSI sequence is made of. The
+// point of it is the constant: a sequence assembled at runtime cannot be one,
+// and cannot be compared against a literal either.
+
+const ClearScreen = "\x1b[2J"
+const Home = "\e[H"
+
+func main() int {
+    if ClearScreen.len != 4 {
+        return 1
+    }
+    if ClearScreen[0] != 27 || ClearScreen[1] != 91 {
+        return 2
+    }
+    // \e is the same byte, spelled the way a terminal program thinks of it.
+    if Home[0] != ClearScreen[0] {
+        return 3
+    }
+    // Upper and lower case digits, and a byte no other escape can write.
+    high := "\xFF\xff\x00"
+    if high[0] != 255 || high[1] != 255 || high[2] != 0 || high.len != 3 {
+        return 4
+    }
+    // The old escapes still mean what they meant.
+    if "\n\t\r\0\\\"'"[0] != 10 {
+        return 5
+    }
+    return 0
+}

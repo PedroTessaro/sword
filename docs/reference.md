@@ -29,6 +29,26 @@ For looking things up. [The tour](tour.md) is the place to learn from.
 `?*T`, `?[*]T` and `?func(...)` cost one word. Over anything else, `?T` is the
 value with a flag beside it.
 
+### String literals
+
+Bytes between double quotes. The escapes, and there are no others:
+
+| | |
+|---|---|
+| `\n` `\t` `\r` | newline, tab, carriage return |
+| `\0` | a zero byte |
+| `\e` | ESC, the same byte as `\x1b` |
+| `\xNN` | the byte NN, two hex digits, either case |
+| `\\` `\"` `\'` | the character itself |
+
+`\xNN` is what a terminal sequence is written with, and it is what lets one be
+a constant:
+
+```sword
+const ClearScreen = "\x1b[2J"
+const Home = "\e[H"
+```
+
 ## Declarations
 
 ```sword

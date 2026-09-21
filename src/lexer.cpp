@@ -44,6 +44,13 @@ bool ends_statement(TokKind kind) {
   }
 }
 
+int hex_value(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
 struct Lexer {
   const Source &src;
   size_t i = 0;
@@ -184,6 +191,24 @@ struct Lexer {
       case 't': value += '\t'; break;
       case 'r': value += '\r'; break;
       case '0': value += '\0'; break;
+      // A byte by its value, and ESC, which every terminal sequence begins
+      // with. Without these a program that draws a screen cannot hold one of
+      // those sequences in a constant at all.
+      case 'e': value += '\x1b'; break;
+      case 'x': {
+        int hi = hex_value(peek()), lo = hex_value(peek(1));
+        if (hi < 0 || lo < 0) {
+          // Reported and stepped over: giving up on the literal here would
+          // leave the rest of it to be read as code, and the second complaint
+          // would be about the closing quote.
+          error(pos, "'\\x' takes two hex digits, as in '\\x1b'");
+          break;
+        }
+        advance();
+        advance();
+        value += (char)(hi * 16 + lo);
+        break;
+      }
       case '\\': case '"': case '\'': value += esc; break;
       default: error(pos, "unknown escape '\\%c'", esc); break;
       }
