@@ -535,7 +535,15 @@ func (mut b *Buffer) WriteByte(c u8) !void
 func (mut b *Buffer) Write(from []u8) !void
 func (mut b *Buffer) WriteString(s string) !void
 func (mut b *Buffer) WriteU64(v u64) !void
+func (mut b *Buffer) Insert(at u64, from []u8) !void
+func (mut b *Buffer) Delete(at u64, count u64) !void
+func (mut b *Buffer) Truncate(to u64)
 ```
+
+`Insert` grows the way `Write` does and moves the tail up; `Delete` moves it
+back down. A range that is not inside the buffer is `error.OutOfRange` rather
+than a clamp — `at` may be the length, which appends, and nothing past it.
+`Truncate` only ever shortens.
 
 ### `std/strings`
 

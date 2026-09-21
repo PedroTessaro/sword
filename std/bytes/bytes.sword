@@ -2,6 +2,8 @@ package bytes
 
 import "std/mem"
 
+error OutOfRange = "that part of the buffer is not there"
+
 // A byte buffer that grows. It keeps the allocator it was built with, so
 // appending never has to be told where memory comes from twice.
 struct Buffer {
@@ -77,6 +79,49 @@ func (mut b *Buffer) Write(from []u8) !void {
 
 func (mut b *Buffer) WriteString(s string) !void {
     try b.Write([]u8(s))
+}
+
+// Opens room at `at` and puts `from` in it. Growing is the same doubling
+// Write uses; what this costs on top of one is moving everything past the
+// cursor, which is the one move a line editor cannot avoid.
+func (mut b *Buffer) Insert(at u64, from []u8) !void {
+    if at > b.count {
+        return error.OutOfRange
+    }
+    if from.len == 0 {
+        return
+    }
+    try b.reserve(from.len)
+    // From the end backwards: the two halves overlap, and going forwards would
+    // write over bytes it has not read yet.
+    mut i := b.count
+    for i > at {
+        b.data[i - 1 + from.len] = b.data[i - 1]
+        i -= 1
+    }
+    for k in 0..from.len {
+        b.data[at + k] = from[k]
+    }
+    b.count += from.len
+}
+
+// Takes `count` bytes out from `at` and closes the gap.
+func (mut b *Buffer) Delete(at u64, count u64) !void {
+    if at > b.count || count > b.count - at {
+        return error.OutOfRange
+    }
+    for i in at + count..b.count {
+        b.data[i - count] = b.data[i]
+    }
+    b.count -= count
+}
+
+// Keeps the first `to` bytes. Asking for more than there is leaves the buffer
+// alone: this shortens, and nothing here invents bytes nobody wrote.
+func (mut b *Buffer) Truncate(to u64) {
+    if to < b.count {
+        b.count = to
+    }
 }
 
 // Decimal, no padding. Writing the digits backwards into a scratch array and
