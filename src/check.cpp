@@ -1698,6 +1698,30 @@ struct Checker {
 
   // `nameof(k)` is the name of the member `k` is, or empty when it is not one.
   // It calls the function synthesized alongside the enum.
+  // `hashof(x)`: one number per value, which is what a table needs to decide
+  // where to keep a key. Defined for what `==` compares — integers, enums,
+  // bools and strings — because a hash is only useful next to an equality that
+  // agrees with it. A generic keyed by anything else is refused where it is
+  // instantiated, which is where the caller can see what it asked for.
+  Type *check_hashof(Node *n) {
+    if (n->kids.size() != 1) {
+      error(n->pos, "'hashof' takes one value");
+      return nullptr;
+    }
+    if (!check_expr(n->kids[0])) return nullptr;
+    Type *arg = settle(n->kids[0]);
+    if (!arg) return nullptr;
+    if (!is_integer(arg) && arg->kind != TY_ENUM && arg->kind != TY_BOOL &&
+        arg->kind != TY_STRING) {
+      error(n->kids[0]->pos,
+            "'hashof' takes an integer, an enum, a bool or a string, got %s",
+            type_str(arg).c_str());
+      return nullptr;
+    }
+    n->form = CALL_HASH;
+    return n->type = types.named("u64");
+  }
+
   Type *check_nameof(Node *n) {
     if (n->kids.size() != 1) {
       error(n->pos, "'nameof' takes one enum value");
@@ -1907,6 +1931,7 @@ struct Checker {
       return nullptr;
     }
     if (n->lhs->name == "nameof" && !lookup("nameof")) return check_nameof(n);
+    if (n->lhs->name == "hashof" && !lookup("hashof")) return check_hashof(n);
     // `close(ch)`, the third of the three things a channel needs a word for.
     if (n->lhs->name == "close" && !lookup("close") && n->kids.size() == 1) {
       Type *what = check_expr(n->kids[0]);
@@ -2492,7 +2517,7 @@ struct Checker {
   // How a call reaches its target, kept in `form`.
   enum CallForm {
     CALL_DIRECT, CALL_METHOD, CALL_DYNAMIC, CALL_ATOMIC, CALL_INDIRECT,
-    CALL_SHARED
+    CALL_SHARED, CALL_HASH
   };
 
   // Whether a place lives in this function's frame. The walk stops at the first

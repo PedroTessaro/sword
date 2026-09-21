@@ -96,3 +96,40 @@ func label(mut t *testing.T, i u64) !string {
     }
     return string(room[0..at])
 }
+
+// A key that is not a string: the table from a key code to what it does is the
+// case that asked for this.
+func TestMapOfNumbers(mut t *testing.T) !void {
+    mut binds := try NewMapOf[u8, u64](t.Mem, 8)
+    try binds.Set(3, 30)
+    try binds.Set(4, 40)
+    try t.Equal(binds.Len(), 2)
+    try t.Equal(binds.Get(3) orelse 0, 30)
+    try t.Equal(binds.Has(9), false)
+
+    // Enough to rehash several times, with every key still findable after.
+    mut wide := try NewMapOf[i64, i64](t.Mem, 4)
+    for i in 0..300 {
+        try wide.Set(i64(i) * 7, i64(i))
+    }
+    try t.Equal(wide.Len(), 300)
+    for i in 0..300 {
+        try t.Equal(wide.Get(i64(i) * 7) orelse -1, i64(i))
+    }
+    try t.Equal(wide.Delete(7), true)
+    try t.Equal(wide.Delete(7), false)
+}
+
+func TestMapOfEnum(mut t *testing.T) !void {
+    mut what := try NewMapOf[Key, string](t.Mem, 4)
+    try what.Set(Key.Up, "up")
+    try what.Set(Key.Down, "down")
+    try t.Equal(what.Get(Key.Up) orelse "", "up")
+    try t.Equal(what.Get(Key.Left) orelse "nothing", "nothing")
+}
+
+enum Key i32 {
+    Up = 1
+    Down = 2
+    Left = 3
+}

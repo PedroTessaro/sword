@@ -240,7 +240,8 @@ consistent ordering.
 whole structure — a map, a queue, a cache — by putting a mutex in front of it.
 
 ```sword
-mut table := shared[collections.Map[u64]](try collections.NewMap[u64](&a, 64))
+mut table := shared[collections.Map[string, u64]](
+    try collections.NewMap[u64](&a, 64))
 
 lock m := &table {
     seen := m.Get(key) orelse 0
@@ -437,11 +438,19 @@ F(value)               // type argument inferred
 F[i32](value)          // written out
 sizeof[T]()            // compile-time constant
 alignof[T]()
+hashof(x)              // u64, for a value `==` can compare
 ```
 
 Constraints are interfaces. A call through a constraint is resolved when the
 function is instantiated and compiles to a direct call; a call through an
 interface parameter goes via the method table.
+
+`hashof` takes an integer, an enum, a bool or a string — what `==` compares,
+since a hash is only worth anything beside an equality that agrees with it. It
+is what lets a generic table key itself on whatever it was given: a string goes
+through FNV-1a, anything else through a few instructions of mixing. Anything
+else is refused where the generic is instantiated, which is where the caller
+can see what it asked for.
 
 Type arguments written out have to be type names. Composite types come from
 inference.
@@ -579,26 +588,29 @@ func (mut l *List[T]) Reset()
 func (mut l *List[T]) Free()
 ```
 
-A hash map with string keys, open addressing and linear probing:
+A hash map, open addressing and linear probing:
 
 ```sword
-func NewMap[V](mut a mem.Allocator, capacity u64) !Map[V]
+func NewMap[V](mut a mem.Allocator, capacity u64) !Map[string, V]
+func NewMapOf[K, V](mut a mem.Allocator, capacity u64) !Map[K, V]
 func Hash(key string) u64
-func (m *Map[V]) Len() u64
-func (m *Map[V]) Get(key string) ?V
-func (m *Map[V]) Has(key string) bool
-func (mut m *Map[V]) Set(key string, value V) !void
-func (mut m *Map[V]) Delete(key string) bool
-func (mut m *Map[V]) Free()
+func (m *Map[K, V]) Len() u64
+func (m *Map[K, V]) Get(key K) ?V
+func (m *Map[K, V]) Has(key K) bool
+func (mut m *Map[K, V]) Set(key K, value V) !void
+func (mut m *Map[K, V]) Delete(key K) bool
+func (mut m *Map[K, V]) Free()
 
 // Iteration is by slot: walk 0..Slots() and ask each one.
-func (m *Map[V]) Slots() u64
-func (m *Map[V]) KeyAt(i u64) ?string
-func (m *Map[V]) ValueAt(i u64) V
+func (m *Map[K, V]) Slots() u64
+func (m *Map[K, V]) KeyAt(i u64) ?K
+func (m *Map[K, V]) ValueAt(i u64) V
 ```
 
-Keys are strings. A key type parameter would need hashing and equality as
-constraints, and there is nowhere to hang those yet.
+The key is anything `hashof` and `==` both understand — an integer, an enum, a
+bool or a string — so a table from a key code to a command needs no string to
+look itself up with. `NewMap` is the string case, which most of them are; a key
+of another kind is refused where the map is instantiated.
 
 ### `std/fmt`
 

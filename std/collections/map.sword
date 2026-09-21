@@ -6,11 +6,11 @@ import "std/mem"
 // and no per-entry allocation: the whole table is a single block from the
 // allocator, which is what keeps lookups cache-friendly.
 //
-// Keys are strings, which is what the callers in this library need. A key
-// type parameter would need a hash and an equality constraint, and there is
-// nowhere yet to put them.
-struct Entry[V] {
-    key   string
+// The key is whatever `hashof` and `==` both understand — an integer, an enum,
+// a bool or a string. A key type they do not is refused where the map is
+// instantiated, which is where the caller can see what it asked for.
+struct Entry[K, V] {
+    key   K
     value V
     state u8
 }
@@ -19,72 +19,61 @@ const slotEmpty = 0
 const slotLive = 1
 const slotDead = 2
 
-struct Map[V] {
-    slots []Entry[V]
+struct Map[K, V] {
+    slots []Entry[K, V]
     count u64
     a     mem.Allocator
 }
 
 const MinSlots = 16
 
-// FNV-1a: small, fast, and good enough for short keys like header names. The
-// multiply is meant to overflow, which is what the wrapping operator says.
+// FNV-1a over the bytes of a string, which is what `hashof` does with one.
+// Kept because a caller sizing its own table by hand wants the same number the
+// map would have used.
 func Hash(key string) u64 {
-    mut h u64 = 14695981039346656037
-    for i in 0..key.len {
-        h ^= u64(key[i])
-        h *%= 1099511628211
-    }
-    return h
+    return hashof(key)
 }
 
-func keysEqual(a string, b string) bool {
-    if a.len != b.len {
-        return false
-    }
-    for i in 0..a.len {
-        if a[i] != b[i] {
-            return false
-        }
-    }
-    return true
+// A table keyed by strings, which is what most of them are.
+func NewMap[V](mut a mem.Allocator, capacity u64) !Map[string, V] {
+    return NewMapOf[string, V](a, capacity)
 }
 
-func NewMap[V](mut a mem.Allocator, capacity u64) !Map[V] {
+func NewMapOf[K, V](mut a mem.Allocator, capacity u64) !Map[K, V] {
     mut want u64 = MinSlots
     for want < capacity * 2 {
         want *= 2
     }
-    mut room := mem.Alloc[Entry[V]](a, want) orelse
+    mut room := mem.Alloc[Entry[K, V]](a, want) orelse
         return error.OutOfMemory
     for i in 0..room.len {
         room[i].state = slotEmpty
     }
-    return Map[V]{slots: room, count: 0, a: a}
+    return Map[K, V]{slots: room, count: 0, a: a}
 }
 
-func (m *Map[V]) Len() u64 {
+func (m *Map[K, V]) Len() u64 {
     return m.count
 }
 
 // The index of `key`, or of the first free slot where it would go. The table
 // is never allowed to fill up, so this always terminates.
-func (m *Map[V]) probe(key string) u64 {
+func (m *Map[K, V]) probe(key K) u64 {
     mask := m.slots.len - 1
-    mut at := Hash(key) & mask
+    mut at := hashof(key) & mask
     for {
         state := m.slots[at].state
         if state == slotEmpty {
             return at
         }
-        if state == slotLive && keysEqual(m.slots[at].key, key) {
+        if state == slotLive && m.slots[at].key == key {
             return at
         }
         at = (at + 1) & mask
     }
 }
 
-func (m *Map[V]) Get(key string) ?V {
+func (m *Map[K, V]) Get(key K) ?V {
     at := m.probe(key)
     if m.slots[at].state != slotLive {
         return nil
@@ -92,16 +81,16 @@ func (m *Map[V]) Get(key string) ?V {
     return m.slots[at].value
 }
 
-func (m *Map[V]) Has(key string) bool {
+func (m *Map[K, V]) Has(key K) bool {
     at := m.probe(key)
     return m.slots[at].state == slotLive
 }
 
 // Grows past a load factor of one half, which is where linear probing starts
 // to cluster badly.
-func (mut m *Map[V]) grow() !void {
+func (mut m *Map[K, V]) grow() !void {
     old := m.slots
-    mut room := mem.Alloc[Entry[V]](m.a, old.len * 2) orelse
+    mut room := mem.Alloc[Entry[K, V]](m.a, old.len * 2) orelse
         return error.OutOfMemory
     for i in 0..room.len {
         room[i].state = slotEmpty
@@ -116,7 +105,7 @@ func (mut m *Map[V]) grow() !void {
     mem.Free(m.a, old)
 }
 
-func (mut m *Map[V]) Set(key string, value V) !void {
+func (mut m *Map[K, V]) Set(key K, value V) !void {
     if (m.count + 1) * 2 > m.slots.len {
         try m.grow()
     }
@@ -131,7 +120,7 @@ func (mut m *Map[V]) Set(key string, value V) !void {
 
 // A removed slot stays as a tombstone so that probes past it still find what
 // comes after.
-func (mut m *Map[V]) Delete(key string) bool {
+func (mut m *Map[K, V]) Delete(key K) bool {
     at := m.probe(key)
     if m.slots[at].state != slotLive {
         return false
@@ -141,23 +130,23 @@ func (mut m *Map[V]) Delete(key string) bool {
     return true
 }
 
-func (mut m *Map[V]) Free() {
+func (mut m *Map[K, V]) Free() {
     mem.Free(m.a, m.slots)
     m.count = 0
 }
 
 // Iteration is by slot index: walk 0..Slots() and ask each one.
-func (m *Map[V]) Slots() u64 {
+func (m *Map[K, V]) Slots() u64 {
     return m.slots.len
 }
 
-func (m *Map[V]) KeyAt(i u64) ?string {
+func (m *Map[K, V]) KeyAt(i u64) ?K {
     if m.slots[i].state != slotLive {
         return nil
     }
     return m.slots[i].key
 }
 
-func (m *Map[V]) ValueAt(i u64) V {
+func (m *Map[K, V]) ValueAt(i u64) V {
     return m.slots[i].value
 }

@@ -1,0 +1,43 @@
+// expect: 0
+// One number per value, for whatever `==` can compare. A table generic in its
+// key has no other way to ask: there is nothing to dispatch on inside a
+// generic, and hashing a string by its bytes as a value would hash the pointer.
+
+enum Shade i32 {
+    Red = 1
+    Blue = 2
+}
+
+func main() int {
+    // The same string twice is the same number, whatever it is made of.
+    mut room := [5]u8{104, 101, 108, 108, 111}
+    built := string(room[..])
+    if hashof(built) != hashof("hello") {
+        return 1
+    }
+    if hashof("hello") == hashof("hellp") {
+        return 2
+    }
+    if hashof("") != hashof("") {
+        return 3
+    }
+
+    // Small integers have to land far apart, or a table piles them into
+    // neighbouring slots.
+    if hashof(u8(3)) == hashof(u8(4)) {
+        return 4
+    }
+    if hashof(i64(-1)) == hashof(i64(1)) {
+        return 5
+    }
+    if hashof(Shade.Red) == hashof(Shade.Blue) {
+        return 6
+    }
+    if hashof(true) == hashof(false) {
+        return 7
+    }
+    if hashof(u8(7)) != hashof(u8(7)) {
+        return 8
+    }
+    return 0
+}

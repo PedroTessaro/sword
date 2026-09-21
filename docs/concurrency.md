@@ -542,7 +542,7 @@ That is `shared[T]`:
 import "std/collections"
 import "std/mem"
 
-func count(mut table *shared[collections.Map[u64]], words []string) !void {
+func count(mut table *shared[collections.Map[string, u64]], words []string) !void {
     for i in 0..words.len {
         lock m := table {
             seen := m.Get(words[i]) orelse 0
@@ -555,7 +555,7 @@ func main() !int {
     mut backing := [131072]u8{}
     mut arena := mem.NewArena(backing[..])
 
-    mut table := shared[collections.Map[u64]](
+    mut table := shared[collections.Map[string, u64]](
         try collections.NewMap[u64](&arena, 64))
 
     mut words := [2]string{}
