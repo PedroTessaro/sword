@@ -20,6 +20,11 @@ void sword_scope_spawn(void *scope, sword_task_fn fn, const void *args,
                        int64_t size);
 uint16_t sword_scope_end(void *scope);
 
+// `main` runs as a task too, so that waiting on a descriptor there costs a
+// stack rather than the thread. The entry point the compiler writes calls this
+// with a thunk around the program's own main.
+uint16_t sword_run_main(sword_task_fn fn, const void *args, int64_t size);
+
 uint16_t sword_parallel_for(int64_t lo, int64_t hi, sword_chunk_fn fn,
                             void *env);
 

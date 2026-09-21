@@ -46,6 +46,19 @@ compiler knows a slice lent to one stays valid for the task's whole life. It is
 why you can hand out pieces of memory that live on the parent's stack, or in an
 arena the parent will throw away right after.
 
+### `main` is a task
+
+The program starts as one, on a stack of its own, which is what lets `main`
+wait: a read there puts the task down and the thread goes on, the same as
+anywhere else. A program whose whole job is one loop over one descriptor — a
+terminal editor reading keys — needs no `scope` around itself to do it.
+
+It costs what a task costs. `main` gets `SWORD_STACK_KB` of stack, a megabyte
+by default, rather than the eight the operating system hands a thread; a
+`main` that keeps something enormous in a frame wants that setting raised. The
+worker threads are another matter: they are started by the first `spawn`, so a
+program that never spawns runs on the thread it came with.
+
 ### `spawn` takes a call, and only a call
 
 ```sword
@@ -314,8 +327,9 @@ Useful for measuring, and for pinning down whether a bug is a race.
 
 ## The scheduler
 
-The runtime is a few hundred lines and links as a static archive, so a program
-that never spawns anything carries none of it.
+The runtime is a few hundred lines and links as a static archive. Every program
+carries the part that runs `main` as a task; a program that never spawns
+anything pulls in nothing else, and starts no thread of its own.
 
 Each worker has its own deque. The owner pushes and pops at one end, thieves
 take from the other, and the victim rotates so workers do not all converge on
@@ -394,9 +408,9 @@ large buffer and writes into the middle of it can step over one page without
 touching it — and with stacks packed together, what is on the other side belongs
 to another task.
 
-A fault anywhere else is left alone: a wild pointer dies the way it always did,
-and a thread that overflows its own stack — the main function's, before any
-`scope` — is still the operating system's to report.
+This covers `main` as well, since it runs on a task's stack like everything
+else. A fault anywhere else is left alone: a wild pointer dies the way it
+always did.
 
 ### What cannot be put down
 

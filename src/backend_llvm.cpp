@@ -453,7 +453,49 @@ struct Emitter {
     return calls("sword_os_argc") || calls("sword_os_arg");
   }
 
+  // `main` is a task like any other, which is what lets it wait on a
+  // descriptor: parking is a fiber's trick, and a program whose whole job is
+  // one loop over one descriptor used to have to open a scope and spawn
+  // itself. The runtime takes a thunk and an argument block, so the answer
+  // comes back through a slot on the real stack.
+  void main_task(const IrFunc &f) {
+    fputs("define internal i16 @sword_main.task(ptr %args) {\nbb0:\n", out);
+    if (f.ret->is_error_union) {
+      fputs("  %slot = load ptr, ptr %args, align 8\n"
+            "  call void @sword_main(ptr %slot)\n",
+            out);
+    } else if (f.ret->kind == TY_VOID) {
+      fputs("  call void @sword_main()\n", out);
+    } else {
+      std::string ret = ll_type(f.ret);
+      fputs("  %slot = load ptr, ptr %args, align 8\n", out);
+      fprintf(out, "  %%r = call %s @sword_main()\n", ret.c_str());
+      fprintf(out, "  store %s %%r, ptr %%slot, align %d\n", ret.c_str(),
+              (int)align_of(f.ret));
+    }
+    fputs("  ret i16 0\n}\n\n", out);
+  }
+
+  // Hands the thunk to the runtime, with the address of the slot its answer
+  // goes in. The scope's own failure code says nothing here: the thunk always
+  // succeeds and what main returned is in the slot.
+  void run_main(const char *slot) {
+    if (slot) {
+      fprintf(out,
+              "  %%args = alloca ptr, align 8\n"
+              "  store ptr %s, ptr %%args, align 8\n"
+              "  call i16 @sword_run_main(ptr @sword_main.task, ptr %%args,"
+              " i64 8)\n",
+              slot);
+    } else {
+      fputs("  call i16 @sword_run_main(ptr @sword_main.task, ptr null,"
+            " i64 0)\n",
+            out);
+    }
+  }
+
   void entry_wrapper(const IrFunc &f) {
+    main_task(f);
     if (wants_args()) {
       fputs("define i32 @main(i32 %argc, ptr %argv) {\nbb0:\n"
             "  call void @sword_os_set_args(i32 %argc, ptr %argv)\n",
@@ -469,7 +511,7 @@ struct Emitter {
       std::string box = ll_type(f.ret);
       fprintf(out, "  %%box = alloca %s, align %d\n", box.c_str(),
               (int)align_of(f.ret));
-      fputs("  call void @sword_main(ptr %box)\n", out);
+      run_main("%box");
       fprintf(out,
               "  %%at = getelementptr inbounds %s, ptr %%box, i32 0, i32 %d\n",
               box.c_str(), code->index);
@@ -497,9 +539,14 @@ struct Emitter {
                   ll_type(payload).c_str());
       }
     } else if (f.ret->kind == TY_VOID) {
-      fputs("  call void @sword_main()\n  ret i32 0\n", out);
+      run_main(nullptr);
+      fputs("  ret i32 0\n", out);
     } else {
-      fprintf(out, "  %%r = call %s @sword_main()\n", ll_type(f.ret).c_str());
+      fprintf(out, "  %%box = alloca %s, align %d\n", ll_type(f.ret).c_str(),
+              (int)align_of(f.ret));
+      run_main("%box");
+      fprintf(out, "  %%r = load %s, ptr %%box, align %d\n",
+              ll_type(f.ret).c_str(), (int)align_of(f.ret));
       if (f.ret->bits == 32) {
         fputs("  ret i32 %r\n", out);
       } else {
@@ -558,11 +605,16 @@ struct Emitter {
       fputs("declare i32 @memcmp(ptr, ptr, i64)\n", out);
       any = true;
     }
-    // This one is called by the entry wrapper rather than by lowered code.
+    // These are called by the entry wrapper rather than by lowered code.
     if (wants_args()) {
       fputs("declare void @sword_os_set_args(i32, ptr)\n", out);
       any = true;
     }
+    for (const IrFunc &f : mod.funcs)
+      if (f.name == "main.main") {
+        fputs("declare i16 @sword_run_main(ptr, ptr, i64)\n", out);
+        any = true;
+      }
     if (any) fputc('\n', out);
   }
 

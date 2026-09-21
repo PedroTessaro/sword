@@ -1,0 +1,42 @@
+// expect: 42
+// main is a task like any other, so a wait in it is a wait: the descriptor
+// goes to the poller and the task is put down. Before, `sword_park_fd` found
+// no fiber to put down, answered -1, and the read came back as a failure at
+// once — quietly, which is the worst part. A program whose whole job is one
+// loop over one descriptor had to open a scope and spawn itself.
+
+import "std/net"
+import "std/runtime"
+import "std/time"
+
+func main() !int {
+    // Nothing is spawned here, and a task has still started: this one.
+    if runtime.Read().Started < 1 {
+        return 1
+    }
+
+    mut l := try net.Listen(0)
+    defer l.Close()
+    port := l.Port()
+
+    // Connected and never answered, so the read has nothing to do but wait.
+    mut c := try net.Dial("127.0.0.1", port)
+    defer c.Close()
+    try c.SetTimeout(time.Millis(120))
+
+    mut buf := [16]u8{}
+    start := time.Now()
+    c.Read(buf[..]) catch |e| {
+        if e != error.Timeout {
+            return 2
+        }
+        // The wait has to have happened. A park that failed comes back in
+        // microseconds rather than in the time it was given.
+        took := time.Since(start).AsMillis()
+        if took < 100 {
+            return 3
+        }
+        return 42
+    }
+    return 4
+}
