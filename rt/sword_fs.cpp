@@ -1,9 +1,14 @@
 #include "sword_rt.h"
 
+#include <dirent.h>
 #include <errno.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 // Files, unlike sockets, are always "ready" as far as kqueue and epoll are
@@ -92,6 +97,134 @@ int64_t do_rmdir(void *p) {
 
 int64_t do_close(void *p) { return close(((RwCall *)p)->fd); }
 
+// Everything below answers with its own negative codes rather than leaving the
+// caller to read errno: the call ran on another thread, and errno belongs to
+// the thread that set it.
+
+struct StatCall {
+  const char *name;
+  int64_t size;
+  int64_t modified_ns;
+  uint32_t mode;
+  int32_t is_dir;
+};
+
+int64_t do_stat(void *p) {
+  StatCall *c = (StatCall *)p;
+  struct stat info;
+  if (stat(c->name, &info) != 0) return -1;
+  c->size = (int64_t)info.st_size;
+  c->mode = (uint32_t)(info.st_mode & 07777);
+  c->is_dir = S_ISDIR(info.st_mode) ? 1 : 0;
+#ifdef __APPLE__
+  c->modified_ns = (int64_t)info.st_mtimespec.tv_sec * 1000000000 +
+                   info.st_mtimespec.tv_nsec;
+#else
+  c->modified_ns = (int64_t)info.st_mtim.tv_sec * 1000000000 +
+                   info.st_mtim.tv_nsec;
+#endif
+  return 0;
+}
+
+struct RenameCall {
+  const char *from;
+  const char *to;
+};
+
+int64_t do_rename(void *p) {
+  RenameCall *c = (RenameCall *)p;
+  return rename(c->from, c->to) == 0 ? 0 : -1;
+}
+
+struct DirCall {
+  const char *name;
+  DIR *dir;
+  char *into;
+  int64_t room;
+  int32_t is_dir;
+};
+
+int64_t do_opendir(void *p) {
+  DirCall *c = (DirCall *)p;
+  c->dir = opendir(c->name);
+  return c->dir ? 0 : -1;
+}
+
+int64_t do_readdir(void *p) {
+  DirCall *c = (DirCall *)p;
+  while (true) {
+    errno = 0;
+    struct dirent *entry = readdir(c->dir);
+    // Nothing left, or a failure — and on this thread errno still means
+    // something, which is why the two are told apart here.
+    if (!entry) return errno == 0 ? 0 : -1;
+    const char *name = entry->d_name;
+    // "." and ".." are the directory and its parent. Every caller has to skip
+    // them, so skipping them here means nobody forgets.
+    if (name[0] == '.' && (name[1] == '\0' ||
+                           (name[1] == '.' && name[2] == '\0')))
+      continue;
+    size_t len = strlen(name);
+    if ((int64_t)len > c->room) return -2; // the caller's buffer is too small
+    memcpy(c->into, name, len);
+    if (entry->d_type == DT_UNKNOWN) {
+      // Some filesystems do not fill it in. Asking beside the open directory
+      // needs no path of our own.
+      struct stat info;
+      c->is_dir = fstatat(dirfd(c->dir), name, &info, 0) == 0 &&
+                          S_ISDIR(info.st_mode)
+                      ? 1
+                      : 0;
+    } else {
+      c->is_dir = entry->d_type == DT_DIR ? 1 : 0;
+    }
+    return (int64_t)len;
+  }
+}
+
+int64_t do_closedir(void *p) { return closedir(((DirCall *)p)->dir); }
+
+struct TempCall {
+  const char *prefix;
+  char *into;
+  int64_t room;
+};
+
+// A name beside whatever the prefix names, created with O_EXCL so that the
+// answer is a path nobody else holds. Making the file is the point: a name
+// that is only unlikely to be taken is a race the caller cannot see.
+int64_t do_temp(void *p) {
+  TempCall *c = (TempCall *)p;
+  size_t head = strlen(c->prefix);
+  if ((int64_t)(head + 8) > c->room) return -2;
+
+  static const char alphabet[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+  char path[1100];
+  if (head + 8 >= sizeof(path)) return -2;
+  memcpy(path, c->prefix, head);
+  path[head + 7] = '\0';
+
+  timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+  uint64_t seed = (uint64_t)now.tv_nsec * 1000003 + (uint64_t)getpid();
+  for (int attempt = 0; attempt < 128; attempt++) {
+    seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+    uint64_t bits = seed >> 17;
+    for (int i = 0; i < 7; i++) {
+      path[head + i] = alphabet[bits % 36];
+      bits /= 36;
+    }
+    int fd = open(path, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (fd >= 0) {
+      close(fd);
+      memcpy(c->into, path, head + 7);
+      return (int64_t)(head + 7);
+    }
+    if (errno != EEXIST) return -1;
+  }
+  return -1;
+}
+
 } // namespace
 
 enum {
@@ -161,5 +294,66 @@ int32_t sword_fs_remove_dir(const char *path, int64_t path_len) {
   if (!as_path(path, path_len, name, sizeof(name))) return -1;
   PathCall call{name};
   return (int32_t)sword_offload(do_rmdir, &call);
+}
+
+// Size, kind, mode and when it last changed, in one look. Folding all of it
+// into a size and a nil is what left "missing", "a directory" and "cannot be
+// read" looking the same.
+int32_t sword_fs_stat(const char *path, int64_t path_len, int64_t *size,
+                      int64_t *modified_ns, uint32_t *mode, int32_t *is_dir) {
+  char name[1024];
+  if (!as_path(path, path_len, name, sizeof(name))) return -1;
+  StatCall call{name, 0, 0, 0, 0};
+  if (sword_offload(do_stat, &call) != 0) return -1;
+  *size = call.size;
+  *modified_ns = call.modified_ns;
+  *mode = call.mode;
+  *is_dir = call.is_dir;
+  return 0;
+}
+
+int32_t sword_fs_rename(const char *from, int64_t from_len, const char *to,
+                        int64_t to_len) {
+  char a[1024], b[1024];
+  if (!as_path(from, from_len, a, sizeof(a))) return -1;
+  if (!as_path(to, to_len, b, sizeof(b))) return -1;
+  RenameCall call{a, b};
+  return (int32_t)sword_offload(do_rename, &call);
+}
+
+// A directory is read one entry at a time, each on a thread of its own the way
+// a file read is: the whole listing in one call would mean the runtime
+// deciding how much memory it takes, and this library does not do that.
+int64_t sword_fs_dir_open(const char *path, int64_t path_len) {
+  char name[1024];
+  if (!as_path(path, path_len, name, sizeof(name))) return -1;
+  DirCall call{name, nullptr, nullptr, 0, 0};
+  if (sword_offload(do_opendir, &call) != 0) return -1;
+  return (int64_t)(intptr_t)call.dir;
+}
+
+// The name's length, 0 at the end, -1 for a failure and -2 when the name does
+// not fit in what the caller offered.
+int64_t sword_fs_dir_next(int64_t handle, char *into, int64_t room,
+                          int32_t *is_dir) {
+  DirCall call{nullptr, (DIR *)(intptr_t)handle, into, room, 0};
+  int64_t n = sword_offload(do_readdir, &call);
+  *is_dir = call.is_dir;
+  return n;
+}
+
+void sword_fs_dir_close(int64_t handle) {
+  DirCall call{nullptr, (DIR *)(intptr_t)handle, nullptr, 0, 0};
+  sword_offload(do_closedir, &call);
+}
+
+// The path of a file this call has just made, beside whatever the prefix
+// names. -2 when it does not fit in the caller's buffer.
+int64_t sword_fs_temp_path(const char *prefix, int64_t prefix_len, char *into,
+                           int64_t room) {
+  char head[1024];
+  if (!as_path(prefix, prefix_len, head, sizeof(head))) return -1;
+  TempCall call{head, into, room};
+  return sword_offload(do_temp, &call);
 }
 }

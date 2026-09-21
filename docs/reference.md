@@ -933,9 +933,40 @@ func RemoveDir(path string) !void             // an empty one only
 func ReadAll(path string, mut a mem.Allocator) ![]u8
 func WriteAll(path string, data []u8) !void
 func ReadStdin(mut a mem.Allocator, most u64) ![]u8
+
+struct Entry { Name string; IsDir bool }
+struct Info { Size u64; IsDir bool; ModifiedNanos i64; Mode u32 }
+
+func Stat(path string) !Info
+func Rename(from string, to string) !void
+func ReadDir(path string, mut a mem.Allocator) ![]Entry
+func TempPath(prefix string, mut into []u8) !string
 ```
 
 `Stdin`, `Stdout` and `Stderr` are the descriptors the process starts with.
+
+`Stat` answers what `Size` could not: missing, a directory, and cannot be read
+were all the same nil. `Mode` is the permission bits and nothing else.
+
+`ReadDir` leaves out `.` and `..`, gives names rather than paths, and copies
+them into the allocator's memory so they outlive the walk. The order is
+whatever the filesystem keeps.
+
+`Rename` moves a file over whatever is already there, which is how a file is
+saved without risking it — and `TempPath` is the other half. Its prefix is a
+path, so the new file lands beside the one being replaced, in the same
+filesystem, which is what makes the rename atomic:
+
+```sword
+mut room := [256]u8{}
+scratch := try fs.TempPath("notes.txt.", room[..])
+try fs.WriteAll(scratch, updated)
+try fs.Rename(scratch, "notes.txt")
+```
+
+The file is made, not merely named: a path that is only unlikely to be taken is
+a race the caller cannot see. `fs.WriteAll` on its own truncates first, so a
+crash halfway through it loses what was there.
 
 A file is never "not ready yet" — the wait is the disk, and no poller has
 anything to say about it. So a file call goes to a thread kept for exactly that,

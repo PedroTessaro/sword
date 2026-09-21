@@ -1,10 +1,15 @@
 package fs
 
+import "std/collections"
 import "std/mem"
 
 error CannotOpen   = "the file could not be opened"
 error CannotRemove = "it could not be removed"
 error CannotMakeDir = "the directory could not be made"
+error CannotLook   = "it could not be looked at"
+error CannotRename = "it could not be renamed"
+error CannotList   = "the directory could not be read"
+error PathTooLong  = "that path does not fit"
 error ReadFailed   = "the read failed"
 error WriteFailed  = "the write failed"
 
@@ -19,6 +24,16 @@ extern func sword_fs_size(path [*]u8, path_len i64) i64
 extern func sword_fs_remove(path [*]u8, path_len i64) i32
 extern func sword_fs_make_dir(path [*]u8, path_len i64) i32
 extern func sword_fs_remove_dir(path [*]u8, path_len i64) i32
+extern func sword_fs_stat(path [*]u8, path_len i64, size *i64, modified *i64,
+                          mode *u32, is_dir *i32) i32
+extern func sword_fs_rename(from [*]u8, from_len i64, to [*]u8,
+                            to_len i64) i32
+extern func sword_fs_dir_open(path [*]u8, path_len i64) i64
+extern func sword_fs_dir_next(handle i64, into [*]u8, room i64,
+                              is_dir *i32) i64
+extern func sword_fs_dir_close(handle i64)
+extern func sword_fs_temp_path(prefix [*]u8, prefix_len i64, into [*]u8,
+                               room i64) i64
 
 enum Mode i32 {
     Read
@@ -111,6 +126,100 @@ func RemoveDir(path string) !void {
     if sword_fs_remove_dir(path.ptr, i64(path.len)) < 0 {
         return error.CannotRemove
     }
+}
+
+// One entry of a directory. The name is the name, not a path: join it to the
+// directory yourself, which is the only way to know what you meant by it.
+struct Entry {
+    Name  string
+    IsDir bool
+}
+
+// What `Size` could not say. Missing, a directory, and cannot be read were all
+// the same nil before this.
+struct Info {
+    Size          u64
+    IsDir         bool
+    ModifiedNanos i64
+    // The permission bits, and only those: 0644, 0755.
+    Mode u32
+}
+
+func Stat(path string) !Info {
+    mut size i64 = 0
+    mut modified i64 = 0
+    mut mode u32 = 0
+    mut dir i32 = 0
+    if sword_fs_stat(path.ptr, i64(path.len), &size, &modified, &mode,
+                     &dir) < 0 {
+        return error.CannotLook
+    }
+    return Info{Size: u64(size), IsDir: dir != 0, ModifiedNanos: modified,
+                Mode: mode}
+}
+
+// Moves a file, over whatever is already there. That last part is how a file
+// is saved without risking it: write the new contents beside the old one and
+// rename over it, and an interrupted save leaves one whole file or the other.
+// WriteAll truncates first, so a crash halfway through it loses both.
+func Rename(from string, to string) !void {
+    if sword_fs_rename(from.ptr, i64(from.len), to.ptr, i64(to.len)) < 0 {
+        return error.CannotRename
+    }
+}
+
+// What is in a directory, without "." and "..", in whatever order the
+// filesystem keeps it. The names are copied into the allocator's memory, so
+// they outlive the walk.
+func ReadDir(path string, mut a mem.Allocator) ![]Entry {
+    handle := sword_fs_dir_open(path.ptr, i64(path.len))
+    if handle < 0 {
+        return error.CannotList
+    }
+    defer sword_fs_dir_close(handle)
+
+    mut found := try collections.NewList[Entry](a, 16)
+    // A name rather than a path: 255 bytes is the limit wherever this runs.
+    mut room := [256]u8{}
+    for {
+        mut dir i32 = 0
+        n := sword_fs_dir_next(handle, room[..].ptr, i64(room.len), &dir)
+        if n == 0 {
+            break
+        }
+        if n < 0 {
+            return error.CannotList
+        }
+        mut name := mem.Alloc[u8](a, u64(n)) orelse return error.OutOfMemory
+        for i in 0..u64(n) {
+            name[i] = room[i]
+        }
+        try found.Push(Entry{Name: string(name), IsDir: dir != 0})
+    }
+    return found.Slice()
+}
+
+// The path of a file this call has just made, written into `into`. The prefix
+// is a path and not a name, so the new file lands beside whatever it names:
+//
+//     mut room := [256]u8{}
+//     scratch := try fs.TempPath("notes.txt.", room[..])
+//     try fs.WriteAll(scratch, updated)
+//     try fs.Rename(scratch, "notes.txt")
+//
+// Being in the same directory is what makes that rename atomic, and the file
+// is created rather than only named because a name that is merely unlikely to
+// be taken is a race the caller cannot see.
+func TempPath(prefix string, mut into []u8) !string {
+    n := sword_fs_temp_path(prefix.ptr, i64(prefix.len), into.ptr,
+                            i64(into.len))
+    if n == -2 {
+        return error.PathTooLong
+    }
+    if n < 0 {
+        return error.CannotOpen
+    }
+    return string(into[0..u64(n)])
 }
 
 // The whole file, in memory the caller's allocator gives. The size is asked for
