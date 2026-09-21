@@ -915,10 +915,27 @@ struct Parser {
     }
   }
 
-  bool params_of(Node *fn) {
+  bool params_of(Node *fn, bool c_variadic_ok = false) {
     if (!expect(TK_LPAREN, "after a function name")) return false;
     if (kind() != TK_RPAREN) {
       do {
+        // `extern func ioctl(fd i32, request u64, ...)` — C's own variadic,
+        // which gathers nothing and is passed by the platform's rules. Sword's
+        // own is `args ...T`, and gathers into a slice.
+        if (kind() == TK_ELLIPSIS) {
+          if (!c_variadic_ok) {
+            fail("only an extern function ends in '...'; to gather the rest of"
+                 " the arguments, write 'args ...T'");
+            return false;
+          }
+          if (fn->kids.empty()) {
+            fail("'...' needs a parameter before it, the way C does");
+            return false;
+          }
+          advance();
+          fn->is_c_variadic = true;
+          break;
+        }
         if (!named_group(fn->kids, ND_PARAM, "a parameter name")) return false;
       } while (match(TK_COMMA));
     }
@@ -1009,7 +1026,7 @@ struct Parser {
       }
     }
 
-    if (!params_of(n)) return nullptr;
+    if (!params_of(n, is_extern)) return nullptr;
     if (!is_extern) n->body = block();
     return n;
   }

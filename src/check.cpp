@@ -1273,12 +1273,35 @@ struct Checker {
       return true;
     }
 
-    if (n->kids.size() != wanted) {
+    // C's own `...` gathers nothing: what follows the declared parameters is
+    // passed as written, so there is no type to convert it to — only the
+    // question of whether C can read it at all.
+    if (sig->is_c_variadic) {
+      if (n->kids.size() < wanted) {
+        error(n->pos, "'%s' takes at least %zu argument%s, got %zu",
+              sym->name.c_str(), wanted, wanted == 1 ? "" : "s",
+              n->kids.size());
+        return false;
+      }
+      for (size_t i = wanted; i < n->kids.size(); i++) {
+        if (!already_checked && !check_expr(n->kids[i])) return false;
+        // Nothing here says what an untyped literal should be, so it takes the
+        // default it would have taken standing on its own.
+        Type *arg = settle(n->kids[i]);
+        if (!arg) return false;
+        if (is_aggregate(arg) || arg->kind == TY_STRING) {
+          error(n->kids[i]->pos,
+                "'%s' cannot pass %s through '...'; pass .ptr and .len",
+                sym->name.c_str(), type_str(arg).c_str());
+          return false;
+        }
+      }
+    } else if (n->kids.size() != wanted) {
       error(n->pos, "'%s' takes %zu argument%s, got %zu",
             sym->name.c_str(), wanted, wanted == 1 ? "" : "s", n->kids.size());
       return false;
     }
-    for (size_t i = 0; i < n->kids.size(); i++) {
+    for (size_t i = 0; i < wanted; i++) {
       Type *want = sig->params[i + skip];
       Type *arg = already_checked ? n->kids[i]->type : check_expr(n->kids[i]);
       if (!arg) return false;
@@ -2342,6 +2365,14 @@ struct Checker {
       error(n->pos,
             "'%s' is generic, so there is no single function to point at",
             sym->name.c_str());
+      return nullptr;
+    }
+    // How the extra arguments travel is settled at the call site, from the
+    // signature. A call through a value has none, and would put them where the
+    // callee does not look.
+    if (sym->type->is_c_variadic) {
+      error(n->pos, "'%s' is variadic, so it can only be called by name",
+            shown_name(sym->name).c_str());
       return nullptr;
     }
     return n->type = sym->type;
@@ -3567,6 +3598,8 @@ struct Checker {
       sym->decl = fn;
       fn->sym = sym;
       if (!method_of.empty()) continue;
+
+      if (fn->is_c_variadic) sym->type->is_c_variadic = true;
 
       // Aggregates cross our own call boundary as a pointer, which is not the
       // C ABI; the FFI boundary has to stay scalar.

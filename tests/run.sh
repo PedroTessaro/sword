@@ -126,6 +126,66 @@ else
     fi
 fi
 
+# An extern that ends in '...' is called the way C calls a variadic function.
+# On Apple's arm64 that is the whole difference: a variadic argument travels on
+# the stack while a fixed one travels in a register, so the same call declared
+# with a fixed arity reaches the callee as garbage. The shim reads its
+# arguments with va_arg, which is what makes the two tell apart.
+mkdir -p "$tmp/varargs"
+cat > "$tmp/varargs/shim.c" <<'EOF'
+#include <stdarg.h>
+
+long sword_vsum(int n, ...) {
+  va_list ap;
+  va_start(ap, n);
+  long total = 0;
+  for (int i = 0; i < n; i++) total += va_arg(ap, long);
+  va_end(ap);
+  return total;
+}
+
+// C promotes anything narrower than an int, and a float to a double; the
+// callee reads the promoted width whatever the call site passed.
+int sword_vpromote(int tag, ...) {
+  va_list ap;
+  va_start(ap, tag);
+  int small = va_arg(ap, int);
+  double wide = va_arg(ap, double);
+  va_end(ap);
+  return small + (int)wide;
+}
+EOF
+cc -c "$tmp/varargs/shim.c" -o "$tmp/varargs/shim.o" 2>/dev/null
+cat > "$tmp/varargs/main.sword" <<'EOF'
+extern func sword_vsum(n i32, ...) i64
+extern func sword_vpromote(tag i32, ...) i32
+
+func main() int {
+    if sword_vsum(3, i64(10), i64(20), i64(12)) != 42 {
+        return 1
+    }
+    if sword_vpromote(0, u8(200), f32(1.5)) != 201 {
+        return 2
+    }
+    return 0
+}
+EOF
+if ! "$shield" "$tmp/varargs/main.sword" -o "$tmp/varargs/prog" \
+        --link "$tmp/varargs/shim.o" > "$tmp/varargs/log" 2>&1; then
+    echo "FAIL variadic extern: compilation failed"
+    sed 's/^/     /' "$tmp/varargs/log"
+    fail=$((fail + 1))
+else
+    "$tmp/varargs/prog"
+    got=$?
+    if [ "$got" != 0 ]; then
+        echo "FAIL variadic extern: exit $got"
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+fi
+
 # `shield test -run` keeps the tests it names and refuses a name that is not
 # one: a package with a passing and a failing test tells the three apart.
 mkdir -p "$tmp/picked"

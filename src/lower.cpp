@@ -1138,6 +1138,18 @@ struct Lowerer {
     return header;
   }
 
+  // What C does to an argument that travels through `...`: anything narrower
+  // than an int arrives as one, an f32 as an f64. Getting this wrong is not a
+  // wrong number but garbage, since the callee reads the wider slot either way.
+  int promoted(int value, Type *from) {
+    if (from->kind == TY_FLOAT)
+      return from->bits < 64 ? widen(value, types.named("f64")) : value;
+    if (from->kind == TY_BOOL ||
+        ((from->kind == TY_INT || from->kind == TY_ENUM) && from->bits < 32))
+      return widen(value, types.named("i32"));
+    return value;
+  }
+
   int call(Node *n) {
     if (n->form == 3) return atomic_call(n);
     if (n->form == 5) return shared_call(n);
@@ -1168,8 +1180,16 @@ struct Lowerer {
 
     size_t fixed = n->variadic_at >= 0 ? (size_t)n->variadic_at
                                        : n->kids.size();
-    for (size_t i = 0; i < fixed; i++)
-      in.args.push_back(materialize(n->kids[i]));
+    // Past an extern's `...` the C promotions apply, and the callee reads the
+    // promoted width whatever the call site wrote.
+    size_t declared = n->sym && n->sym->type->is_c_variadic
+                          ? n->sym->type->params.size()
+                          : fixed;
+    for (size_t i = 0; i < fixed; i++) {
+      int arg = materialize(n->kids[i]);
+      if (i >= declared) arg = promoted(arg, n->kids[i]->type);
+      in.args.push_back(arg);
+    }
     if (n->variadic_at >= 0) {
       // Already a list: hand it over rather than copying it into a new one.
       if (n->is_variadic) in.args.push_back(expr(n->kids.back()));
@@ -2045,6 +2065,7 @@ struct Lowerer {
     out.name = decl->name;
     out.ret = ret = decl->sym->type->ret;
     out.is_extern = decl->is_extern;
+    out.is_c_variadic = decl->is_c_variadic;
     out.is_internal = decl->is_hidden;
     out.ret_by_pointer = is_aggregate(out.ret);
     for (Node *p : decl->kids) out.params.push_back(p->type);

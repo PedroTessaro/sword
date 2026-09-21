@@ -1,0 +1,10 @@
+// expect-error: is variadic, so it can only be called by name
+// Where the extra arguments travel is settled at the call site, from the
+// signature. A function value carries none of that.
+
+extern func printf(fmt [*]u8, ...) i32
+
+func main() int {
+    write := printf
+    return int(write("hi\n".ptr))
+}

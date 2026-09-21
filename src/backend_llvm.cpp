@@ -1,6 +1,7 @@
 #include "backend_llvm.h"
 
 #include <cstring>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -51,6 +52,10 @@ struct Emitter {
   std::vector<std::string> operand; // value id -> LLVM operand text
   std::set<std::string> intrinsics;
   std::set<std::string> declared; // names the source already declares extern
+  // A call to a variadic C function has to name the whole signature, not just
+  // the return type: that is what tells the backend which arguments travel
+  // where the callee looks for them.
+  std::map<std::string, std::string> variadic_type;
 
   Emitter(const IrModule &m, FILE *o) : mod(m), out(o) {}
 
@@ -317,9 +322,12 @@ struct Emitter {
       fputs("  ", out);
       if (in.dst >= 0) fprintf(out, "%s = ", val(in.dst).c_str());
       // An empty callee means the target came out of a vtable.
+      auto variadic = variadic_type.find(name);
       if (name.empty())
         fprintf(out, "call %s %s(", ll_type(in.type).c_str(),
                 val(in.a).c_str());
+      else if (variadic != variadic_type.end())
+        fprintf(out, "call %s @%s(", variadic->second.c_str(), name.c_str());
       else
         fprintf(out, "call %s @%s(", ll_type(in.type).c_str(), name.c_str());
       for (size_t i = 0; i < in.args.size(); i++)
@@ -373,11 +381,21 @@ struct Emitter {
       else fputs(type.c_str(), out);
       index++;
     }
+    if (f.is_c_variadic) fputs(index ? ", ..." : "...", out);
     fputc(')', out);
+  }
+
+  // `i32 (i32, i64, ...)`, which every call to that function has to repeat.
+  std::string variadic_signature(const IrFunc &f) {
+    std::string text = ll_type(f.ret) + " (";
+    for (const Type *p : f.params)
+      text += (is_aggregate(p) ? "ptr" : ll_type(p)) + std::string(", ");
+    return text + "...)";
   }
 
   void func(const IrFunc &f) {
     if (f.is_extern) {
+      if (f.is_c_variadic) variadic_type[f.name] = variadic_signature(f);
       if (!declared.insert(f.name).second) return;
       signature(f, "declare");
       fputc('\n', out);

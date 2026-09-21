@@ -72,6 +72,7 @@ func name[T, U: Constraint](a T) R { ... }
 func (r *T) Method() R { ... }
 func (mut r *T) Method() R { ... }
 extern func c_name(a T) R          // C ABI, name unchanged
+extern func c_name(a T, ...) R     // C's own variadic: ioctl, fcntl, printf
 
 struct Name { field T ... }
 struct Name[T] { field T ... }     // generic; a type only once instantiated
@@ -188,6 +189,28 @@ site — there is no reflection anywhere. It is four fields:
 | `Text` | strings |
 
 `std/fmt` mirrors the tags as `KindBool`, `KindInt` and so on.
+
+### C's variadic
+
+An `extern` declaration may end in `...`, which is a different thing: it
+gathers nothing, and says that the arguments after the declared ones travel by
+the platform's rules.
+
+```sword
+extern func ioctl(fd i32, request u64, ...) i32
+```
+
+It matters. On Apple's arm64 a variadic argument goes on the stack while a
+fixed one goes in a register, so declaring the arity you happen to use —
+`ioctl(fd i32, request u64, p [*]u8)` — puts the third argument somewhere the
+callee never looks. The same declaration passes on x86-64, which is the worst
+way for it to be wrong.
+
+What C promotes, Sword promotes: anything narrower than an `i32` arrives as
+one, an `f32` as an `f64`. Only scalars fit through — a `string` is two words
+here and a pointer there, so pass `.ptr` and `.len`. And a variadic function
+can only be called by name: a function value carries one word and no
+signature, which is not enough to know where the extra arguments go.
 
 ## Atomics
 
