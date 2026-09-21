@@ -1,0 +1,21 @@
+// expect: 0
+// An exported enum converts from outside the package that declares it, the
+// same way it does at home. SIGWINCH is the case that found it: std/os names
+// four signals, and a terminal program needs a fifth to hear about a resize.
+
+import "std/os"
+
+func main() int {
+    winch := os.Signal(28)
+    if i32(winch) != 28 {
+        return 1
+    }
+    if os.Signal(1) != os.Signal.Hangup {
+        return 2
+    }
+    // Back out again, which already worked.
+    if i32(os.Signal.Terminate) != 15 {
+        return 3
+    }
+    return 0
+}

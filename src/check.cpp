@@ -1479,8 +1479,14 @@ struct Checker {
   Type *check_package_call(Node *n, Package *other) {
     Node *field = n->lhs;
     Symbol *sym = find_in(other->globals, field->name, false);
+    // `colour.Shade(2)` is a conversion, and the same one it is inside the
+    // package that declares Shade. A function of that name shadows it, which
+    // is the rule at home too.
+    if (!sym)
+      if (Type *named = find_in(other->type_names, field->name, false))
+        return check_convert(n, named);
     if (!sym) {
-      error(field->pos, "package '%s' has no exported function '%s'",
+      error(field->pos, "package '%s' has no exported function or type '%s'",
             other->name.c_str(), field->name.c_str());
       return nullptr;
     }

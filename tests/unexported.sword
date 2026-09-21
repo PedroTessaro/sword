@@ -1,4 +1,4 @@
-// expect-error: package 'mem' has no exported function 'malloc'
+// expect-error: package 'mem' has no exported function or type 'malloc'
 
 import "std/mem"
 
