@@ -83,7 +83,12 @@ std::string runtime_link_flags() {
   char chunk[512];
   while (fgets(chunk, sizeof(chunk), file)) flags += chunk;
   fclose(file);
-  while (!flags.empty() && (flags.back() == '\n' || flags.back() == ' '))
-    flags.pop_back();
+  // A second line is another argument, not another command. What comes back
+  // here is pasted into the clang invocation and run through a shell, so a
+  // newline left in the middle would end that command and run the rest of the
+  // file as one of its own.
+  for (char &c : flags)
+    if (c == '\n' || c == '\r') c = ' ';
+  while (!flags.empty() && flags.back() == ' ') flags.pop_back();
   return flags;
 }

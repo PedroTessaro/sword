@@ -70,6 +70,39 @@ for target in "$tmp/alone/old.sw" "$tmp/alone" "$tmp/mixed"; do
     fi
 done
 
+# The flags file beside the runtime archive is one command line however many
+# lines it is written on. A newline left in the middle of it ends the clang
+# invocation and runs the rest of the file as a command of its own, so the
+# object on the second line is never linked.
+mkdir -p "$tmp/flags"
+cp "$shield" "$root/libsword_rt.a" "$tmp/flags/"
+printf 'int sword_flags_shim(void) { return 7; }\n' > "$tmp/flags/shim.c"
+cc -c "$tmp/flags/shim.c" -o "$tmp/flags/shim.o" 2>/dev/null
+{ cat "$root/libsword_rt.flags"; echo "$tmp/flags/shim.o"; } \
+    > "$tmp/flags/libsword_rt.flags"
+cat > "$tmp/flags/main.sword" <<'EOF'
+extern func sword_flags_shim() i32
+
+func main() int {
+    return int(sword_flags_shim())
+}
+EOF
+if ! "$tmp/flags/shield" "$tmp/flags/main.sword" -o "$tmp/flags/prog" \
+        > "$tmp/flags/log" 2>&1; then
+    echo "FAIL flags file of two lines: compilation failed"
+    sed 's/^/     /' "$tmp/flags/log"
+    fail=$((fail + 1))
+else
+    "$tmp/flags/prog"
+    got=$?
+    if [ "$got" != 7 ]; then
+        echo "FAIL flags file of two lines: exit $got, want 7"
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+fi
+
 # `shield test -run` keeps the tests it names and refuses a name that is not
 # one: a package with a passing and a failing test tells the three apart.
 mkdir -p "$tmp/picked"
