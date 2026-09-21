@@ -1,0 +1,140 @@
+package process
+
+import "std/fs"
+import "std/mem"
+
+error CannotStart = "the program could not be started"
+error CannotWait  = "the child could not be waited for"
+error CannotKill  = "the signal could not be sent"
+error TooManyArgs = "that is more arguments than a command line holds"
+
+// Starting a program and waiting for one both stop a thread, and neither is
+// something a poller can help with, so both go to the pool kept for calls like
+// that — the task is put down the way a file read puts it down.
+extern func sword_proc_start(blob [*]u8, blob_len i64, count i64, pipes i32,
+                             fds [*]i32, pid *i64) i32
+extern func sword_proc_wait(pid i64) i32
+extern func sword_proc_kill(pid i64, sig i32) i32
+
+// At most this many arguments, the program's own name included. The runtime
+// builds argv on its stack rather than allocating behind the caller's back.
+const MaxArgs = 256
+
+// A running program and the three descriptors it was given. Wait for it: until
+// something does, a child that has finished stays a zombie.
+struct Child {
+    Pid u64
+    // Only from Start, which gives the child pipes. Run leaves the child with
+    // the descriptors this process has, and these are then closed.
+    In  fs.File
+    Out fs.File
+    Err fs.File
+}
+
+// Runs `path` with `args` after it, with a pipe on each of the child's three
+// descriptors. The program is looked up in PATH when the path has no slash in
+// it, the way a shell would, and the environment is this process's own.
+//
+// The allocator holds argv while it is being built and nothing after that, so
+// an arena the caller resets is exactly right.
+//
+//     mut c := try process.Start("git", args, &arena)
+//     defer c.Close()
+//     n := try c.Out.Read(buf[..])
+//     status := try c.Wait()
+func Start(path string, args []string, mut a mem.Allocator) !Child {
+    return startChild(path, args, a, true)
+}
+
+// For a program whose output is not wanted: the child writes wherever this
+// process writes, and what comes back is the exit status.
+func Run(path string, args []string, mut a mem.Allocator) !i32 {
+    mut c := try startChild(path, args, a, false)
+    return c.Wait()
+}
+
+func startChild(path string, args []string, mut a mem.Allocator,
+                pipes bool) !Child {
+    if args.len + 1 > MaxArgs {
+        return error.TooManyArgs
+    }
+
+    // argv as one run of NUL-terminated strings: a Sword string is not
+    // terminated, and copying it here keeps the FFI boundary scalar.
+    mut total := path.len + 1
+    for arg in args {
+        total += arg.len + 1
+    }
+    mut blob := mem.Alloc[u8](a, total) orelse return error.OutOfMemory
+    defer mem.Free(a, blob)
+
+    mut at u64 = 0
+    for i in 0..path.len {
+        blob[at + i] = path[i]
+    }
+    at += path.len
+    blob[at] = 0
+    at += 1
+    for arg in args {
+        for i in 0..arg.len {
+            blob[at + i] = arg[i]
+        }
+        at += arg.len
+        blob[at] = 0
+        at += 1
+    }
+
+    mut fds := [3]i32{-1, -1, -1}
+    mut pid i64 = 0
+    mut want i32 = 0
+    if pipes {
+        want = 1
+    }
+    if sword_proc_start(blob.ptr, i64(total), i64(args.len + 1), want,
+                        fds[..].ptr, &pid) < 0 {
+        return error.CannotStart
+    }
+    return Child{Pid: u64(pid), In: fs.Of(fds[0]), Out: fs.Of(fds[1]),
+                 Err: fs.Of(fds[2])}
+}
+
+// Waits for it to finish and answers what it said: its exit status, or 128
+// plus the signal when one killed it — the shell's convention, and the only
+// one a single number can carry.
+func (mut c *Child) Wait() !i32 {
+    status := sword_proc_wait(i64(c.Pid))
+    if status < 0 {
+        return error.CannotWait
+    }
+    return status
+}
+
+func (mut c *Child) Kill(sig i32) !void {
+    if sword_proc_kill(i64(c.Pid), sig) < 0 {
+        return error.CannotKill
+    }
+}
+
+// Closes this end of the three pipes. The child's stdin closing is how it is
+// told there is no more input, so a program waiting for the end of it needs
+// this before Wait.
+func (mut c *Child) Close() {
+    c.CloseIn()
+    if c.Out.Fd() >= 0 {
+        c.Out.Close()
+        c.Out = fs.Of(-1)
+    }
+    if c.Err.Fd() >= 0 {
+        c.Err.Close()
+        c.Err = fs.Of(-1)
+    }
+}
+
+// Closes only the child's input, which is what says "that is all of it" to a
+// program reading until the end.
+func (mut c *Child) CloseIn() {
+    if c.In.Fd() >= 0 {
+        c.In.Close()
+        c.In = fs.Of(-1)
+    }
+}

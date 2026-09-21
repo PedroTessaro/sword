@@ -974,6 +974,40 @@ and the task waiting on it is put down like any other. Forty tasks reading at on
 run on a pool of ten, not forty threads; `SWORD_IO_THREADS` is the cap and
 `runtime.Read().IoThreads` is the count.
 
+### `std/process`
+
+Running another program, and talking to it.
+
+```sword
+struct Child { Pid u64; In fs.File; Out fs.File; Err fs.File }
+
+func Start(path string, args []string, mut a mem.Allocator) !Child
+func Run(path string, args []string, mut a mem.Allocator) !i32
+func (mut c *Child) Wait() !i32
+func (mut c *Child) Kill(sig i32) !void
+func (mut c *Child) CloseIn()
+func (mut c *Child) Close()
+```
+
+`args` is what comes after the program's own name. A path with no slash in it
+is looked up in `PATH`, the way a shell would, and the child gets this
+process's environment. The allocator holds `argv` while it is being built and
+nothing after that.
+
+`Start` gives the child a pipe on each of its three descriptors, which is the
+part that matters: a language server is a conversation over the child's stdin
+and stdout rather than a command whose output you collect. `Run` leaves it the
+descriptors this process has and answers the status.
+
+`Wait` answers the exit status, or 128 plus the signal when one killed it — the
+shell's convention, and the only thing a single number can carry. Until
+something waits, a child that has finished stays a zombie. `CloseIn` is how a
+program reading until the end of its input is told that was all of it.
+
+Starting a program and waiting for one both stop a thread and neither is
+anything a poller can help with, so both go to the same pool as file I/O and
+the task waiting is put down like any other.
+
 ### `std/runtime`
 
 What the scheduler is doing, for whoever runs the program rather than writes it.

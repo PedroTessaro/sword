@@ -67,6 +67,12 @@ func Of(fd i32) File {
     return File{fd: fd}
 }
 
+// The descriptor itself, for the one thing a File cannot answer: whether there
+// is anything there at all. A negative one is a file nobody opened.
+func (f *File) Fd() i32 {
+    return f.fd
+}
+
 // How many bytes landed in `into`; zero means the end of the file.
 func (f *File) Read(mut into []u8) !u64 {
     n := sword_fs_read(f.fd, into.ptr, i64(into.len))
