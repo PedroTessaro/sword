@@ -107,6 +107,25 @@ else
     fi
 fi
 
+# --link puts an object of the caller's own on the link line. The path is
+# quoted on the way to the shell, so one with a space in it is a path.
+cp "$tmp/flags/shim.o" "$tmp/flags/a shim.o"
+if ! "$shield" "$tmp/flags/main.sword" -o "$tmp/flags/linked" \
+        --link "$tmp/flags/a shim.o" > "$tmp/flags/log" 2>&1; then
+    echo "FAIL --link: compilation failed"
+    sed 's/^/     /' "$tmp/flags/log"
+    fail=$((fail + 1))
+else
+    "$tmp/flags/linked"
+    got=$?
+    if [ "$got" != 7 ]; then
+        echo "FAIL --link: exit $got, want 7"
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+fi
+
 # `shield test -run` keeps the tests it names and refuses a name that is not
 # one: a package with a passing and a failing test tells the three apart.
 mkdir -p "$tmp/picked"

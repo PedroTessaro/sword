@@ -1130,6 +1130,7 @@ shield test <file.sword | directory> [options]
 
   -o <path>       output binary, default a.out
   -I <dir>        another directory to search for packages
+  --link <arg>    an object, a library or a linker option; one per --link
   --mode=<m>      debug | safe | fast | small, default safe
   -O<level>       override the optimisation level
   -p <n>          test only: how many tests may run at once
@@ -1141,6 +1142,16 @@ shield test <file.sword | directory> [options]
 ```
 
 A `.sword` file compiles alone. A directory compiles as one package.
+
+`--link` reaches the linker, which is how a program calls C that `extern` alone
+cannot describe — a function taking a struct whose layout differs between
+systems, say. One argument each, in the order given, after the program's own
+object:
+
+```
+shield sheath.sword -o sheath --link shim.o --link -L/opt/homebrew/lib \
+    --link -lsomething
+```
 
 `shield test` builds the package together with its `*_test.sword` files behind a
 generated entry point, runs it, and hands back its exit status. Those files are
