@@ -573,6 +573,35 @@ func ToLower(c u8) u8
 func ParseU64(s string) !u64
 ```
 
+### `std/unicode`
+
+Where a character starts, what it cost, and how wide it is. Nothing here
+allocates.
+
+```sword
+struct Rune { Code u32; Bytes u64 }
+
+func Decode(s string, at u64) ?Rune       // nil off a boundary or off UTF-8
+func Encode(r u32, mut into []u8) !u64    // bytes written
+func Valid(s string) bool
+func Count(s string) u64                  // characters, not bytes
+func Width(r u32) u64                     // 0, 1 or 2 columns
+```
+
+`Decode` answers nil for three different things — past the end, inside a
+character, and bytes that are not UTF-8 — because none of them should come
+back as a character nobody wrote. `Bytes` is what a cursor moving right adds
+to its position; stepping by one byte instead lands in the middle of a
+character, and the terminal draws something that is not what is in the file.
+
+`Width` is what decides whether a screen lines up: a combining mark hangs off
+the character before it and takes no column, and a CJK character takes two.
+The ranges it knows are the ones that decide a terminal — the combining
+blocks, East Asian Wide and Fullwidth, and the emoji every terminal draws
+double — rather than the whole of Unicode, which is a standard and a generated
+table. Normalisation, case folding past ASCII and grapheme clusters are not
+here.
+
 ### `std/collections`
 
 ```sword

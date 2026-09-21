@@ -1,0 +1,306 @@
+package unicode
+
+// A string is bytes, which is the right floor to stand on. This is the storey
+// above it: where a character starts, how many bytes it took, and how many
+// columns it takes on a terminal. Nothing here allocates.
+
+error BadRune = "that is not a code point"
+error NoRoom  = "there is not room for that code point"
+
+// One character and what it cost to write. `Bytes` is what a cursor moving
+// right adds to its position.
+struct Rune {
+    Code  u32
+    Bytes u64
+}
+
+// The character starting at `at`, or nil — which covers three mistakes and
+// deliberately does not tell them apart: `at` past the end, `at` in the middle
+// of a character, and bytes that are not UTF-8. None of them should come back
+// as a character nobody wrote.
+func Decode(s string, at u64) ?Rune {
+    if at >= s.len {
+        return nil
+    }
+    first := s[at]
+    if first < 0x80 {
+        return Rune{Code: u32(first), Bytes: 1}
+    }
+
+    mut need u64 = 0
+    mut code u32 = 0
+    // The second byte carries the limits that keep a code point from being
+    // written two ways, or written at all: 0xC0 and 0xC1 are always overlong,
+    // 0xE0 and 0xF0 can be, 0xED reaches the surrogates and 0xF4 reaches past
+    // the last code point there is.
+    mut low u8 = 0x80
+    mut high u8 = 0xBF
+    if first >= 0xC2 && first <= 0xDF {
+        need = 1
+        code = u32(first & 0x1F)
+    } else if first >= 0xE0 && first <= 0xEF {
+        need = 2
+        code = u32(first & 0x0F)
+        if first == 0xE0 {
+            low = 0xA0
+        }
+        if first == 0xED {
+            high = 0x9F
+        }
+    } else if first >= 0xF0 && first <= 0xF4 {
+        need = 3
+        code = u32(first & 0x07)
+        if first == 0xF0 {
+            low = 0x90
+        }
+        if first == 0xF4 {
+            high = 0x8F
+        }
+    } else {
+        return nil // a continuation byte, or one no character starts with
+    }
+
+    if at + 1 + need > s.len {
+        return nil
+    }
+    for i in 0..need {
+        b := s[at + 1 + i]
+        if b < low || b > high {
+            return nil
+        }
+        code = (code << 6) | u32(b & 0x3F)
+        low = 0x80
+        high = 0xBF
+    }
+    return Rune{Code: code, Bytes: need + 1}
+}
+
+// Writes `r` into `into` and answers how many bytes it took. The buffer has to
+// hold the whole character: half of one is not a character.
+func Encode(r u32, mut into []u8) !u64 {
+    if r > 0x10FFFF || (r >= 0xD800 && r <= 0xDFFF) {
+        return error.BadRune
+    }
+    if r < 0x80 {
+        if into.len < 1 {
+            return error.NoRoom
+        }
+        into[0] = u8(r)
+        return 1
+    }
+    if r < 0x800 {
+        if into.len < 2 {
+            return error.NoRoom
+        }
+        into[0] = 0xC0 | u8(r >> 6)
+        into[1] = 0x80 | u8(r & 0x3F)
+        return 2
+    }
+    if r < 0x10000 {
+        if into.len < 3 {
+            return error.NoRoom
+        }
+        into[0] = 0xE0 | u8(r >> 12)
+        into[1] = 0x80 | u8((r >> 6) & 0x3F)
+        into[2] = 0x80 | u8(r & 0x3F)
+        return 3
+    }
+    if into.len < 4 {
+        return error.NoRoom
+    }
+    into[0] = 0xF0 | u8(r >> 18)
+    into[1] = 0x80 | u8((r >> 12) & 0x3F)
+    into[2] = 0x80 | u8((r >> 6) & 0x3F)
+    into[3] = 0x80 | u8(r & 0x3F)
+    return 4
+}
+
+func Valid(s string) bool {
+    mut at u64 = 0
+    for at < s.len {
+        r := Decode(s, at) orelse return false
+        at += r.Bytes
+    }
+    return true
+}
+
+// Characters, not bytes. A byte that starts no character counts as one, so a
+// string that is not valid still has a length rather than an answer nobody can
+// use.
+func Count(s string) u64 {
+    mut at u64 = 0
+    mut count u64 = 0
+    for at < s.len {
+        if r := Decode(s, at) {
+            at += r.Bytes
+        } else {
+            at += 1
+        }
+        count += 1
+    }
+    return count
+}
+
+// How many columns the character takes on a terminal: 0, 1 or 2. This is what
+// decides whether a screen lines up. A combining mark hangs off the character
+// before it and takes no room of its own; a CJK character takes two cells. A
+// program that assumes one draws a broken screen rather than a wrong number.
+//
+// The ranges below are the ones that decide a terminal rather than the whole
+// of Unicode, which is a standard and a generated table. They are written as
+// comparisons rather than as a table because Sword has no global variables:
+// a table would be copied onto the stack at every call.
+func Width(r u32) u64 {
+    // A control character is not drawn at all. What a terminal does with one is
+    // its own business, and it is never a column.
+    if r < 0x20 || (r >= 0x7F && r < 0xA0) {
+        return 0
+    }
+    if zeroWidth(r) {
+        return 0
+    }
+    if wide(r) {
+        return 2
+    }
+    return 1
+}
+
+// Combining marks, the zero-width controls and the variation selectors, in
+// order: the first range that starts past `r` ends the search.
+func zeroWidth(r u32) bool {
+    if r < 0x0300 {
+        return false
+    }
+    if r <= 0x036F {          // combining diacritical marks
+        return true
+    }
+    if r >= 0x0483 && r <= 0x0489 {
+        return true
+    }
+    if r >= 0x0591 && r <= 0x05BD {   // Hebrew points
+        return true
+    }
+    if r >= 0x0610 && r <= 0x061A {   // Arabic
+        return true
+    }
+    if r >= 0x064B && r <= 0x065F {
+        return true
+    }
+    if r == 0x0670 {
+        return true
+    }
+    if r >= 0x06D6 && r <= 0x06DC {
+        return true
+    }
+    if r >= 0x0730 && r <= 0x074A {   // Syriac
+        return true
+    }
+    if r >= 0x07EB && r <= 0x07F3 {
+        return true
+    }
+    if r >= 0x0900 && r <= 0x0903 {   // Devanagari signs
+        return true
+    }
+    if r >= 0x093A && r <= 0x093C {
+        return true
+    }
+    if r >= 0x0941 && r <= 0x0948 {
+        return true
+    }
+    if r == 0x094D {
+        return true
+    }
+    if r >= 0x0951 && r <= 0x0957 {
+        return true
+    }
+    if r == 0x0E31 || (r >= 0x0E34 && r <= 0x0E3A) {   // Thai
+        return true
+    }
+    if r >= 0x0E47 && r <= 0x0E4E {
+        return true
+    }
+    if r >= 0x1AB0 && r <= 0x1AFF {   // combining, extended
+        return true
+    }
+    if r >= 0x1DC0 && r <= 0x1DFF {   // combining, supplement
+        return true
+    }
+    if r >= 0x200B && r <= 0x200F {   // zero width space, joiners, marks
+        return true
+    }
+    if r >= 0x20D0 && r <= 0x20F0 {   // combining, for symbols
+        return true
+    }
+    if r >= 0xFE00 && r <= 0xFE0F {   // variation selectors
+        return true
+    }
+    if r >= 0xFE20 && r <= 0xFE2F {   // combining half marks
+        return true
+    }
+    if r >= 0xE0100 && r <= 0xE01EF { // variation selectors, supplement
+        return true
+    }
+    return false
+}
+
+// East Asian Wide and Fullwidth, and the emoji every terminal draws double.
+func wide(r u32) bool {
+    if r < 0x1100 {
+        return false
+    }
+    if r <= 0x115F {                  // Hangul Jamo, initial
+        return true
+    }
+    if r >= 0x2E80 && r <= 0x303E {   // CJK radicals, Kangxi, punctuation
+        return true
+    }
+    if r >= 0x3041 && r <= 0x33FF {   // kana, Bopomofo, compatibility
+        return true
+    }
+    if r >= 0x3400 && r <= 0x4DBF {   // CJK extension A
+        return true
+    }
+    if r >= 0x4E00 && r <= 0x9FFF {   // CJK unified
+        return true
+    }
+    if r >= 0xA000 && r <= 0xA4CF {   // Yi
+        return true
+    }
+    if r >= 0xA960 && r <= 0xA97F {   // Hangul Jamo extended A
+        return true
+    }
+    if r >= 0xAC00 && r <= 0xD7A3 {   // Hangul syllables
+        return true
+    }
+    if r >= 0xF900 && r <= 0xFAFF {   // CJK compatibility
+        return true
+    }
+    if r >= 0xFE10 && r <= 0xFE19 {   // vertical forms
+        return true
+    }
+    if r >= 0xFE30 && r <= 0xFE6F {   // CJK compatibility forms
+        return true
+    }
+    if r >= 0xFF00 && r <= 0xFF60 {   // fullwidth forms
+        return true
+    }
+    if r >= 0xFFE0 && r <= 0xFFE6 {
+        return true
+    }
+    if r >= 0x17000 && r <= 0x18AFF { // Tangut
+        return true
+    }
+    if r >= 0x1F300 && r <= 0x1F64F { // pictographs and faces
+        return true
+    }
+    if r >= 0x1F680 && r <= 0x1F6FF { // transport
+        return true
+    }
+    if r >= 0x1F900 && r <= 0x1F9FF { // supplemental emoji
+        return true
+    }
+    if r >= 0x20000 && r <= 0x3FFFD { // CJK extensions B and up
+        return true
+    }
+    return false
+}

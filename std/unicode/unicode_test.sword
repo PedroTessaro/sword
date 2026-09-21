@@ -1,0 +1,109 @@
+package unicode
+
+import "std/testing"
+
+func TestDecodeWalksAString(mut t *testing.T) !void {
+    // "ação" — six bytes, four characters: ç and ã take two bytes each.
+    s := "ação"
+    try t.Equal(s.len, 6)
+    try t.Equal(Count(s), 4)
+
+    first := Decode(s, 0) orelse return t.Fatalf("nothing at 0")
+    try t.Equal(first.Code, 97)
+    try t.Equal(first.Bytes, 1)
+
+    second := Decode(s, 1) orelse return t.Fatalf("nothing at 1")
+    try t.Equal(second.Code, 0xE7) // ç
+    try t.Equal(second.Bytes, 2)
+
+    // The middle of a character is not a character: this is the step a cursor
+    // moving one byte at a time takes, and it has to be refused.
+    if inside := Decode(s, 2) {
+        try t.Failf("decoded from inside a character")
+    }
+
+    third := Decode(s, 3) orelse return t.Fatalf("nothing at 3")
+    try t.Equal(third.Code, 0xE3) // ã
+    try t.Equal(third.Bytes, 2)
+
+    if past := Decode(s, s.len) {
+        try t.Failf("decoded past the end")
+    }
+}
+
+func TestDecodeRefusesBadBytes(mut t *testing.T) !void {
+    mut cases := [7]string{
+        "\x80",             // a continuation byte on its own
+        "\xC0\xAF",         // overlong '/'
+        "\xC2",             // cut short
+        "\xE0\x80\x80",     // overlong
+        "\xED\xA0\x80",     // a surrogate
+        "\xF4\x90\x80\x80", // past the last code point
+        "\xF8\x88\x80\x80", // five bytes, which UTF-8 has not had for years
+    }
+    for i, bad in cases {
+        if r := Decode(bad, 0) {
+            try t.Failf("case {} decoded", i)
+        }
+        try t.Equal(Valid(bad), false)
+    }
+
+    // Valid looks at the whole string, not only the start.
+    try t.Equal(Valid("ok, then\xC2"), false)
+    try t.Equal(Valid("ação, 日本語, ok"), true)
+    try t.Equal(Valid(""), true)
+}
+
+func TestEncodeRoundTrips(mut t *testing.T) !void {
+    mut room := [4]u8{}
+    mut codes := [5]u32{0x41, 0xE7, 0x20AC, 0x1F600, 0x10FFFF}
+    for code in codes {
+        n := try Encode(code, room[..])
+        back := Decode(string(room[0..n]), 0) orelse
+            return t.Fatalf("what was encoded did not decode")
+        try t.Equal(back.Code, code)
+        try t.Equal(back.Bytes, n)
+    }
+
+    // Surrogates and anything past the last code point are not characters.
+    Encode(0xD800, room[..]) catch |e| {
+        try t.Equal(e, error.BadRune)
+    }
+    Encode(0x110000, room[..]) catch |e| {
+        try t.Equal(e, error.BadRune)
+    }
+    // Half a character is not one, so a buffer too small is an error.
+    Encode(0x20AC, room[0..2]) catch |e| {
+        try t.Equal(e, error.NoRoom)
+    }
+}
+
+func TestWidth(mut t *testing.T) !void {
+    try t.Equal(Width(97), 1)       // a
+    try t.Equal(Width(0xE7), 1)     // ç
+    try t.Equal(Width(0x0301), 0)   // combining acute
+    try t.Equal(Width(0x200B), 0)   // zero width space
+    try t.Equal(Width(10), 0)       // newline, which is never a column
+    try t.Equal(Width(0x65E5), 2)   // 日
+    try t.Equal(Width(0xAC00), 2)   // 가
+    try t.Equal(Width(0xFF21), 2)   // fullwidth A
+    try t.Equal(Width(0x1F600), 2)  // an emoji
+    try t.Equal(Width(0x2013), 1)   // an en dash, which is not wide
+}
+
+// What a cursor does: step right by characters rather than by bytes, adding up
+// the columns as it goes.
+func TestColumnsOfALine(mut t *testing.T) !void {
+    line := "a日b́c" // a, CJK, b with a combining acute, c
+    mut at u64 = 0
+    mut columns u64 = 0
+    mut runes u64 = 0
+    for at < line.len {
+        r := Decode(line, at) orelse return t.Fatalf("not UTF-8 after all")
+        columns += Width(r.Code)
+        at += r.Bytes
+        runes += 1
+    }
+    try t.Equal(runes, 5)
+    try t.Equal(columns, 5) // 1 + 2 + 1 + 0 + 1
+}
