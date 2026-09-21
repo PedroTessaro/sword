@@ -1,0 +1,43 @@
+// expect: 42
+// A task parked in WaitSignal has nothing to end it, and the scope that
+// spawned it does not close until something does. StopSignals is that: every
+// wait answers, and every wait after it answers the same way.
+
+import "std/os"
+import "std/time"
+
+func watcher(mut out *atomic[u64]) !void {
+    os.WaitSignal() catch {
+        out.Store(1)
+        return
+    }
+    out.Store(2) // a signal arrived, which is not what is being tested
+}
+
+func stopper() !void {
+    time.Sleep(time.Millis(30))
+    os.StopSignals()
+}
+
+func main() !int {
+    try os.Catch(os.Signal.Hangup)
+
+    mut out := atomic[u64](0)
+    scope {
+        spawn watcher(&out)
+        spawn stopper()
+    }
+    if out.Load() != 1 {
+        return 1
+    }
+
+    // And it keeps answering, rather than parking forever on the second ask.
+    os.WaitSignal() catch {
+        // Asking to catch something again is a mistake, not a way back.
+        os.Catch(os.Signal.Interrupt) catch {
+            return 42
+        }
+        return 2
+    }
+    return 3
+}

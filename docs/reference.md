@@ -712,6 +712,7 @@ enum Signal i32 { Hangup = 1, Interrupt = 2, Quit = 3, Terminate = 15 }
 
 func Catch(sig Signal) !void      // start catching it
 func WaitSignal() !Signal         // the next one, without holding a thread
+func StopSignals()                // every wait answers NoSignals, for good
 func Kill(pid u64, sig Signal) !void
 
 func MaxFiles() u64               // descriptors this process may open
@@ -724,6 +725,16 @@ func Hostname() ?string
 A signal handler may do almost nothing safely, so a signal arrives down a pipe
 and `WaitSignal` is an ordinary task parked on the other end. That is the whole
 of a graceful shutdown: wait, call `Close`, let the scope drain.
+
+`StopSignals` is the other end of that. A task parked in `WaitSignal` has
+nothing else to end it, and the scope that spawned it will not close until it
+does; after this every wait answers `error.NoSignals` and keeps answering it.
+The signals being caught go back to their default behaviour, so a program that
+has stopped listening does not swallow a `SIGTERM`, and `Catch` afterwards is
+an error rather than a way back.
+
+Any signal number is catchable, not only the four the enum names:
+`os.Catch(os.Signal(28))` asks for SIGWINCH.
 
 `Args` fills an array you supply instead of allocating, and returns the part of
 it that was used:
