@@ -242,5 +242,42 @@ picked 0 "ok    1 tests" -run TestPasses
 picked 1 "2 tests, 1 failed" -run TestPasses -run TestFails
 picked 1 "no test 'TestPass'" -run TestPass
 
+# `-bench` runs the Benchmark... functions instead of the tests, and finds its
+# own N: the body is called with a small one and scaled until a measurement
+# lasts long enough to mean anything.
+mkdir -p "$tmp/bench"
+cat > "$tmp/bench/bench_test.sword" <<'EOF'
+import "std/testing"
+
+func TestStillRuns(mut t *testing.T) !void {
+    try t.Equal(1 + 1, 2)
+}
+
+func BenchmarkAdding(mut b *testing.B) !void {
+    mut total i64 = 0
+    for i in 0..b.N {
+        total += i64(i) % 7
+    }
+    b.Keep(total)
+}
+EOF
+benched() { # expected exit, expected text, arguments
+    want=$1 text=$2
+    shift 2
+    out=$("$shield" test "$tmp/bench" "$@" 2>&1)
+    got=$?
+    if [ "$got" != "$want" ] || ! printf '%s\n' "$out" | grep -qF "$text"; then
+        echo "FAIL shield test -bench $*: exit $got, want $want with '$text'"
+        printf '%s\n' "$out" | sed 's/^/     /'
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+}
+benched 0 "BenchmarkAdding" -bench
+benched 0 "ns/op" -bench
+benched 0 "ok    1 tests"                     # without it, the tests run
+benched 1 "no benchmark 'BenchmarkNope'" -bench -run BenchmarkNope
+
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

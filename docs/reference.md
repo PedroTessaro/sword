@@ -874,6 +874,24 @@ Tests run at the same time, 64 at once by default; `shield test <path> -p 1`
 puts them back in order. `t.Mem` is an arena of that test's own. `t.Arg` is what `RunWith` handed the
 subtest, since a body cannot capture anything.
 
+Benchmarks are found the same way — `Benchmark...` taking one `*B` — and
+`shield test <path> -bench` runs those instead of the tests:
+
+```sword
+func (b *B) Name() string
+func (mut b *B) ResetTimer()            // setup does not count
+func (mut b *B) StopTimer()
+func (mut b *B) StartTimer()
+func (mut b *B) Keep(v i64)             // so the work is not dropped
+func (mut b *B) KeepFloat(v f64)
+```
+
+`b.N` is how many times the body should do its work, and the harness picks it:
+it scales until a measurement lasts about a tenth of a second, then takes nine
+and reports the median with half the quartile range as the spread. `b.Mem` is
+an arena reset before every sample, and what the body takes from it after the
+last `ResetTimer` is reported per operation.
+
 ### Channels
 
 A queue tasks hand values through, and part of the language rather than a package
@@ -1307,7 +1325,8 @@ shield test <file.sword | directory> [options]
   --mode=<m>      debug | safe | fast | small, default safe
   -O<level>       override the optimisation level
   -p <n>          test only: how many tests may run at once
-  -run <name>     test only: run just this test; repeat for more
+  -run <name>     test only: run just this one; repeat for more
+  -bench          test only: run the Benchmark... functions instead
   --emit-tokens   stop after lexing
   --emit-ast      stop after parsing and checking
   --emit-ir       stop after lowering, print Sword IR

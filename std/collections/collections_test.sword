@@ -236,3 +236,27 @@ enum Key i32 {
     Down = 2
     Left = 3
 }
+
+func BenchmarkSortShuffled(mut b *testing.B) !void {
+    mut xs := mem.Alloc[u64](b.Mem, 1024) orelse return error.OutOfMemory
+    mut seed u64 = 7
+    b.ResetTimer()
+    for run in 0..b.N {
+        b.StopTimer()
+        for i in 0..xs.len {
+            seed = seed *% 6364136223846793005 +% 1442695040888963407
+            xs[i] = seed >> 33
+        }
+        b.StartTimer()
+        Sort[u64](xs, lessU64)
+        b.Keep(i64(xs[0]))
+    }
+}
+
+func BenchmarkMapSet(mut b *testing.B) !void {
+    mut m := try NewMapOf[u64, u64](b.Mem, 1024)
+    b.ResetTimer()
+    for i in 0..b.N {
+        try m.Set(u64(i) % 512, u64(i))
+    }
+}

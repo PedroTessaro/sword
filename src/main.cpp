@@ -27,7 +27,8 @@ void usage() {
         "\n"
         "  -o <path>      output binary (default: a.out)\n"
         "  -p <n>         test only: how many tests may run at once\n"
-        "  -run <name>    test only: run just this test; repeat for more\n"
+        "  -run <name>    test only: run just this one; repeat for more\n"
+        "  -bench         test only: run the Benchmark... functions instead\n"
         "  -I <dir>       add a directory to the package search path\n"
         "  --link <arg>   an object, a library or a linker option to link\n"
         "                 against; one argument each, repeat for more\n"
@@ -170,6 +171,7 @@ int main(int argc, char **argv) {
   bool named = false; // whether -o asked for a particular path
   std::string forwarded; // options the test binary reads for itself
   std::vector<std::string> only; // `-run`: the tests to keep
+  bool benching = false;         // `-bench`: run the benchmarks instead
   if (testing) output = "";
 
   for (int i = first; i < argc; i++) {
@@ -198,6 +200,7 @@ int main(int argc, char **argv) {
       forwarded += " -p " + std::string(argv[++i]);
     else if (testing && !strcmp(arg, "-run") && i + 1 < argc)
       only.push_back(argv[++i]);
+    else if (testing && !strcmp(arg, "-bench")) benching = true;
     else if (!strcmp(arg, "-h") || !strcmp(arg, "--help")) { usage(); return 0; }
     else if (arg[0] == '-') { usage(); return 1; }
     else input = arg;
@@ -236,8 +239,9 @@ int main(int argc, char **argv) {
   for (const std::string &root : package_roots()) search.push_back(root);
 
   Program prog;
-  if (!load_program(input, search, prog,
-                    testing ? LOAD_TESTS : LOAD_BUILD, only))
+  LoadMode how = LOAD_BUILD;
+  if (testing) how = benching ? LOAD_BENCH : LOAD_TESTS;
+  if (!load_program(input, search, prog, how, only))
     return 1;
 
   TypeTable types;
