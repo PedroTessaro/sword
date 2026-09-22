@@ -1015,14 +1015,22 @@ struct Checker {
   // interface conversion happens uniformly.
   bool convert(Node *value, Type *to) {
     if (assignable(value->type, to)) {
-      // An untyped literal going into an optional becomes the payload, not the
-      // optional: the wrapping happens where the value is stored, and a literal
-      // carrying the box's type would be copied as if it were one.
-      if (is_optional(to) && value->type->untyped &&
-          value->type->kind != TY_OPT)
+      // A value going into a `?T` that is a { has, value } pair becomes the
+      // payload, and the box is built around it where it lands: a store knows
+      // its destination, and a call argument builds from `bind_to`. Carrying
+      // the box's type instead made the value be copied as if it already were
+      // one — the caller handing over the payload's bytes and whatever sat
+      // behind them as the flag.
+      //
+      // `nil` is the exception and is already an optional: it keeps the box's
+      // type, and lowering makes an absent one.
+      if (to->is_optional && value->type->kind != TY_OPT &&
+          !type_eq(value->type, to)) {
         apply_type(value, const_cast<Type *>(opt_payload(to)));
-      else
+        value->bind_to = to;
+      } else {
         apply_type(value, to);
+      }
       return true;
     }
     if (to->is_any) {
@@ -1039,11 +1047,18 @@ struct Checker {
       return true;
     }
     // `?Interface` taking a pointer to a struct: the pair is built for the
-    // payload and the wrapping happens where it is stored, the same as for any
-    // other optional.
+    // payload, and the box around it is what the value becomes. Where this is
+    // stored, the destination says what to build — but a call argument is
+    // built from this type alone, and leaving it as the bare interface had the
+    // caller write sixteen bytes where the callee reads twenty-four, taking
+    // the flag from whatever was on the stack behind them.
     if (is_optional(to)) {
       Type *payload = const_cast<Type *>(opt_payload(to));
-      if (payload && payload->is_interface) return bind_interface(value, payload);
+      if (payload && payload->is_interface) {
+        if (!bind_interface(value, payload)) return false;
+        value->bind_to = to;
+        return true;
+      }
     }
     return to->is_interface && bind_interface(value, to);
   }
