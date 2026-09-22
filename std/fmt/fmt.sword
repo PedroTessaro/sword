@@ -94,18 +94,41 @@ func Hex(mut out Sink, v u64, width u64) !void {
     }
 }
 
+// The largest f64 there is. Anything above it is an infinity, which is how one
+// is recognised without a bit pattern.
+const maxFloat = 1.7976931348623157e308
+// Past this the scaled value no longer fits in a u64. The fixed-point path
+// then printed a number with no relation to the one it was given: 1e16 came
+// out as 18446744073709.551615, which is the u64 ceiling with a point in it.
+const scaleCeiling = 1.8e19
+
 // Fixed point with `decimals` places. Enough for logs and JSON numbers; not a
-// shortest-round-trip printer.
+// shortest-round-trip printer. A number too large for that — more digits in
+// front of the point than a u64 holds — comes out in exponent form instead,
+// since the alternative is a wrong number.
 func F64(mut out Sink, v f64, decimals u64) !void {
+    // Nothing else here is true of a NaN, including that it equals itself.
+    if v != v {
+        try Str(out, "nan")
+        return
+    }
     mut x := v
     if x < 0.0 {
         try out.WriteByte(minus)
         x = -x
     }
+    if x > maxFloat {
+        try Str(out, "inf")
+        return
+    }
 
     mut scale f64 = 1.0
     for i in 0..decimals {
         scale *= 10.0
+    }
+    if x >= scaleCeiling / scale {
+        try exponent(out, x, decimals)
+        return
     }
     scaled := u64(x * scale + 0.5)
     unit := u64(scale)
@@ -132,13 +155,58 @@ func F64(mut out Sink, v f64, decimals u64) !void {
     }
 }
 
+// Divides by powers of ten until what is left is in [1, 10), counting them,
+// and prints that with the exponent beside it. In bites rather than one at a
+// time: every division rounds, and ten of them tell on the digits — this way
+// an exact power of ten still prints as one.
+func exponent(mut out Sink, v f64, decimals u64) !void {
+    mut x := v
+    mut e u64 = 0
+    mut step f64 = 1.0e16
+    mut by u64 = 16
+    for by > 0 {
+        for x >= step {
+            x /= step
+            e += by
+        }
+        step = 1.0
+        by /= 2
+        for i in 0..by {
+            step *= 10.0
+        }
+        if by == 0 {
+            break
+        }
+    }
+    mut places := decimals
+    if places > 15 {
+        places = 15
+    }
+    try F64(out, x, places)
+    try out.WriteByte(101) // 'e'
+    try out.WriteByte(43)  // '+'
+    try U64(out, e)
+}
+
 // The default for a float: up to six places, with trailing zeros dropped so
 // that 1.5 does not print as 1.500000.
 func Float(mut out Sink, v f64) !void {
+    if v != v {
+        try Str(out, "nan")
+        return
+    }
     mut x := v
     if x < 0.0 {
         try out.WriteByte(minus)
         x = -x
+    }
+    if x > maxFloat {
+        try Str(out, "inf")
+        return
+    }
+    if x >= scaleCeiling / 1000000.0 {
+        try exponent(out, x, 6)
+        return
     }
     scaled := u64(x * 1000000.0 + 0.5)
     whole := scaled / 1000000

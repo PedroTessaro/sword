@@ -1,0 +1,34 @@
+// expect: 42
+// A NaN is not equal to anything, itself included, so `x != x` is true for one
+// and every other comparison is false. The backend used to answer `!=` with an
+// ordered predicate, which made `==` and `!=` both false — the one pair of
+// answers that cannot be, and the reason nothing could recognise a NaN.
+
+func nanFrom(zero f64) f64 {
+    return zero / zero
+}
+
+func main() int {
+    big := 1.0e308
+    zero := big - big
+    nan := nanFrom(zero)
+    inf := big * 10.0
+
+    if !(nan != nan) {
+        return 1
+    }
+    if nan == nan {
+        return 2
+    }
+    if nan < 1.0 || nan > 1.0 || nan <= 1.0 || nan >= 1.0 {
+        return 3
+    }
+    // An ordinary number still compares the way it always did.
+    if !(1.0 != 2.0) || 1.0 == 2.0 {
+        return 4
+    }
+    if !(inf > 1.0e308) || inf == -inf {
+        return 5
+    }
+    return 42
+}

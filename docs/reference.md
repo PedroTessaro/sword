@@ -136,6 +136,9 @@ By precedence, tightest first:
 | `\|\|` | short-circuits |
 | `catch` `orelse` | below everything else |
 
+A NaN compares false against everything, itself included, so `x != x` is true
+for one and is how it is recognised.
+
 Prefix: `-` `!` `&` (address of) `*` (dereference) `try`.
 
 Assignment: `=` `+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=` and the
@@ -691,6 +694,10 @@ func Float(mut out Sink, v f64) !void     // up to six places, zeros trimmed
 func Pad(mut out Sink, s string, width u64) !void
 func Quote(mut out Sink, s string) !void  // JSON string, escaped
 ```
+Fixed point, not shortest-round-trip. A number with more digits in front of the
+point than a `u64` holds comes out in exponent form — `1.000000e+16` — because
+the alternative is a wrong number, which is what it used to print. `nan`, `inf`
+and `-inf` are named.
 
 The format language is small on purpose:
 

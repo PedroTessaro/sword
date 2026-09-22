@@ -97,7 +97,11 @@ struct Emitter {
     if (operand->kind == TY_FLOAT) {
       switch (in.op) {
       case IR_EQ: return "oeq";
-      case IR_NE: return "one";
+      // Unordered: a NaN is not equal to anything, itself included, so `x != x`
+      // has to be true for one. With the ordered predicate both `==` and `!=`
+      // answered false, which is the one thing that cannot be — and it is how
+      // a NaN is recognised without reaching for its bits.
+      case IR_NE: return "une";
       case IR_LT: return "olt";
       case IR_LE: return "ole";
       case IR_GT: return "ogt";
