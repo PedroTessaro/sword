@@ -1,0 +1,20 @@
+// expect-error: every iteration would write 'seen' through 'Add'; to accumulate
+// A write does not have to look like one: `seen.Add(1)` reaches the same
+// memory as `seen.n += 1`, and every iteration of the loop would do it. The
+// rule only ever looked at assignments, so this went through.
+
+struct Counter {
+    n i64
+}
+
+func (mut c *Counter) Add(v i64) {
+    c.n += v
+}
+
+func main() int {
+    mut seen := Counter{n: 0}
+    parallel for i in 0..1000 {
+        seen.Add(1)
+    }
+    return int(seen.n)
+}

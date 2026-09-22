@@ -696,28 +696,62 @@ struct Checker {
     collect_indexed(loop->body, loop->sym, covered);
 
     std::set<Symbol *> written;
-    walk(loop->body, [&](Node *n) {
-      if (n->kind != ND_ASSIGN) return;
-      Symbol *root = share_root(n->lhs);
+    // `place` is written once per iteration; `how` names the call it was
+    // written through, when it was not written by an assignment.
+    auto note_write = [&](Node *place, const char *how) {
+      Symbol *root = share_root(place);
       if (!root || local.count(root) || root == loop->reduce_sym) return;
-      Node *base = n->lhs;
+      Node *base = place;
       while (base && base->kind != ND_IDENT) base = base->lhs;
       if (!base || !covered.count(base)) {
         bool indexable = root->type && (root->type->kind == TY_SLICE ||
                                         root->type->kind == TY_ARRAY);
+        std::string through = how ? std::string(" through '") + how + "'" : "";
         if (indexable)
-          error(n->lhs->pos,
-                "every iteration would write '%s'; a 'parallel for' body may "
+          error(place->pos,
+                "every iteration would write '%s'%s; a 'parallel for' body may "
                 "only write '%s[%s]'",
-                root->name.c_str(), root->name.c_str(), loop->name.c_str());
+                root->name.c_str(), through.c_str(), root->name.c_str(),
+                loop->name.c_str());
         else
-          error(n->lhs->pos,
-                "every iteration would write '%s'; to accumulate into it, "
+          error(place->pos,
+                "every iteration would write '%s'%s; to accumulate into it, "
                 "write 'reduce(+: %s)' on the loop",
-                root->name.c_str(), root->name.c_str());
+                root->name.c_str(), through.c_str(), root->name.c_str());
         return;
       }
       written.insert(root);
+    };
+
+    walk(loop->body, [&](Node *n) {
+      if (n->kind == ND_ASSIGN) {
+        note_write(n->lhs, nullptr);
+        return;
+      }
+      // A write does not have to look like one. `c.Add(1)` and `bump(&c)`
+      // reach the same memory as `c.n += 1`, and every iteration would do it;
+      // only the shape is different. What the callee may write is in its
+      // signature, which is the same thing `mut` on a parameter means
+      // everywhere else.
+      if (n->kind != ND_CALL) return;
+      Type *sig = n->sym ? n->sym->type : nullptr;
+      if (!sig && n->lhs && n->lhs->type && n->lhs->type->kind == TY_FUNC)
+        sig = n->lhs->type;
+      if (!sig) return;
+      const char *how = n->lhs && !n->lhs->name.empty() ? n->lhs->name.c_str()
+                                                        : nullptr;
+      size_t skip = 0;
+      if (n->form == CALL_METHOD) {
+        skip = 1;
+        if (!sig->param_mut.empty() && sig->param_mut[0] && n->lhs &&
+            n->lhs->lhs)
+          note_write(n->lhs->lhs, how);
+      }
+      for (size_t i = 0; i < n->kids.size(); i++) {
+        size_t at = i + skip;
+        if (at < sig->param_mut.size() && sig->param_mut[at])
+          note_write(n->kids[i], how);
+      }
     });
 
     // Once a name is written by the loop, every other mention of it has to be

@@ -167,6 +167,10 @@ on a parameter means the function may write through it; without `mut`, it
 cannot. So the signature the task was declared with is what the checker reads,
 and you do not annotate anything extra.
 
+The same signature is what says a call writes. Inside a `parallel for`,
+`c.Add(1)` and `bump(&c)` reach the same memory as `c.n += 1` would, and are
+refused for the same reason — a write does not have to look like one.
+
 ### The parent counts too
 
 ```sword
