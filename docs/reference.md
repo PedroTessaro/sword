@@ -920,6 +920,7 @@ enum Mode i32 { Read, Write, Append }   // Write truncates or creates
 
 func Open(path string, mode Mode) !File
 func Of(fd i32) File                    // wrap one the process already has
+func (f *File) Fd() i32                 // negative: a file nobody opened
 func (f *File) Read(mut into []u8) !u64 // 0 means the end of the file
 func (f *File) Write(from []u8) !void
 func (f *File) WriteString(s string) !void
