@@ -136,6 +136,9 @@ By precedence, tightest first:
 | `\|\|` | short-circuits |
 | `catch` `orelse` | below everything else |
 
+A NaN compares false against everything, itself included, so `x != x` is true
+for one and is how it is recognised.
+
 Prefix: `-` `!` `&` (address of) `*` (dereference) `try`.
 
 Assignment: `=` `+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=` and the
@@ -350,10 +353,36 @@ try io.Printf("{} is {}\n", k, u8(k))    // Real is 10
 parallel for i in a..b reduce(op: acc) { ... }
 ```
 
-`op` is `+`, `&`, `|`, `min` or `max`; only `+` applies to a float. The body
-combines one element into the worker's private copy — `acc += xs[i]` for a sum,
-`if xs[i] > acc { acc = xs[i] }` for a maximum — and the clause says how the
-copies are folded together at the end.
+`op` is `+`, `&`, `|`, `min` or `max`, or the name of a function that combines
+two partial answers into one:
+
+```sword
+mut total := num.NewKahan()
+parallel for i in 0..xs.len reduce(num.Merge: total) {
+    total.Add(xs[i])
+}
+```
+
+That function takes two of whatever is being reduced and answers a third —
+`func(T, T) T`, writing through nothing — and each piece of the range starts
+from the zero value of `T`, so this is for accumulators where all-zero means
+"nothing yet". `&` and `min` stay built in because their identities are not
+zero.
+
+Only `+` applies to a float among the built-in operators. The body
+combines one element into the private copy that piece of the range has —
+`acc += xs[i]` for a sum, `if xs[i] > acc { acc = xs[i] }` for a maximum — and
+the clause says how those copies are combined at the end.
+
+The answer does not depend on how many threads ran it. The range is cut into a
+fixed number of pieces, each keeps its own partial answer, and they are
+combined in the order they were cut. That matters for floating point, where
+adding in a different order is a different number: the same program answers the
+same bits on one thread and on sixteen. How many tasks run those pieces is
+still up to the scheduler — it is the cut that is fixed, not the schedule.
+
+It is not the same number a sequential loop would reach, since the pieces are
+summed separately before being combined. Reproducible, not sequential.
 
 ## Errors
 
@@ -681,6 +710,10 @@ func Float(mut out Sink, v f64) !void     // up to six places, zeros trimmed
 func Pad(mut out Sink, s string, width u64) !void
 func Quote(mut out Sink, s string) !void  // JSON string, escaped
 ```
+Fixed point, not shortest-round-trip. A number with more digits in front of the
+point than a `u64` holds comes out in exponent form — `1.000000e+16` — because
+the alternative is a wrong number, which is what it used to print. `nan`, `inf`
+and `-inf` are named.
 
 The format language is small on purpose:
 
@@ -760,6 +793,28 @@ digest := h.Sum()
 `Sum` finishes the message. The padding it writes is part of what was hashed,
 so there is nothing sensible to append afterwards: a hasher is spent once its
 digest has been taken, and another message needs another hasher.
+
+### `std/num`
+
+Adding floating point loses the small terms: once the running total is large
+enough, a term below its last bit changes nothing. A compensated sum keeps what
+each addition threw away.
+
+```sword
+func NewKahan() Kahan
+func (mut k *Kahan) Add(v f64)
+func Merge(a Kahan, b Kahan) Kahan   // two partial sums into one
+func (k Kahan) Value() f64           // the total, compensation included
+func (k Kahan) Rounded() f64         // without it: what plain addition reaches
+func Abs(v f64) f64
+```
+
+Neumaier's form, which is Kahan's plus the case Kahan's misses — a term larger
+than the running total, where it is the total that gets rounded away. A million
+ones added to 1e16 come to 1e16 by plain addition, and to 1e16 + 1000000 here.
+
+`Merge` is what `parallel for ... reduce(num.Merge: total)` calls, and the zero
+value is the identity, so it is also the shape any reduction of your own takes.
 
 ### `std/os`
 
@@ -863,6 +918,24 @@ func (mut t *T) RunWith(name string, body func(mut *T) !void, arg any) !void
 Tests run at the same time, 64 at once by default; `shield test <path> -p 1`
 puts them back in order. `t.Mem` is an arena of that test's own. `t.Arg` is what `RunWith` handed the
 subtest, since a body cannot capture anything.
+
+Benchmarks are found the same way — `Benchmark...` taking one `*B` — and
+`shield test <path> -bench` runs those instead of the tests:
+
+```sword
+func (b *B) Name() string
+func (mut b *B) ResetTimer()            // setup does not count
+func (mut b *B) StopTimer()
+func (mut b *B) StartTimer()
+func (mut b *B) Keep(v i64)             // so the work is not dropped
+func (mut b *B) KeepFloat(v f64)
+```
+
+`b.N` is how many times the body should do its work, and the harness picks it:
+it scales until a measurement lasts about a tenth of a second, then takes nine
+and reports the median with half the quartile range as the spread. `b.Mem` is
+an arena reset before every sample, and what the body takes from it after the
+last `ResetTimer` is reported per operation.
 
 ### Channels
 
@@ -1297,7 +1370,8 @@ shield test <file.sword | directory> [options]
   --mode=<m>      debug | safe | fast | small, default safe
   -O<level>       override the optimisation level
   -p <n>          test only: how many tests may run at once
-  -run <name>     test only: run just this test; repeat for more
+  -run <name>     test only: run just this one; repeat for more
+  -bench          test only: run the Benchmark... functions instead
   --emit-tokens   stop after lexing
   --emit-ast      stop after parsing and checking
   --emit-ir       stop after lowering, print Sword IR

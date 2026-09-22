@@ -1,0 +1,66 @@
+package fmt
+
+import "std/bytes"
+import "std/testing"
+
+func shown(mut t *testing.T, v f64) !string {
+    mut b := try bytes.New(t.Mem, 64)
+    try Float(&b, v)
+    return b.Str()
+}
+
+func fixed(mut t *testing.T, v f64, decimals u64) !string {
+    mut b := try bytes.New(t.Mem, 64)
+    try F64(&b, v, decimals)
+    return b.Str()
+}
+
+func TestFloatOrdinary(mut t *testing.T) !void {
+    try t.Equal(try shown(t, 0.0), "0.0")
+    try t.Equal(try shown(t, 3.25), "3.25")
+    try t.Equal(try shown(t, -3.25), "-3.25")
+    try t.Equal(try shown(t, 123456789.5), "123456789.5")
+    try t.Equal(try fixed(t, 3.14159, 2), "3.14")
+    try t.Equal(try fixed(t, 2.0, 0), "2")
+}
+
+// Past what a u64 holds once it is scaled, the fixed-point path printed a
+// number with no relation to the one it was given: 1e16 came out as
+// 18446744073709.551615, which is the u64 ceiling with a point dropped in it.
+func TestFloatTooBigForFixedPoint(mut t *testing.T) !void {
+    // Still in range, and still printed as digits.
+    try t.Equal(try shown(t, 1.0e12), "1000000000000.0")
+    try t.Equal(try shown(t, 1.0e13), "10000000000000.0")
+
+    // Past it, and now in exponent form rather than wrong.
+    try t.Equal(try shown(t, 1.0e16), "1.000000e+16")
+    try t.Equal(try shown(t, 1.0e19), "1.000000e+19")
+    try t.Equal(try shown(t, 1.0e22), "1.000000e+22")
+    try t.Equal(try shown(t, -2.5e20), "-2.500000e+20")
+
+    // How many places are asked for is what decides where that happens: two
+    // decimals leave room for four more digits in front of the point.
+    try t.Equal(try fixed(t, 1.0e16, 2), "10000000000000000.00")
+    try t.Equal(try fixed(t, 1.0e19, 2), "1.00e+19")
+}
+
+// A NaN is not equal to anything, itself included, which is how one is
+// recognised without reaching for its bits — and an infinity is above every
+// number there is.
+func TestFloatNotNumbers(mut t *testing.T) !void {
+    big := 1.0e308
+    inf := big * 10.0
+    zero := big - big
+    nan := zero / zero
+
+    try t.Equal(nan != nan, true)
+    try t.Equal(nan == nan, false)
+    try t.Equal(nan < 1.0, false)
+    try t.Equal(nan > 1.0, false)
+
+    try t.Equal(try shown(t, nan), "nan")
+    try t.Equal(try shown(t, inf), "inf")
+    try t.Equal(try shown(t, -inf), "-inf")
+    try t.Equal(try fixed(t, nan, 3), "nan")
+    try t.Equal(try fixed(t, inf, 3), "inf")
+}

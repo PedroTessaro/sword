@@ -1,0 +1,21 @@
+// expect-error: 'Fold' writes through a parameter; a reduction combines two
+// Combining is not accumulating: it takes two answers and makes a third. One
+// that writes through what it was given would be writing into a piece's own
+// answer while the combining walks them.
+
+struct Stats {
+    Count i64
+}
+
+func Fold(mut a Stats, b Stats) Stats {
+    a.Count += b.Count
+    return a
+}
+
+func main() int {
+    mut stats := Stats{Count: 0}
+    parallel for i in 0..100 reduce(Fold: stats) {
+        stats.Count += 1
+    }
+    return int(stats.Count)
+}

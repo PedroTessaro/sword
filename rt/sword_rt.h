@@ -8,7 +8,11 @@
 extern "C" {
 
 typedef uint16_t (*sword_task_fn)(void *args);
-typedef uint16_t (*sword_chunk_fn)(void *env, int64_t lo, int64_t hi);
+// The index says which piece of the range this is, counting from zero. A
+// reduction keeps its partial answer there, so that combining them is a walk
+// in order rather than whatever order the workers happened to finish in.
+typedef uint16_t (*sword_chunk_fn)(void *env, int64_t lo, int64_t hi,
+                                   int64_t index);
 
 // Opaque to generated code, which only ever reserves this much word-aligned
 // space on its own frame and passes the address along. The alignment matters:
@@ -25,8 +29,21 @@ uint16_t sword_scope_end(void *scope);
 // with a thunk around the program's own main.
 uint16_t sword_run_main(sword_task_fn fn, const void *args, int64_t size);
 
+// How many pieces a range is cut into, at most. Fixed rather than one per
+// worker on purpose: what a reduction combines has to be the same list in the
+// same order whether the program runs on one thread or on sixteen. Enough
+// pieces that stealing can even out a body whose cost varies.
+//
+// Must equal kChunks in src/lower.cpp, which reserves room for one partial
+// answer per piece on the caller's frame.
+enum { SWORD_CHUNKS = 64 };
+
+// Answers the first error any piece returned, and writes how many pieces there
+// were — which is how many partial answers the caller has to combine.
+// `most` is the caller's own cap on the number of pieces: it reserved room for
+// one partial answer each, and how much room that is depends on the type.
 uint16_t sword_parallel_for(int64_t lo, int64_t hi, sword_chunk_fn fn,
-                            void *env);
+                            void *env, int64_t *pieces, int64_t most);
 
 // Brackets a call that parks the thread in the kernel. A parked thread is not
 // scheduler capacity, so the pool hires a replacement for as long as it is

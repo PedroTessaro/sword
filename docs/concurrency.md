@@ -167,6 +167,10 @@ on a parameter means the function may write through it; without `mut`, it
 cannot. So the signature the task was declared with is what the checker reads,
 and you do not annotate anything extra.
 
+The same signature is what says a call writes. Inside a `parallel for`,
+`c.Add(1)` and `bump(&c)` reach the same memory as `c.n += 1` would, and are
+refused for the same reason — a write does not have to look like one.
+
 ### The parent counts too
 
 ```sword
@@ -302,14 +306,60 @@ parallel for i in 0..n reduce(max: biggest) {
 }
 ```
 
-Each worker gets a private copy, started at the operator's identity, and they
-are folded together once at the end — so there is no contention per iteration.
-Without the `reduce` clause, writing the variable in the body is an error, and
-the message tells you to add it.
+The range is cut into pieces; each piece accumulates into a private copy
+started at the operator's identity, and the copies are combined once at the
+end — so there is no contention per iteration. Without the `reduce` clause,
+writing the variable in the body is an error, and the message tells you to add
+it.
 
-The body does the per-element combining; the clause only says how the workers'
+The body does the per-element combining; the clause only says how the pieces'
 copies are joined. `+`, `&`, `|`, `min` and `max` are available, and `+` also
 applies to floats.
+
+### A reduction of your own
+
+The clause also takes the name of a function, which is what makes the rest of
+this a property of the construct rather than of the five operators the
+compiler happens to know:
+
+```sword
+mut total := num.NewKahan()
+parallel for i in 0..xs.len reduce(num.Merge: total) {
+    total.Add(xs[i])
+}
+answer := total.Value()
+```
+
+`num.Merge` takes two partial answers and gives a third — `func(T, T) T`,
+writing through nothing, since the combining walks the pieces and must not
+write into them. Each piece starts from the zero value of `T`, which is why
+this suits an accumulator where all-zero means "nothing added yet"; `&` and
+`min` keep their own identities and stay built in.
+
+Everything above still holds, and holds for the same reason: the cut is fixed,
+each piece answers in its own slot, and the combining walks them in the order
+they were cut. The compiler does not need to know what the operation is.
+
+### The answer does not depend on the threads
+
+How the range is cut depends on the range and nothing else, each piece keeps
+its partial answer in a slot of its own, and they are combined in the order the
+pieces were cut. So a reduction answers the same thing on one thread and on
+sixteen, and the same thing twice in a row.
+
+For integers that was already true — addition of whole numbers does not care
+about order. For floating point it was not: the pieces used to be folded in as
+they finished, and the harmonic series over two million terms printed a
+different number for each of six thread counts. Now it prints one.
+
+What is *not* claimed is that it equals the sequential sum. The pieces are
+summed separately and then combined, which is a different order of roundings
+from adding the terms one after another. Reproducible is not the same as
+sequential, and the difference is real for floating point.
+
+Only the cut is fixed. How many tasks run it is the scheduler's business — with
+few workers one task walks several pieces in a row — because who ran a piece
+and when cannot change what that piece answers.
 
 ### How much faster
 

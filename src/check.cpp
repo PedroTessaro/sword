@@ -696,28 +696,62 @@ struct Checker {
     collect_indexed(loop->body, loop->sym, covered);
 
     std::set<Symbol *> written;
-    walk(loop->body, [&](Node *n) {
-      if (n->kind != ND_ASSIGN) return;
-      Symbol *root = share_root(n->lhs);
+    // `place` is written once per iteration; `how` names the call it was
+    // written through, when it was not written by an assignment.
+    auto note_write = [&](Node *place, const char *how) {
+      Symbol *root = share_root(place);
       if (!root || local.count(root) || root == loop->reduce_sym) return;
-      Node *base = n->lhs;
+      Node *base = place;
       while (base && base->kind != ND_IDENT) base = base->lhs;
       if (!base || !covered.count(base)) {
         bool indexable = root->type && (root->type->kind == TY_SLICE ||
                                         root->type->kind == TY_ARRAY);
+        std::string through = how ? std::string(" through '") + how + "'" : "";
         if (indexable)
-          error(n->lhs->pos,
-                "every iteration would write '%s'; a 'parallel for' body may "
+          error(place->pos,
+                "every iteration would write '%s'%s; a 'parallel for' body may "
                 "only write '%s[%s]'",
-                root->name.c_str(), root->name.c_str(), loop->name.c_str());
+                root->name.c_str(), through.c_str(), root->name.c_str(),
+                loop->name.c_str());
         else
-          error(n->lhs->pos,
-                "every iteration would write '%s'; to accumulate into it, "
+          error(place->pos,
+                "every iteration would write '%s'%s; to accumulate into it, "
                 "write 'reduce(+: %s)' on the loop",
-                root->name.c_str(), root->name.c_str());
+                root->name.c_str(), through.c_str(), root->name.c_str());
         return;
       }
       written.insert(root);
+    };
+
+    walk(loop->body, [&](Node *n) {
+      if (n->kind == ND_ASSIGN) {
+        note_write(n->lhs, nullptr);
+        return;
+      }
+      // A write does not have to look like one. `c.Add(1)` and `bump(&c)`
+      // reach the same memory as `c.n += 1`, and every iteration would do it;
+      // only the shape is different. What the callee may write is in its
+      // signature, which is the same thing `mut` on a parameter means
+      // everywhere else.
+      if (n->kind != ND_CALL) return;
+      Type *sig = n->sym ? n->sym->type : nullptr;
+      if (!sig && n->lhs && n->lhs->type && n->lhs->type->kind == TY_FUNC)
+        sig = n->lhs->type;
+      if (!sig) return;
+      const char *how = n->lhs && !n->lhs->name.empty() ? n->lhs->name.c_str()
+                                                        : nullptr;
+      size_t skip = 0;
+      if (n->form == CALL_METHOD) {
+        skip = 1;
+        if (!sig->param_mut.empty() && sig->param_mut[0] && n->lhs &&
+            n->lhs->lhs)
+          note_write(n->lhs->lhs, how);
+      }
+      for (size_t i = 0; i < n->kids.size(); i++) {
+        size_t at = i + skip;
+        if (at < sig->param_mut.size() && sig->param_mut[at])
+          note_write(n->kids[i], how);
+      }
     });
 
     // Once a name is written by the loop, every other mention of it has to be
@@ -1015,14 +1049,22 @@ struct Checker {
   // interface conversion happens uniformly.
   bool convert(Node *value, Type *to) {
     if (assignable(value->type, to)) {
-      // An untyped literal going into an optional becomes the payload, not the
-      // optional: the wrapping happens where the value is stored, and a literal
-      // carrying the box's type would be copied as if it were one.
-      if (is_optional(to) && value->type->untyped &&
-          value->type->kind != TY_OPT)
+      // A value going into a `?T` that is a { has, value } pair becomes the
+      // payload, and the box is built around it where it lands: a store knows
+      // its destination, and a call argument builds from `bind_to`. Carrying
+      // the box's type instead made the value be copied as if it already were
+      // one — the caller handing over the payload's bytes and whatever sat
+      // behind them as the flag.
+      //
+      // `nil` is the exception and is already an optional: it keeps the box's
+      // type, and lowering makes an absent one.
+      if (to->is_optional && value->type->kind != TY_OPT &&
+          !type_eq(value->type, to)) {
         apply_type(value, const_cast<Type *>(opt_payload(to)));
-      else
+        value->bind_to = to;
+      } else {
         apply_type(value, to);
+      }
       return true;
     }
     if (to->is_any) {
@@ -1039,11 +1081,18 @@ struct Checker {
       return true;
     }
     // `?Interface` taking a pointer to a struct: the pair is built for the
-    // payload and the wrapping happens where it is stored, the same as for any
-    // other optional.
+    // payload, and the box around it is what the value becomes. Where this is
+    // stored, the destination says what to build — but a call argument is
+    // built from this type alone, and leaving it as the bare interface had the
+    // caller write sixteen bytes where the callee reads twenty-four, taking
+    // the flag from whatever was on the stack behind them.
     if (is_optional(to)) {
       Type *payload = const_cast<Type *>(opt_payload(to));
-      if (payload && payload->is_interface) return bind_interface(value, payload);
+      if (payload && payload->is_interface) {
+        if (!bind_interface(value, payload)) return false;
+        value->bind_to = to;
+        return true;
+      }
     }
     return to->is_interface && bind_interface(value, to);
   }
@@ -2897,22 +2946,29 @@ struct Checker {
       note(sym->pos, "declare it with 'mut' to allow mutation");
       return false;
     }
-    Type *type = sym->type;
-    if (!is_integer(type) && !is_float(type)) {
-      error(n->pos, "a reduction needs a number, got %s",
-            type_str(type).c_str());
-      return false;
-    }
-    if (!reduction_kind(n, type)) return false;
+    if (!reduction_kind(n, sym->type)) return false;
     n->reduce_sym = sym;
     return true;
   }
 
-  // Each worker starts from the operator's identity, so combining the private
-  // copies at the end gives the same answer whatever order they finish in.
+  // Each piece of the range starts from the operator's identity and keeps its
+  // own answer; the pieces are combined in the order they were cut, which is
+  // what makes the result the same however many threads ran it.
   bool reduction_kind(Node *n, Type *type) {
     bool floating = is_float(type);
     std::string named = n->name2;
+
+    // A name that is not `min` or `max` is a function's: the program says how
+    // two partial answers are combined, and the compiler only has to call it.
+    if (!named.empty() && named != "min" && named != "max")
+      return user_reduction(n, type, named);
+
+    if (!is_integer(type) && !is_float(type)) {
+      error(n->pos, "a reduction needs a number, got %s — or a function to "
+                    "combine two of them",
+            type_str(type).c_str());
+      return false;
+    }
 
     if (n->op == TK_PLUS) {
       n->reduce_kind = floating ? RMW_FADD : RMW_ADD;
@@ -2941,9 +2997,58 @@ struct Checker {
       n->ival = extreme(type, lowest);
       return true;
     }
-    error(n->pos, "'%s' is not a reduction; use +, &, |, min or max",
+    error(n->pos, "'%s' is not a reduction; use +, &, |, min, max, or the name"
+                  " of a function that combines two",
           named.empty() ? tok_name(n->op) : named.c_str());
     return false;
+  }
+
+  // `reduce(num.Merge: total)`. The function combines two partial answers into
+  // one, and each piece of the range starts from the zero value of the type —
+  // which is why this is for the kinds of accumulator where zero means
+  // "nothing yet", and why `&` and `min` keep their own identities.
+  bool user_reduction(Node *n, Type *type, const std::string &named) {
+    size_t dot = named.find('.');
+    Symbol *fn = nullptr;
+    if (dot == std::string::npos) {
+      fn = lookup(named);
+    } else if (Package *other = imported(named.substr(0, dot))) {
+      fn = find_in(other->globals, named.substr(dot + 1), false);
+    }
+    if (!fn || !fn->is_func) {
+      error(n->pos, "'%s' is not a function, so it cannot combine two %s",
+            named.c_str(), type_str(type).c_str());
+      return false;
+    }
+    if (fn->is_generic) {
+      error(n->pos, "'%s' is generic, so there is no single function to call",
+            named.c_str());
+      return false;
+    }
+    Type *sig = fn->type;
+    bool fits = sig && sig->kind == TY_FUNC && sig->params.size() == 2 &&
+                !sig->is_c_variadic && type_eq(sig->params[0], type) &&
+                type_eq(sig->params[1], type) && type_eq(sig->ret, type);
+    if (!fits) {
+      error(n->pos,
+            "a reduction over %s needs a func(%s, %s) %s to combine two of"
+            " them; '%s' is %s",
+            type_str(type).c_str(), type_str(type).c_str(),
+            type_str(type).c_str(), type_str(type).c_str(), named.c_str(),
+            type_str(sig).c_str());
+      return false;
+    }
+    for (size_t i = 0; i < sig->param_mut.size(); i++) {
+      if (!sig->param_mut[i]) continue;
+      error(n->pos,
+            "'%s' writes through a parameter; a reduction combines two values"
+            " and answers a third",
+            named.c_str());
+      return false;
+    }
+    n->reduce_kind = kReduceUser;
+    n->reduce_fn = fn;
+    return true;
   }
 
   // The smallest value of the type when `lowest`, the largest otherwise.

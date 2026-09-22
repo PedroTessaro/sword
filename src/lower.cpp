@@ -306,6 +306,16 @@ struct Lowerer {
   // and an unaligned atomic is a bus error on ARM.
   static const int64_t kScopeWords = 8;
 
+  // Must match SWORD_CHUNKS in rt/sword_rt.h. It decides how many partial
+  // answers a reduction can have, and the room for them is reserved here: too
+  // few and the runtime writes past the end of the frame's slot.
+  static const int64_t kChunks = 64;
+
+  // How much frame the partial answers may take. An accumulator of the
+  // program's own can be hundreds of bytes, and sixty-four of those would be
+  // a surprising thing to find on a stack.
+  static const int64_t kPartialBytes = 32 * 1024;
+
   int call_runtime(const char *name, std::vector<int> args, Type *ret) {
     IrInst in{};
     in.op = IR_CALL;
@@ -488,12 +498,17 @@ struct Lowerer {
     std::vector<Symbol *> captured;
     captures_of(n, captured);
 
+    Type *reduced = n->reduce_sym ? n->reduce_sym->type : nullptr;
     Type *env = types.declare_struct("sword.env." + id);
     env->is_extern = true;
     std::vector<Field> fields;
     for (size_t i = 0; i < captured.size(); i++)
       fields.push_back(
           Field{"c" + std::to_string(i), types.ptr(captured[i]->type), 0, 0});
+    // A reduction keeps one partial answer per piece of the range, and this is
+    // where the pieces are told to put them.
+    if (reduced)
+      fields.push_back(Field{"partials", types.ptr(reduced), 0, 0});
     types.layout_struct(env, std::move(fields));
     mod.structs.push_back(env);
 
@@ -502,13 +517,118 @@ struct Lowerer {
       store(captured[i]->slot, gep_field(block, env, (int)i),
             types.ptr(captured[i]->type));
 
+    // One slot per piece, on this frame: the range is cut into at most this
+    // many however long it is, so this needs no allocator. An accumulator of
+    // its own can be large, so what is capped is the room they take rather
+    // than only how many there are — and both numbers are known here, so the
+    // cut still does not depend on anything the pool does.
+    int64_t most = kChunks;
+    int partials = -1;
+    int pieces = -1;
+    if (reduced) {
+      int64_t each = size_of(reduced);
+      if (each > 0 && each * most > kPartialBytes) most = kPartialBytes / each;
+      if (most < 1) most = 1;
+      partials = alloca_slot(types.array(reduced, most));
+      store(partials, gep_field(block, env, (int)captured.size()),
+            types.ptr(reduced));
+      pieces = alloca_slot(types.usize_ty);
+      store(constant(0, types.usize_ty), pieces, types.usize_ty);
+    }
+
     std::string name = "sword.chunk." + id;
     chunks.push_back({name, n, env, captured});
 
     int lo = to_word(expr(n->lhs));
     int hi = to_word(expr(n->rhs));
+    int out = reduced ? pieces : constant(0, types.rawptr(types.u8_ty));
     call_runtime("sword_parallel_for",
-                 {lo, hi, func_address(name), block}, types.error_ty);
+                 {lo, hi, func_address(name), block, out,
+                  constant(most, types.usize_ty)},
+                 types.error_ty);
+    if (reduced) combine_partials(n, partials, pieces, reduced);
+  }
+
+  // The partial answers are combined here, in the order the pieces were cut,
+  // rather than folded in as each one finishes. For integers the two agree;
+  // for floating point they do not, and the old way made the answer depend on
+  // how many threads happened to be running.
+  void combine_partials(Node *n, int partials, int pieces, Type *type) {
+    Type *word = types.usize_ty;
+    int slot = n->reduce_sym->slot;
+    int at = alloca_slot(word);
+    store(constant(0, word), at, word);
+
+    int head = new_block();
+    int body = new_block();
+    int done = new_block();
+    branch(head);
+
+    cur = head;
+    cond_branch(binop(IR_LT, load(at, word), load(pieces, word),
+                      types.bool_ty),
+                body, done);
+
+    cur = body;
+    int where = gep_index(partials, load(at, word), type);
+    int next = body;
+    // A reduction of the program's own: `acc = f(acc, piece)`, called here
+    // rather than folded with an instruction, and in the same order.
+    if (n->reduce_kind == kReduceUser) {
+      IrInst in{};
+      in.op = IR_CALL;
+      in.callee = n->reduce_fn->name;
+      if (is_aggregate(type)) {
+        // The answer comes back through a pointer, and it cannot be the
+        // accumulator itself: the callee reads both of its arguments.
+        int made = alloca_slot(type);
+        in.args.push_back(made);
+        in.args.push_back(slot);
+        in.args.push_back(where);
+        in.type = types.void_ty;
+        emit(in);
+        copy(slot, made, type);
+      } else {
+        in.args.push_back(load(slot, type));
+        in.args.push_back(load(where, type));
+        in.type = type;
+        in.dst = new_value(type);
+        emit(in);
+        store(in.dst, slot, type);
+      }
+      cur = next;
+      store(binop(IR_ADD, load(at, word), constant(1, word), word), at, word);
+      branch(head);
+      cur = done;
+      return;
+    }
+    int part = load(where, type);
+    int acc = load(slot, type);
+    switch (n->reduce_kind) {
+    case RMW_MIN:
+    case RMW_MAX: {
+      int better = binop(n->reduce_kind == RMW_MIN ? IR_LT : IR_GT, part, acc,
+                         types.bool_ty);
+      int take = new_block();
+      int skip = new_block();
+      cond_branch(better, take, skip);
+      cur = take;
+      store(part, slot, type);
+      branch(skip);
+      cur = skip;
+      next = skip;
+      break;
+    }
+    case RMW_AND: store(binop(IR_AND, acc, part, type), slot, type); break;
+    case RMW_OR: store(binop(IR_OR, acc, part, type), slot, type); break;
+    default: store(binop(IR_ADD, acc, part, type), slot, type); break;
+    }
+
+    cur = next;
+    store(binop(IR_ADD, load(at, word), constant(1, word), word), at, word);
+    branch(head);
+
+    cur = done;
   }
 
   void emit_chunk(const Chunk &c, IrFunc &out) {
@@ -524,11 +644,13 @@ struct Lowerer {
 
     out.name = c.name;
     out.ret = types.error_ty;
-    out.params = {types.rawptr(types.u8_ty), types.usize_ty, types.usize_ty};
+    out.params = {types.rawptr(types.u8_ty), types.usize_ty, types.usize_ty,
+                  types.usize_ty};
 
     int envp = new_value(types.rawptr(types.u8_ty));
     int lo = new_value(types.usize_ty);
     int hi = new_value(types.usize_ty);
+    int piece = new_value(types.usize_ty); // which cut of the range this is
     new_block();
     scopes.emplace_back();
 
@@ -547,9 +669,15 @@ struct Lowerer {
       Type *type = loop->reduce_sym->type;
       shared = loop->reduce_sym->slot;
       accumulator = alloca_slot(type);
-      int identity = is_float(type) ? float_constant(loop->fval, type)
-                                    : constant((int64_t)loop->ival, type);
-      store(identity, accumulator, type);
+      if (loop->reduce_kind == kReduceUser) {
+        // The identity is the zero value, which is what a fresh accumulator of
+        // anything means: nothing added yet.
+        zero(accumulator, type);
+      } else {
+        int identity = is_float(type) ? float_constant(loop->fval, type)
+                                      : constant((int64_t)loop->ival, type);
+        store(identity, accumulator, type);
+      }
       loop->reduce_sym->slot = accumulator;
     }
 
@@ -584,13 +712,15 @@ struct Lowerer {
     cur = exit_bb;
     if (accumulator >= 0) {
       Type *type = loop->reduce_sym->type;
-      IrInst fold{};
-      fold.op = IR_ATOMIC_RMW;
-      fold.imm = loop->reduce_kind;
-      fold.a = shared;
-      fold.b = load(accumulator, type);
-      fold.type = type;
-      emit(fold);
+      // The answer for this piece of the range goes in the slot that belongs
+      // to it, and the caller combines them in order once every piece is done.
+      // Folding it in here with an atomic would have the order be whichever
+      // piece finished first, which for floating point is a different answer.
+      int base = load(gep_field(envp, c.env, (int)c.captured.size()),
+                      types.ptr(type));
+      int slot_for = gep_index(base, piece, type);
+      if (is_aggregate(type)) copy(slot_for, accumulator, type);
+      else store(load(accumulator, type), slot_for, type);
       loop->reduce_sym->slot = shared;
     }
     emit_ret(constant(0, types.error_ty), types.error_ty);

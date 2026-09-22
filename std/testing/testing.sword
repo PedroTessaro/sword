@@ -1,6 +1,7 @@
 package testing
 
 import "std/bytes"
+import "std/collections"
 import "std/fmt"
 import "std/io"
 import "std/mem"
@@ -340,4 +341,256 @@ func Run(cases []Case) !int {
         return 1
     }
     return 0
+}
+
+// --- benchmarks ------------------------------------------------------------
+
+// How long one measurement should last before the number it gives means
+// anything. Short enough that a suite of them is still something you run.
+const benchTarget = 100000000 // nanoseconds
+// Odd, so that the median is one of the samples rather than a number between
+// two of them.
+const benchSamples = 9
+const benchMaxN = 1 << 30
+
+// What `shield test -bench` runs, one per `Benchmark*` function the compiler
+// found.
+struct Bench {
+    Name string
+    Run  func(mut *B) !void
+}
+
+func NewBench(name string, run func(mut *B) !void) Bench {
+    return Bench{Name: name, Run: run}
+}
+
+// What a benchmark is handed. The body does its work `N` times:
+//
+//     func BenchmarkSum(mut b *testing.B) !void {
+//         mut xs := try mem.Alloc[i64](b.Mem, 1024) orelse ...
+//         b.ResetTimer()
+//         for i in 0..b.N {
+//             b.Keep(total(xs))
+//         }
+//     }
+//
+// The harness picks `N`: it runs the body with a small one, sees how long that
+// took, and scales until a measurement lasts long enough to be worth reading.
+struct B {
+    // The benchmark's own memory, reset before every sample. How much of it the
+    // body used is reported per operation — a number that needs no guessing
+    // here, because nothing allocates without being handed an allocator.
+    Mem mem.Allocator
+    // How many times to do the work. Read it, do not write it.
+    N u64
+
+    name    string
+    started time.Instant
+    elapsed i64 // nanoseconds, while the clock was running
+    running bool
+    kept    i64 // where Keep puts what nothing else reads
+    // The arena behind `Mem`, and how much of it was gone when the clock was
+    // last reset: what the body allocates setting itself up is not what it
+    // allocates per operation.
+    arena *mem.Arena
+    base  u64
+}
+
+func (b *B) Name() string {
+    return b.name
+}
+
+// Stops the clock for setup or checking in the middle of a body, and starts it
+// again. What happens in between is not counted.
+func (mut b *B) StopTimer() {
+    if b.running {
+        b.elapsed += time.Since(b.started).AsNanos()
+        b.running = false
+    }
+}
+
+func (mut b *B) StartTimer() {
+    if !b.running {
+        b.started = time.Now()
+        b.running = true
+    }
+}
+
+// Throws away what has been timed so far, for a body whose setup is expensive
+// enough to drown the thing being measured.
+func (mut b *B) ResetTimer() {
+    b.elapsed = 0
+    b.base = b.arena.Used()
+    b.started = time.Now()
+    b.running = true
+}
+
+// Where a result that nothing else reads goes, so the work is not thrown away
+// for having no effect. The wrapping add is deliberate: this must never be the
+// thing that stops a benchmark.
+func (mut b *B) Keep(v i64) {
+    b.kept +%= v
+}
+
+func (mut b *B) KeepFloat(v f64) {
+    if v != 0.0 {
+        b.kept +%= 1
+    }
+}
+
+// What one benchmark ended up measuring.
+struct Result {
+    Name   string
+    N      u64
+    Median i64 // nanoseconds for the whole run of N
+    // The quartiles rather than the ends: one sample that landed on another
+    // program's scheduling says nothing about the measurement, and the range
+    // is exactly the statistic it moves furthest.
+    Low     i64
+    High    i64
+    Fastest i64
+    Slowest i64
+    Bytes   u64 // what the body allocated, over all N
+}
+
+func (r Result) PerOp() f64 {
+    if r.N == 0 {
+        return 0.0
+    }
+    return f64(r.Median) / f64(r.N)
+}
+
+// Half the distance between the quartiles, as a share of the middle sample.
+// A number this cannot be read without: two benchmarks whose medians differ by
+// less than their spread have not been told apart.
+func (r Result) Spread() f64 {
+    if r.Median <= 0 {
+        return 0.0
+    }
+    return f64(r.High - r.Low) * 50.0 / f64(r.Median)
+}
+
+func lessNanos(a i64, b i64) bool {
+    return a < b
+}
+
+// One measurement: the body, N times, on memory nobody else has touched. What
+// it answers is how long it took and how much it allocated after the clock was
+// last reset.
+struct Measure {
+    Nanos i64
+    Bytes u64
+}
+
+func sample(c Bench, mut arena *mem.Arena, n u64) !Measure {
+    arena.Reset()
+    mut b := B{Mem: arena, N: n, name: c.Name, started: time.Now(),
+               elapsed: 0, running: true, kept: 0, arena: arena, base: 0}
+    b.started = time.Now()
+    try c.Run(&b)
+    b.StopTimer()
+    mut took := b.elapsed
+    if took < 0 {
+        took = 0
+    }
+    mut used := arena.Used()
+    if used < b.base {
+        used = b.base
+    }
+    return Measure{Nanos: took, Bytes: used - b.base}
+}
+
+// Finds an N whose measurement lasts long enough to mean something, then takes
+// several of them and reports the middle one. The middle rather than the
+// average: one sample that landed on another program's scheduling should not
+// move the answer.
+func runBench(c Bench, mut arena *mem.Arena) !Result {
+    mut n u64 = 1
+    for {
+        took := (try sample(c, arena, n)).Nanos
+        if took >= benchTarget || n >= benchMaxN {
+            break
+        }
+        // Scale towards the target, doubling at the least so that a body too
+        // fast to time still converges, and by no more than a hundredfold so
+        // that one lucky measurement cannot ask for an hour of work.
+        mut next := n * 2
+        if took > 0 {
+            want := n * u64(benchTarget / took)
+            if want > next {
+                next = want
+            }
+        }
+        if next > n * 100 {
+            next = n * 100
+        }
+        if next > benchMaxN {
+            next = benchMaxN
+        }
+        n = next
+    }
+
+    mut times := [benchSamples]i64{}
+    mut bytes u64 = 0
+    for s in 0..benchSamples {
+        one := try sample(c, arena, n)
+        times[s] = one.Nanos
+        if s == 0 || one.Bytes > bytes {
+            bytes = one.Bytes
+        }
+    }
+    collections.Sort[i64](times[..], lessNanos)
+    return Result{Name: c.Name, N: n, Median: times[benchSamples / 2],
+                  Low: times[benchSamples / 4],
+                  High: times[benchSamples - 1 - benchSamples / 4],
+                  Fastest: times[0], Slowest: times[benchSamples - 1],
+                  Bytes: bytes}
+}
+
+// Benchmarks run one at a time and in the order they were written. Two of them
+// at once would be measuring each other.
+func RunBenches(cases []Bench) !int {
+    mut backing := [ArenaSize]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut w := io.NewWriter(io.Stdout)
+    mut failed u64 = 0
+    try w.WriteString("benchmarking: median of 9 samples, spread half the quartile range\n")
+
+    for i in 0..cases.len {
+        r := runBench(cases[i], &arena) catch |e| {
+            try w.WriteString("--- FAIL  ")
+            try w.WriteString(cases[i].Name)
+            try w.WriteString(": returned error.")
+            try w.WriteString(nameof(e))
+            try w.WriteString("\n")
+            failed += 1
+            continue
+        }
+        try report(&w, r)
+    }
+
+    try w.Flush()
+    if failed > 0 {
+        return 1
+    }
+    return 0
+}
+
+// One line per benchmark: the middle measurement per operation, how far the
+// fastest and slowest were from it, how many times it ran and what it
+// allocated while the clock was running.
+func report(mut w *io.Writer, r Result) !void {
+    try fmt.Pad(w, r.Name, 30)
+    try w.WriteString("  ")
+    try fmt.F64(w, r.PerOp(), 2)
+    try w.WriteString(" ns/op  ")
+    try fmt.F64(w, r.Spread(), 1)
+    try w.WriteString("%  N=")
+    try fmt.U64(w, r.N)
+    if r.Bytes > 0 {
+        try w.WriteString("  ")
+        try fmt.F64(w, f64(r.Bytes) / f64(r.N), 1)
+        try w.WriteString(" B/op")
+    }
+    try w.WriteString("\n")
 }

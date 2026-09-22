@@ -1,0 +1,19 @@
+// expect-error: a reduction over Stats needs a func(Stats, Stats) Stats
+// The clause names what combines two partial answers into one. A function that
+// takes one of them, or answers something else, is not that.
+
+struct Stats {
+    Count i64
+}
+
+func Bump(s Stats) Stats {
+    return Stats{Count: s.Count + 1}
+}
+
+func main() int {
+    mut stats := Stats{Count: 0}
+    parallel for i in 0..100 reduce(Bump: stats) {
+        stats.Count += 1
+    }
+    return int(stats.Count)
+}

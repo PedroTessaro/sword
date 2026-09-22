@@ -97,7 +97,11 @@ struct Emitter {
     if (operand->kind == TY_FLOAT) {
       switch (in.op) {
       case IR_EQ: return "oeq";
-      case IR_NE: return "one";
+      // Unordered: a NaN is not equal to anything, itself included, so `x != x`
+      // has to be true for one. With the ordered predicate both `==` and `!=`
+      // answered false, which is the one thing that cannot be — and it is how
+      // a NaN is recognised without reaching for its bits.
+      case IR_NE: return "une";
       case IR_LT: return "olt";
       case IR_LE: return "ole";
       case IR_GT: return "ogt";
@@ -585,7 +589,7 @@ struct Emitter {
          "declare void @sword_scope_spawn(ptr, ptr, ptr, i64)"},
         {"sword_scope_end", "declare i16 @sword_scope_end(ptr)"},
         {"sword_parallel_for",
-         "declare i16 @sword_parallel_for(i64, i64, ptr, ptr)"},
+         "declare i16 @sword_parallel_for(i64, i64, ptr, ptr, ptr, i64)"},
         {"sword_mutex_lock", "declare void @sword_mutex_lock(ptr)"},
         {"sword_mutex_unlock", "declare void @sword_mutex_unlock(ptr)"},
         {"sword_mutex_wait", "declare void @sword_mutex_wait(ptr)"},

@@ -10,6 +10,11 @@
 
 struct Symbol;
 
+// `reduce_kind` when the combining is a function the program wrote rather than
+// one of the operators the compiler knows. Outside the RmwKind range, since it
+// is not an atomic operation and never was.
+enum { kReduceUser = -1 };
+
 enum NodeKind {
   ND_UNIT,
   ND_PACKAGE,
@@ -108,7 +113,11 @@ struct Node {
   // callee reads, by the platform's rules rather than by ours.
   bool is_c_variadic = false;
   int form = 0;    // return/call/for: which shape the checker settled on
-  int reduce_kind = 0;    // which atomic fold a parallel loop uses
+  int reduce_kind = 0;    // which fold a parallel loop combines its pieces with
+  // `reduce(f: acc)`: the function that combines two partial answers. The
+  // compiler knows five operators; anything else is this, and it only has to
+  // be called in the right order.
+  Symbol *reduce_fn = nullptr;
   int variadic_at = -1;   // ND_CALL: where the gathered arguments start
   int vtable = -1;        // set when this value is wrapped in an interface
   Type *bind_to = nullptr; // the interface it is being wrapped into

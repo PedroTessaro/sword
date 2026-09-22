@@ -207,11 +207,58 @@ the language server's, and then every `std/*/*_test.sword` package.
 Testing a program rather than a library works too: its `main` is set aside for
 the run, not called.
 
-## What is missing
+## Benchmarks
 
-**Benchmarks.** There is no `testing.B`. Measuring is easy enough by hand with
-`std/time`, but there is no harness that repeats a body and reports per
-operation.
+A `Benchmark...` function taking one `*B` is found the same way a test is, and
+`-bench` runs those instead of the tests:
+
+```sword
+import "std/testing"
+
+func BenchmarkSort(mut b *testing.B) !void {
+    mut xs := mem.Alloc[u64](b.Mem, 1024) orelse return error.OutOfMemory
+    fill(xs)
+    b.ResetTimer()
+    for i in 0..b.N {
+        collections.Sort[u64](xs, less)
+        b.Keep(i64(xs[0]))
+    }
+}
+```
+
+```sh
+shield test std/collections -bench
+shield test std/collections -bench -run BenchmarkSort
+```
+
+```
+benchmarking: median of 9 samples, spread half the quartile range
+BenchmarkSort                   31417.81 ns/op  0.3%  N=3200
+```
+
+`b.N` is not yours to pick. The harness calls the body with a small one, sees
+how long that took, and scales until a measurement lasts about a tenth of a
+second; then it takes nine of those and reports the middle one. The spread is
+half the distance between the quartiles, as a share of the median — quartiles
+rather than the ends, because one sample that landed on another program's
+scheduling says nothing about the code and moves the range further than
+anything else. Two benchmarks whose medians differ by less than their spread
+have not been told apart.
+
+`b.ResetTimer` throws away what has been timed so far, which is what setup
+wants; `b.StopTimer` and `b.StartTimer` bracket something in the middle of a
+body that should not count. `b.Keep` is where a result nothing else reads
+goes — without it the work can be dropped for having no effect.
+
+`b.Mem` is an arena of the benchmark's own, reset before every sample, and what
+the body takes from it after the last `ResetTimer` is reported as bytes per
+operation. That number needs no estimating here: nothing allocates without
+being handed an allocator.
+
+Benchmarks run one at a time, in the order they are written. Two at once would
+be measuring each other.
+
+## What is missing
 
 **Line numbers.** A failure names the test and the subtest, not the file and
 line: there is no way to ask for the caller's position. Subtest labels are the

@@ -1,0 +1,70 @@
+package num
+
+import "std/testing"
+
+// A million ones on top of 1e16. At that size the gap between one double and
+// the next is two, so each one falls off the end and plain addition answers
+// 1e16 — the sum is out by a million.
+func TestCompensatesWhatAdditionLoses(mut t *testing.T) !void {
+    mut plain f64 = 1.0e16
+    mut kept := NewKahan()
+    kept.Add(1.0e16)
+    for i in 0..1000000 {
+        plain += 1.0
+        kept.Add(1.0)
+    }
+
+    try t.Equal(plain, 1.0e16)
+    try t.Equal(kept.Value(), 1.0e16 + 1000000.0)
+    // And it knows what it saved: the running total on its own is the wrong
+    // answer, which is the one plain addition reaches.
+    try t.Equal(kept.Rounded(), plain)
+}
+
+// The case Kahan's own form misses: a term far larger than the running total.
+// It is the total that gets rounded away then, not the term.
+func TestLargeTermAfterSmallOnes(mut t *testing.T) !void {
+    mut k := NewKahan()
+    k.Add(1.0)
+    k.Add(1.0e100)
+    k.Add(1.0)
+    k.Add(-1.0e100)
+    try t.Equal(k.Value(), 2.0)
+}
+
+// Merging partial answers has to give what adding them in one go gives, since
+// that is the whole of what a reduction does with it.
+func TestMergeMatchesOneRun(mut t *testing.T) !void {
+    mut whole := NewKahan()
+    mut left := NewKahan()
+    mut right := NewKahan()
+    mut seed u64 = 99
+    for i in 0..2000 {
+        seed = seed *% 6364136223846793005 +% 1442695040888963407
+        v := f64(seed >> 11) / 9007199254740992.0
+        whole.Add(v)
+        if i < 1000 {
+            left.Add(v)
+        } else {
+            right.Add(v)
+        }
+    }
+    joined := Merge(left, right)
+    // Not bit-for-bit the same rounding as one run — the halves rounded on
+    // their own — but the compensation keeps them within a last bit of it.
+    try t.Require(Abs(joined.Value() - whole.Value()) < 1.0e-9)
+}
+
+// The zero value is the identity, which is what lets a piece of a parallel
+// range start from it without being told anything.
+func TestZeroIsTheIdentity(mut t *testing.T) !void {
+    mut some := NewKahan()
+    some.Add(1.5)
+    some.Add(2.25)
+    nothing := NewKahan()
+
+    try t.Equal(nothing.Value(), 0.0)
+    try t.Equal(Merge(some, nothing).Value(), 3.75)
+    try t.Equal(Merge(nothing, some).Value(), 3.75)
+    try t.Equal(Merge(nothing, nothing).Value(), 0.0)
+}

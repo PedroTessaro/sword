@@ -1,0 +1,98 @@
+// expect: 42
+// A value handed to a `?T` parameter has to arrive as the box, not as the
+// payload with the flag left to whatever was on the stack behind it. The
+// caller was writing the payload's bytes and the callee reading eight more:
+// `num(5)` dereferenced the 5.
+
+struct P {
+    x i64
+}
+
+interface Sink {
+    Put(b u8) !void
+}
+
+struct Counter {
+    seen u64
+}
+
+func (mut c *Counter) Put(b u8) !void {
+    c.seen += u64(b)
+}
+
+func num(v ?i64) i64 {
+    return v orelse -1
+}
+
+func text(v ?string) string {
+    return v orelse "absent"
+}
+
+func obj(v ?P) i64 {
+    p := v orelse return -1
+    return p.x
+}
+
+func through(v ?*P) i64 {
+    p := v orelse return -1
+    return p.x
+}
+
+func sink(v ?Sink) i64 {
+    s := v orelse return -1
+    s.Put(3) catch return -2
+    return 1
+}
+
+func give(v P) ?P {
+    return v
+}
+
+struct Holder {
+    slot ?P
+}
+
+func main() !int {
+    mut here := P{x: 7}
+    mut n i64 = 5
+    mut c := Counter{seen: 0}
+
+    // As an argument: a literal, a binding, and every shape of payload.
+    if num(5) != 5 || num(n) != 5 || num(nil) != -1 {
+        return 1
+    }
+    if text("yes") != "yes" || text(nil) != "absent" {
+        return 2
+    }
+    if obj(here) != 7 || obj(P{x: 9}) != 9 || obj(nil) != -1 {
+        return 3
+    }
+    if through(&here) != 7 || through(nil) != -1 {
+        return 4
+    }
+    if sink(&c) != 1 || c.seen != 3 || sink(nil) != -1 {
+        return 5
+    }
+
+    // And the places that already worked, which have to keep working.
+    mut bound ?P = here
+    if (bound orelse P{x: -1}).x != 7 {
+        return 6
+    }
+    mut h := Holder{slot: here}
+    if (h.slot orelse P{x: -1}).x != 7 {
+        return 7
+    }
+    mut empty := Holder{slot: nil}
+    if empty.slot != nil {
+        return 8
+    }
+    empty.slot = here
+    if (empty.slot orelse P{x: -1}).x != 7 {
+        return 9
+    }
+    if (give(here) orelse P{x: -1}).x != 7 {
+        return 10
+    }
+    return 42
+}

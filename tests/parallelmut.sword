@@ -1,0 +1,41 @@
+// expect: 64
+// The shapes a `parallel for` body may write through a call: its own locals,
+// and the one element of a slice that belongs to this iteration. Both went in
+// with the rule that catches writing through a call, and both have to stay.
+
+import "std/mem"
+
+struct Counter {
+    n i64
+}
+
+func (mut c *Counter) Add(v i64) {
+    c.n += v
+}
+
+func setTo(mut slot *i64, v i64) {
+    *slot = v
+}
+
+func main() !int {
+    mut backing := [8192]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut xs := mem.Alloc[i64](&arena, 64) orelse return error.OutOfMemory
+
+    // Through a call, into the element this iteration owns.
+    parallel for i in 0..xs.len {
+        setTo(&xs[i], 1)
+    }
+    // Through a method, on something the body made for itself.
+    parallel for i in 0..xs.len {
+        mut own := Counter{n: 0}
+        own.Add(xs[i])
+        xs[i] = own.n
+    }
+
+    mut total i64 = 0
+    for i in 0..xs.len {
+        total += xs[i]
+    }
+    return int(total)
+}

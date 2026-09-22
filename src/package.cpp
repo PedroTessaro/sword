@@ -83,26 +83,33 @@ struct Loader {
   // parser as everything else. Generating text rather than nodes keeps this
   // honest: whatever the language accepts, this has to be written in.
   bool add_test_main(Package &pkg) {
+    // The same entry point either way: a benchmark is a function found by its
+    // name, handed to a runner, like a test.
+    bool benching = mode == LOAD_BENCH;
+    const std::string prefix = benching ? "Benchmark" : "Test";
+    const char *what = benching ? "benchmark" : "test";
+
     std::vector<std::string> found;
     for (Node *decl : pkg.unit->kids) {
       if (decl->kind != ND_FUNC || decl->lhs || decl->is_extern) continue;
-      // `Test` on its own is not a test, and a test takes exactly the one
-      // parameter. Whether it is the right type is the checker's business.
-      if (decl->name.size() <= 4 || decl->name.compare(0, 4, "Test") != 0)
+      // The prefix on its own is not one of them, and each takes exactly the
+      // one parameter. Whether it is the right type is the checker's business.
+      if (decl->name.size() <= prefix.size() ||
+          decl->name.compare(0, prefix.size(), prefix) != 0)
         continue;
       if (decl->kids.size() != 1) continue;
       found.push_back(decl->name);
     }
     if (found.empty()) {
-      fprintf(stderr, "shield: no 'Test...' functions in '%s'\n",
-              label.empty() ? pkg.dir.c_str() : label.c_str());
+      fprintf(stderr, "shield: no '%s...' functions in '%s'\n",
+              prefix.c_str(), label.empty() ? pkg.dir.c_str() : label.c_str());
       return false;
     }
     // A name that matches nothing is a mistake, not a run of zero tests that
     // passes: a typo must not look like success.
     for (const std::string &name : only) {
       if (std::find(found.begin(), found.end(), name) != found.end()) continue;
-      fprintf(stderr, "shield: no test '%s' in '%s'\n", name.c_str(),
+      fprintf(stderr, "shield: no %s '%s' in '%s'\n", what, name.c_str(),
               label.empty() ? pkg.dir.c_str() : label.c_str());
       return false;
     }
@@ -120,14 +127,19 @@ struct Loader {
       if (decl->kind == ND_FUNC && !decl->lhs && decl->name == "main")
         decl->name = "main.under test";
 
+    const char *kind = benching ? "Bench" : "Case";
+    const char *make = benching ? "NewBench" : "NewCase";
+    const char *run = benching ? "RunBenches" : "Run";
     std::string src = "import \"std/testing\"\n\nfunc main() !int {\n";
-    src += "    mut cases := [" + std::to_string(found.size()) +
-           "]testing.Case{";
+    src += "    mut cases := [" + std::to_string(found.size()) + "]testing." +
+           kind + "{";
     for (size_t i = 0; i < found.size(); i++) {
       src += i ? ",\n        " : "\n        ";
-      src += "testing.NewCase(\"" + found[i] + "\", " + found[i] + ")";
+      src += std::string("testing.") + make + "(\"" + found[i] + "\", " +
+             found[i] + ")";
     }
-    src += "}\n    return try testing.Run(cases[..])\n}\n";
+    src += "}\n    return try testing." + std::string(run) +
+           "(cases[..])\n}\n";
 
     int id = add_source("<test main>", src);
     std::vector<Token> tokens = lex(id);
@@ -213,7 +225,8 @@ struct Loader {
     if (!sword_files(dir, mode != LOAD_BUILD && import_path.empty(), files) ||
         !parse_files(pkg, files))
       return nullptr;
-    if (mode == LOAD_TESTS && import_path.empty() && !add_test_main(pkg))
+    if ((mode == LOAD_TESTS || mode == LOAD_BENCH) &&
+        import_path.empty() && !add_test_main(pkg))
       return nullptr;
 
     for (const std::string &path : pkg.imports) {
@@ -265,7 +278,9 @@ bool load_program(const std::string &input,
   pkg.dir = parent_of(input);
   pkg.prefix = "main.";
   if (!loader.parse_files(pkg, {input})) return false;
-  if (mode == LOAD_TESTS && !loader.add_test_main(pkg)) return false;
+  if ((mode == LOAD_TESTS || mode == LOAD_BENCH) &&
+      !loader.add_test_main(pkg))
+    return false;
 
   for (const std::string &path : pkg.imports) {
     std::string dir = loader.locate(path);
