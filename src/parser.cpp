@@ -722,10 +722,23 @@ struct Parser {
     // `reduce(+: total)` names a variable each worker accumulates privately.
     if (match(TK_REDUCE)) {
       if (!expect(TK_LPAREN, "after 'reduce'")) return nullptr;
-      // `min` and `max` are names rather than operators, so the spelling is
-      // kept either way and the checker sorts it out.
-      if (kind() == TK_IDENT) n->name2 = peek().text;
-      n->op = advance().kind;
+      // `min` and `max` are names rather than operators, and a reduction of
+      // your own is the name of a function — `merge` or `num.Merge`. The
+      // spelling is kept either way and the checker sorts it out.
+      if (kind() == TK_IDENT) {
+        n->name2 = peek().text;
+        n->op = advance().kind;
+        if (match(TK_DOT)) {
+          if (kind() != TK_IDENT) {
+            fail("expected a function name after '.'");
+            return nullptr;
+          }
+          n->name2 += ".";
+          n->name2 += advance().text;
+        }
+      } else {
+        n->op = advance().kind;
+      }
       if (!expect(TK_COLON, "after the reduction operator")) return nullptr;
       if (kind() != TK_IDENT) {
         fail("expected the name of the variable being reduced");

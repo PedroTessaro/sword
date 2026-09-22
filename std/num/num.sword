@@ -1,0 +1,70 @@
+package num
+
+// Adding floating point loses the small terms: once the running total is large
+// enough, a term smaller than its last bit changes nothing and is gone. Summing
+// a million ones into 1e16 gives 1e16, because at that size the gap between one
+// double and the next is two.
+//
+// A compensated sum keeps what each addition threw away and adds it back at the
+// end. Neumaier's form, which is Kahan's with the case that Kahan's misses —
+// when the term is larger than the running total, it is the total that gets
+// rounded away.
+//
+// It is also what a reduction of your own looks like: the zero value is the
+// identity, `Add` takes one term, and `Merge` combines two partial answers.
+//
+//     mut total := num.NewKahan()
+//     parallel for i in 0..xs.len reduce(num.Merge: total) {
+//         total.Add(xs[i])
+//     }
+//     answer := total.Value()
+struct Kahan {
+    sum  f64
+    lost f64
+}
+
+// A sum with nothing in it. Sword has no zero-value literal and the fields are
+// private, so this is how one is made — and it is what a piece of a parallel
+// range is given, since the compiler zeroes the accumulator it hands each one.
+func NewKahan() Kahan {
+    return Kahan{sum: 0.0, lost: 0.0}
+}
+
+func Abs(v f64) f64 {
+    if v < 0.0 {
+        return -v
+    }
+    return v
+}
+
+func (mut k *Kahan) Add(v f64) {
+    t := k.sum + v
+    // Whichever of the two is larger is the one that survives the addition
+    // intact, so the other one is where the lost bits are.
+    if Abs(k.sum) >= Abs(v) {
+        k.lost += (k.sum - t) + v
+    } else {
+        k.lost += (v - t) + k.sum
+    }
+    k.sum = t
+}
+
+// Two partial answers into a third. Nothing here writes through a parameter:
+// a reduction combines two values and answers a new one.
+func Merge(a Kahan, b Kahan) Kahan {
+    mut out := a
+    out.Add(b.sum)
+    out.lost += b.lost
+    return out
+}
+
+// The total, with what the additions lost added back.
+func (k Kahan) Value() f64 {
+    return k.sum + k.lost
+}
+
+// What the running total holds on its own, before the compensation. The
+// difference between this and `Value` is what plain addition would have lost.
+func (k Kahan) Rounded() f64 {
+    return k.sum
+}

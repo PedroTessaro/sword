@@ -589,7 +589,7 @@ struct Emitter {
          "declare void @sword_scope_spawn(ptr, ptr, ptr, i64)"},
         {"sword_scope_end", "declare i16 @sword_scope_end(ptr)"},
         {"sword_parallel_for",
-         "declare i16 @sword_parallel_for(i64, i64, ptr, ptr, ptr)"},
+         "declare i16 @sword_parallel_for(i64, i64, ptr, ptr, ptr, i64)"},
         {"sword_mutex_lock", "declare void @sword_mutex_lock(ptr)"},
         {"sword_mutex_unlock", "declare void @sword_mutex_unlock(ptr)"},
         {"sword_mutex_wait", "declare void @sword_mutex_wait(ptr)"},

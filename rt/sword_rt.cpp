@@ -1334,7 +1334,7 @@ uint16_t sword_scope_end(void *blob) {
 }
 
 uint16_t sword_parallel_for(int64_t lo, int64_t hi, sword_chunk_fn fn,
-                            void *env, int64_t *pieces) {
+                            void *env, int64_t *pieces, int64_t most) {
   if (pieces) *pieces = 0;
   if (hi <= lo) return 0;
 
@@ -1343,7 +1343,9 @@ uint16_t sword_parallel_for(int64_t lo, int64_t hi, sword_chunk_fn fn,
   // per worker, which made the list a reduction combines — and so the answer
   // it gives for floating point — a function of how many threads happened to
   // be running.
-  int64_t want = total < SWORD_CHUNKS ? total : SWORD_CHUNKS;
+  int64_t want = SWORD_CHUNKS;
+  if (most > 0 && most < want) want = most;
+  if (total < want) want = total;
   int64_t chunk = (total + want - 1) / want;
   if (chunk < 1) chunk = 1;
   int64_t count = (total + chunk - 1) / chunk;

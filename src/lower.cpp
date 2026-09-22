@@ -311,6 +311,11 @@ struct Lowerer {
   // few and the runtime writes past the end of the frame's slot.
   static const int64_t kChunks = 64;
 
+  // How much frame the partial answers may take. An accumulator of the
+  // program's own can be hundreds of bytes, and sixty-four of those would be
+  // a surprising thing to find on a stack.
+  static const int64_t kPartialBytes = 32 * 1024;
+
   int call_runtime(const char *name, std::vector<int> args, Type *ret) {
     IrInst in{};
     in.op = IR_CALL;
@@ -512,12 +517,19 @@ struct Lowerer {
       store(captured[i]->slot, gep_field(block, env, (int)i),
             types.ptr(captured[i]->type));
 
-    // One slot per piece, on this frame: the range is cut into at most
-    // SWORD_CHUNKS of them however long it is, so this needs no allocator.
+    // One slot per piece, on this frame: the range is cut into at most this
+    // many however long it is, so this needs no allocator. An accumulator of
+    // its own can be large, so what is capped is the room they take rather
+    // than only how many there are — and both numbers are known here, so the
+    // cut still does not depend on anything the pool does.
+    int64_t most = kChunks;
     int partials = -1;
     int pieces = -1;
     if (reduced) {
-      partials = alloca_slot(types.array(reduced, kChunks));
+      int64_t each = size_of(reduced);
+      if (each > 0 && each * most > kPartialBytes) most = kPartialBytes / each;
+      if (most < 1) most = 1;
+      partials = alloca_slot(types.array(reduced, most));
       store(partials, gep_field(block, env, (int)captured.size()),
             types.ptr(reduced));
       pieces = alloca_slot(types.usize_ty);
@@ -531,7 +543,9 @@ struct Lowerer {
     int hi = to_word(expr(n->rhs));
     int out = reduced ? pieces : constant(0, types.rawptr(types.u8_ty));
     call_runtime("sword_parallel_for",
-                 {lo, hi, func_address(name), block, out}, types.error_ty);
+                 {lo, hi, func_address(name), block, out,
+                  constant(most, types.usize_ty)},
+                 types.error_ty);
     if (reduced) combine_partials(n, partials, pieces, reduced);
   }
 
@@ -556,9 +570,40 @@ struct Lowerer {
                 body, done);
 
     cur = body;
-    int part = load(gep_index(partials, load(at, word), type), type);
-    int acc = load(slot, type);
+    int where = gep_index(partials, load(at, word), type);
     int next = body;
+    // A reduction of the program's own: `acc = f(acc, piece)`, called here
+    // rather than folded with an instruction, and in the same order.
+    if (n->reduce_kind == kReduceUser) {
+      IrInst in{};
+      in.op = IR_CALL;
+      in.callee = n->reduce_fn->name;
+      if (is_aggregate(type)) {
+        // The answer comes back through a pointer, and it cannot be the
+        // accumulator itself: the callee reads both of its arguments.
+        int made = alloca_slot(type);
+        in.args.push_back(made);
+        in.args.push_back(slot);
+        in.args.push_back(where);
+        in.type = types.void_ty;
+        emit(in);
+        copy(slot, made, type);
+      } else {
+        in.args.push_back(load(slot, type));
+        in.args.push_back(load(where, type));
+        in.type = type;
+        in.dst = new_value(type);
+        emit(in);
+        store(in.dst, slot, type);
+      }
+      cur = next;
+      store(binop(IR_ADD, load(at, word), constant(1, word), word), at, word);
+      branch(head);
+      cur = done;
+      return;
+    }
+    int part = load(where, type);
+    int acc = load(slot, type);
     switch (n->reduce_kind) {
     case RMW_MIN:
     case RMW_MAX: {
@@ -624,9 +669,15 @@ struct Lowerer {
       Type *type = loop->reduce_sym->type;
       shared = loop->reduce_sym->slot;
       accumulator = alloca_slot(type);
-      int identity = is_float(type) ? float_constant(loop->fval, type)
-                                    : constant((int64_t)loop->ival, type);
-      store(identity, accumulator, type);
+      if (loop->reduce_kind == kReduceUser) {
+        // The identity is the zero value, which is what a fresh accumulator of
+        // anything means: nothing added yet.
+        zero(accumulator, type);
+      } else {
+        int identity = is_float(type) ? float_constant(loop->fval, type)
+                                      : constant((int64_t)loop->ival, type);
+        store(identity, accumulator, type);
+      }
       loop->reduce_sym->slot = accumulator;
     }
 
@@ -667,7 +718,9 @@ struct Lowerer {
       // piece finished first, which for floating point is a different answer.
       int base = load(gep_field(envp, c.env, (int)c.captured.size()),
                       types.ptr(type));
-      store(load(accumulator, type), gep_index(base, piece, type), type);
+      int slot_for = gep_index(base, piece, type);
+      if (is_aggregate(type)) copy(slot_for, accumulator, type);
+      else store(load(accumulator, type), slot_for, type);
       loop->reduce_sym->slot = shared;
     }
     emit_ret(constant(0, types.error_ty), types.error_ty);

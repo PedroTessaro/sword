@@ -1,0 +1,90 @@
+// expect: 42
+// A reduction the program defines: the clause names a function that combines
+// two partial answers, each piece of the range starts from the zero value of
+// the type, and the pieces are combined in the order they were cut. The
+// compiler knows five operators; this is everything else, and what it buys is
+// that the guarantee stops depending on the compiler knowing the operation.
+//
+// tests/run.sh runs this at several thread counts and compares what it prints.
+
+import "std/io"
+import "std/num"
+
+struct Stats {
+    Count i64
+    Total i64
+    Most  i64
+}
+
+func (mut s *Stats) See(v i64) {
+    s.Count += 1
+    s.Total += v
+    if v > s.Most {
+        s.Most = v
+    }
+}
+
+// Two partials into a third. Zeroed means nothing seen yet, which is what each
+// piece of the range starts from.
+func Join(a Stats, b Stats) Stats {
+    mut most := a.Most
+    if b.Most > most {
+        most = b.Most
+    }
+    return Stats{Count: a.Count + b.Count, Total: a.Total + b.Total, Most: most}
+}
+
+func addI64(a i64, b i64) i64 {
+    return a + b
+}
+
+func bitsOf(v f64) u64 {
+    mut x := v
+    p := [*]u8(&x)
+    mut bits u64 = 0
+    for i in 0..8 {
+        bits |= u64(p[i]) << (u64(i) * 8)
+    }
+    return bits
+}
+
+func main() !int {
+    // A struct, combined by a function of this program's own.
+    mut stats := Stats{Count: 0, Total: 0, Most: 0}
+    parallel for i in 0..100000 reduce(Join: stats) {
+        stats.See(i64(i))
+    }
+    if stats.Count != 100000 || stats.Total != 4999950000 || stats.Most != 99999 {
+        return 1
+    }
+
+    // A scalar, combined by an ordinary function: the same thing `+` does.
+    mut sum i64 = 0
+    parallel for i in 0..100000 reduce(addI64: sum) {
+        sum += i64(i)
+    }
+    if sum != 4999950000 {
+        return 2
+    }
+
+    // And the one this was for: a compensated sum out of another package,
+    // where plain addition would have lost every term after the first.
+    mut total := num.NewKahan()
+    parallel for i in 0..1000000 reduce(num.Merge: total) {
+        if i == 0 {
+            total.Add(1.0e16)
+        } else {
+            total.Add(1.0)
+        }
+    }
+    if total.Value() != 1.0e16 + 999999.0 {
+        return 3
+    }
+    // Note what it does *not* say: that plain addition would have been wrong
+    // here. Cut into pieces, each one sums its own ones exactly and only the
+    // merge meets the large term — chunking is more accurate than adding in
+    // order, which is its own reason not to promise the sequential answer.
+
+    try io.Printf("{} {} {}\n", stats.Total, sum, bitsOf(total.Value()))
+    return 42
+}

@@ -2946,22 +2946,29 @@ struct Checker {
       note(sym->pos, "declare it with 'mut' to allow mutation");
       return false;
     }
-    Type *type = sym->type;
-    if (!is_integer(type) && !is_float(type)) {
-      error(n->pos, "a reduction needs a number, got %s",
-            type_str(type).c_str());
-      return false;
-    }
-    if (!reduction_kind(n, type)) return false;
+    if (!reduction_kind(n, sym->type)) return false;
     n->reduce_sym = sym;
     return true;
   }
 
-  // Each worker starts from the operator's identity, so combining the private
-  // copies at the end gives the same answer whatever order they finish in.
+  // Each piece of the range starts from the operator's identity and keeps its
+  // own answer; the pieces are combined in the order they were cut, which is
+  // what makes the result the same however many threads ran it.
   bool reduction_kind(Node *n, Type *type) {
     bool floating = is_float(type);
     std::string named = n->name2;
+
+    // A name that is not `min` or `max` is a function's: the program says how
+    // two partial answers are combined, and the compiler only has to call it.
+    if (!named.empty() && named != "min" && named != "max")
+      return user_reduction(n, type, named);
+
+    if (!is_integer(type) && !is_float(type)) {
+      error(n->pos, "a reduction needs a number, got %s — or a function to "
+                    "combine two of them",
+            type_str(type).c_str());
+      return false;
+    }
 
     if (n->op == TK_PLUS) {
       n->reduce_kind = floating ? RMW_FADD : RMW_ADD;
@@ -2990,9 +2997,58 @@ struct Checker {
       n->ival = extreme(type, lowest);
       return true;
     }
-    error(n->pos, "'%s' is not a reduction; use +, &, |, min or max",
+    error(n->pos, "'%s' is not a reduction; use +, &, |, min, max, or the name"
+                  " of a function that combines two",
           named.empty() ? tok_name(n->op) : named.c_str());
     return false;
+  }
+
+  // `reduce(num.Merge: total)`. The function combines two partial answers into
+  // one, and each piece of the range starts from the zero value of the type —
+  // which is why this is for the kinds of accumulator where zero means
+  // "nothing yet", and why `&` and `min` keep their own identities.
+  bool user_reduction(Node *n, Type *type, const std::string &named) {
+    size_t dot = named.find('.');
+    Symbol *fn = nullptr;
+    if (dot == std::string::npos) {
+      fn = lookup(named);
+    } else if (Package *other = imported(named.substr(0, dot))) {
+      fn = find_in(other->globals, named.substr(dot + 1), false);
+    }
+    if (!fn || !fn->is_func) {
+      error(n->pos, "'%s' is not a function, so it cannot combine two %s",
+            named.c_str(), type_str(type).c_str());
+      return false;
+    }
+    if (fn->is_generic) {
+      error(n->pos, "'%s' is generic, so there is no single function to call",
+            named.c_str());
+      return false;
+    }
+    Type *sig = fn->type;
+    bool fits = sig && sig->kind == TY_FUNC && sig->params.size() == 2 &&
+                !sig->is_c_variadic && type_eq(sig->params[0], type) &&
+                type_eq(sig->params[1], type) && type_eq(sig->ret, type);
+    if (!fits) {
+      error(n->pos,
+            "a reduction over %s needs a func(%s, %s) %s to combine two of"
+            " them; '%s' is %s",
+            type_str(type).c_str(), type_str(type).c_str(),
+            type_str(type).c_str(), type_str(type).c_str(), named.c_str(),
+            type_str(sig).c_str());
+      return false;
+    }
+    for (size_t i = 0; i < sig->param_mut.size(); i++) {
+      if (!sig->param_mut[i]) continue;
+      error(n->pos,
+            "'%s' writes through a parameter; a reduction combines two values"
+            " and answers a third",
+            named.c_str());
+      return false;
+    }
+    n->reduce_kind = kReduceUser;
+    n->reduce_fn = fn;
+    return true;
   }
 
   // The smallest value of the type when `lowest`, the largest otherwise.

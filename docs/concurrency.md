@@ -316,6 +316,30 @@ The body does the per-element combining; the clause only says how the pieces'
 copies are joined. `+`, `&`, `|`, `min` and `max` are available, and `+` also
 applies to floats.
 
+### A reduction of your own
+
+The clause also takes the name of a function, which is what makes the rest of
+this a property of the construct rather than of the five operators the
+compiler happens to know:
+
+```sword
+mut total := num.NewKahan()
+parallel for i in 0..xs.len reduce(num.Merge: total) {
+    total.Add(xs[i])
+}
+answer := total.Value()
+```
+
+`num.Merge` takes two partial answers and gives a third — `func(T, T) T`,
+writing through nothing, since the combining walks the pieces and must not
+write into them. Each piece starts from the zero value of `T`, which is why
+this suits an accumulator where all-zero means "nothing added yet"; `&` and
+`min` keep their own identities and stay built in.
+
+Everything above still holds, and holds for the same reason: the cut is fixed,
+each piece answers in its own slot, and the combining walks them in the order
+they were cut. The compiler does not need to know what the operation is.
+
 ### The answer does not depend on the threads
 
 How the range is cut depends on the range and nothing else, each piece keeps

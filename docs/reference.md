@@ -353,7 +353,23 @@ try io.Printf("{} is {}\n", k, u8(k))    // Real is 10
 parallel for i in a..b reduce(op: acc) { ... }
 ```
 
-`op` is `+`, `&`, `|`, `min` or `max`; only `+` applies to a float. The body
+`op` is `+`, `&`, `|`, `min` or `max`, or the name of a function that combines
+two partial answers into one:
+
+```sword
+mut total := num.NewKahan()
+parallel for i in 0..xs.len reduce(num.Merge: total) {
+    total.Add(xs[i])
+}
+```
+
+That function takes two of whatever is being reduced and answers a third —
+`func(T, T) T`, writing through nothing — and each piece of the range starts
+from the zero value of `T`, so this is for accumulators where all-zero means
+"nothing yet". `&` and `min` stay built in because their identities are not
+zero.
+
+Only `+` applies to a float among the built-in operators. The body
 combines one element into the private copy that piece of the range has —
 `acc += xs[i]` for a sum, `if xs[i] > acc { acc = xs[i] }` for a maximum — and
 the clause says how those copies are combined at the end.
@@ -777,6 +793,28 @@ digest := h.Sum()
 `Sum` finishes the message. The padding it writes is part of what was hashed,
 so there is nothing sensible to append afterwards: a hasher is spent once its
 digest has been taken, and another message needs another hasher.
+
+### `std/num`
+
+Adding floating point loses the small terms: once the running total is large
+enough, a term below its last bit changes nothing. A compensated sum keeps what
+each addition threw away.
+
+```sword
+func NewKahan() Kahan
+func (mut k *Kahan) Add(v f64)
+func Merge(a Kahan, b Kahan) Kahan   // two partial sums into one
+func (k Kahan) Value() f64           // the total, compensation included
+func (k Kahan) Rounded() f64         // without it: what plain addition reaches
+func Abs(v f64) f64
+```
+
+Neumaier's form, which is Kahan's plus the case Kahan's misses — a term larger
+than the running total, where it is the total that gets rounded away. A million
+ones added to 1e16 come to 1e16 by plain addition, and to 1e16 + 1000000 here.
+
+`Merge` is what `parallel for ... reduce(num.Merge: total)` calls, and the zero
+value is the identity, so it is also the shape any reduction of your own takes.
 
 ### `std/os`
 

@@ -1,0 +1,11 @@
+// expect-error: 'combine' is not a function, so it cannot combine two i64
+// A name in the clause is a function's. One that names nothing is a typo, and
+// a typo that reduced by something else would be a wrong answer nobody saw.
+
+func main() int {
+    mut total i64 = 0
+    parallel for i in 0..100 reduce(combine: total) {
+        total += i64(i)
+    }
+    return int(total)
+}

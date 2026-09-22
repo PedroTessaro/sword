@@ -190,26 +190,30 @@ fi
 # float sum is the one that shows it: adding the pieces in the order they
 # finish rounds differently from adding them in the order they were cut, so
 # before the partials this printed a different number for every thread count.
-if ! "$shield" "$root/tests/reducedet.sword" -o "$tmp/reducedet" \
-        > "$tmp/reducedet.log" 2>&1; then
-    echo "FAIL reduction determinism: compilation failed"
-    sed 's/^/     /' "$tmp/reducedet.log"
-    fail=$((fail + 1))
-else
+# The second one is a reduction the program defines rather than an operator the
+# compiler knows, which has to hold to the same rule.
+for name in reducedet userreduce; do
+    if ! "$shield" "$root/tests/$name.sword" -o "$tmp/$name" \
+            > "$tmp/$name.log" 2>&1; then
+        echo "FAIL $name determinism: compilation failed"
+        sed 's/^/     /' "$tmp/$name.log"
+        fail=$((fail + 1))
+        continue
+    fi
     answers=$(for threads in 1 2 3 4 8 16; do
-        SWORD_THREADS=$threads perl -e 'alarm 60; exec @ARGV' "$tmp/reducedet"
+        SWORD_THREADS=$threads perl -e 'alarm 60; exec @ARGV' "$tmp/$name"
     done | sort -u | wc -l | tr -d ' ')
     if [ "$answers" != 1 ]; then
-        echo "FAIL reduction determinism: $answers answers across thread counts"
+        echo "FAIL $name determinism: $answers answers across thread counts"
         for threads in 1 2 3 4 8 16; do
             printf '     %2s: ' "$threads"
-            SWORD_THREADS=$threads "$tmp/reducedet"
+            SWORD_THREADS=$threads "$tmp/$name"
         done
         fail=$((fail + 1))
     else
         pass=$((pass + 1))
     fi
-fi
+done
 
 # `shield test -run` keeps the tests it names and refuses a name that is not
 # one: a package with a passing and a failing test tells the three apart.

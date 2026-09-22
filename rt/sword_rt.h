@@ -40,8 +40,10 @@ enum { SWORD_CHUNKS = 64 };
 
 // Answers the first error any piece returned, and writes how many pieces there
 // were — which is how many partial answers the caller has to combine.
+// `most` is the caller's own cap on the number of pieces: it reserved room for
+// one partial answer each, and how much room that is depends on the type.
 uint16_t sword_parallel_for(int64_t lo, int64_t hi, sword_chunk_fn fn,
-                            void *env, int64_t *pieces);
+                            void *env, int64_t *pieces, int64_t most);
 
 // Brackets a call that parks the thread in the kernel. A parked thread is not
 // scheduler capacity, so the pool hires a replacement for as long as it is
