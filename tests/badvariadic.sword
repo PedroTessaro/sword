@@ -1,0 +1,11 @@
+// expect-error: only an extern function ends in '...'
+// C's variadic is a calling convention; Sword's gathers into a slice. A
+// function with a body has no use for the first one.
+
+func count(tag i32, ...) i32 {
+    return tag
+}
+
+func main() int {
+    return int(count(1))
+}

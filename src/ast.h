@@ -103,6 +103,10 @@ struct Node {
   // ND_PARAM: gathers the rest of the arguments. On a call or an argument:
   // the gathered list is being passed straight through.
   bool is_variadic = false;
+  // ND_FUNC on an extern declaration: C's own variadic, which gathers
+  // nothing. What the call site writes after the fixed parameters is what the
+  // callee reads, by the platform's rules rather than by ours.
+  bool is_c_variadic = false;
   int form = 0;    // return/call/for: which shape the checker settled on
   int reduce_kind = 0;    // which atomic fold a parallel loop uses
   int variadic_at = -1;   // ND_CALL: where the gathered arguments start
@@ -172,6 +176,7 @@ struct Ast {
     copy->is_errdefer = src->is_errdefer;
     copy->is_parallel = src->is_parallel;
     copy->is_variadic = src->is_variadic;
+    copy->is_c_variadic = src->is_c_variadic;
     copy->lhs = clone(src->lhs);
     copy->rhs = clone(src->rhs);
     copy->cond = clone(src->cond);

@@ -14,6 +14,7 @@ extern func sword_os_env(name [*]u8, name_len u64, out_len *u64) ?[*]u8
 extern func sword_os_exit(code i32)
 extern func sword_os_catch(sig i32) i32
 extern func sword_os_wait_signal() i32
+extern func sword_os_stop_signals()
 extern func sword_os_max_files() i64
 extern func sword_os_raise_max_files(want i64) i64
 extern func sword_os_pid() i64
@@ -108,6 +109,23 @@ func WaitSignal() !Signal {
         return error.NoSignals
     }
     return Signal(got)
+}
+
+// Lets go of every wait in WaitSignal — each one answers error.NoSignals, and
+// keeps answering it. A task whose job is to watch for signals has nothing
+// else to end it, and the scope that spawned it does not close until it does:
+//
+//     scope {
+//         spawn resizes(events)    // parked in WaitSignal
+//         try edit(&e, events)     // returns when the user quits
+//         os.StopSignals()         // so the scope can close
+//     }
+//
+// The signals that were being caught go back to doing what they would have
+// done, so a program that has stopped listening is not one that swallows a
+// SIGTERM. There is no way back: Catch afterwards is an error.
+func StopSignals() {
+    sword_os_stop_signals()
 }
 
 // How many descriptors this process may open. A server that has not raised it

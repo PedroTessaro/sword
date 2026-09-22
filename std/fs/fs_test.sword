@@ -1,0 +1,112 @@
+package fs
+
+import "std/strings"
+import "std/testing"
+
+// Everything here works inside one directory of its own, made and taken apart
+// by the test. `t.Mem` is the test's own arena, reset before each test.
+
+func TestStatTellsThingsApart(mut t *testing.T) !void {
+    dir := "fs_test_stat"
+    try MakeDir(dir)
+    defer RemoveDir(dir) catch {}
+
+    path := "fs_test_stat/notes.txt"
+    try WriteAll(path, []u8("hello"))
+    defer Remove(path) catch {}
+
+    file := try Stat(path)
+    try t.Equal(file.Size, 5)
+    try t.Equal(file.IsDir, false)
+    try t.Require(file.ModifiedNanos > 0)
+    try t.Require(file.Mode != 0)
+
+    // A directory has a size of its own and is not a file, which Size folded
+    // into the same nil as a path that is not there at all.
+    folder := try Stat(dir)
+    try t.Equal(folder.IsDir, true)
+
+    Stat("fs_test_stat/nothing_here") catch |e| {
+        try t.Equal(e, error.CannotLook)
+    }
+}
+
+func TestRenameOverAFile(mut t *testing.T) !void {
+    dir := "fs_test_rename"
+    try MakeDir(dir)
+    defer RemoveDir(dir) catch {}
+
+    live := "fs_test_rename/notes.txt"
+    try WriteAll(live, []u8("first"))
+    defer Remove(live) catch {}
+
+    mut room := [256]u8{}
+    scratch := try TempPath("fs_test_rename/notes.txt.", room[..])
+    // The file is there already: the path is taken, not merely unlikely to be.
+    try t.Equal(Exists(scratch), true)
+    try t.Require(strings.HasPrefix(scratch, "fs_test_rename/notes.txt."))
+
+    try WriteAll(scratch, []u8("second"))
+    try Rename(scratch, live)
+    try t.Equal(Exists(scratch), false)
+
+    back := try ReadAll(live, t.Mem)
+    try t.Equal(string(back), "second")
+}
+
+// Two in a row cannot collide, which is the whole point of making the file.
+func TestTempPathsDiffer(mut t *testing.T) !void {
+    dir := "fs_test_temp"
+    try MakeDir(dir)
+    defer RemoveDir(dir) catch {}
+
+    mut a := [256]u8{}
+    mut b := [256]u8{}
+    first := try TempPath("fs_test_temp/x.", a[..])
+    second := try TempPath("fs_test_temp/x.", b[..])
+    try t.Require(!strings.Equal(first, second))
+    try Remove(first)
+    try Remove(second)
+
+    // A buffer that cannot hold the answer is an error rather than a cut path.
+    mut tiny := [4]u8{}
+    TempPath("fs_test_temp/x.", tiny[..]) catch |e| {
+        try t.Equal(e, error.PathTooLong)
+    }
+}
+
+func TestReadDir(mut t *testing.T) !void {
+    dir := "fs_test_dir"
+    try MakeDir(dir)
+    defer RemoveDir(dir) catch {}
+    try MakeDir("fs_test_dir/inside")
+    defer RemoveDir("fs_test_dir/inside") catch {}
+    try WriteAll("fs_test_dir/one.txt", []u8("1"))
+    defer Remove("fs_test_dir/one.txt") catch {}
+    try WriteAll("fs_test_dir/two.txt", []u8("22"))
+    defer Remove("fs_test_dir/two.txt") catch {}
+
+    entries := try ReadDir(dir, t.Mem)
+    // Three, and neither "." nor ".." among them.
+    try t.Equal(entries.len, 3)
+
+    mut files u64 = 0
+    mut dirs u64 = 0
+    for e in entries {
+        if e.IsDir {
+            dirs += 1
+            try t.Equal(e.Name, "inside")
+        } else {
+            files += 1
+            try t.Require(strings.HasSuffix(e.Name, ".txt"))
+        }
+        // The name is a name, not a path.
+        try t.Equal(strings.IndexByte(e.Name, 47), e.Name.len)
+    }
+    try t.Equal(files, 2)
+    try t.Equal(dirs, 1)
+
+    ReadDir("fs_test_dir/nothing_here", t.Mem) catch |e| {
+        try t.Equal(e, error.CannotList)
+    }
+}

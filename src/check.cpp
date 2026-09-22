@@ -1273,12 +1273,35 @@ struct Checker {
       return true;
     }
 
-    if (n->kids.size() != wanted) {
+    // C's own `...` gathers nothing: what follows the declared parameters is
+    // passed as written, so there is no type to convert it to — only the
+    // question of whether C can read it at all.
+    if (sig->is_c_variadic) {
+      if (n->kids.size() < wanted) {
+        error(n->pos, "'%s' takes at least %zu argument%s, got %zu",
+              sym->name.c_str(), wanted, wanted == 1 ? "" : "s",
+              n->kids.size());
+        return false;
+      }
+      for (size_t i = wanted; i < n->kids.size(); i++) {
+        if (!already_checked && !check_expr(n->kids[i])) return false;
+        // Nothing here says what an untyped literal should be, so it takes the
+        // default it would have taken standing on its own.
+        Type *arg = settle(n->kids[i]);
+        if (!arg) return false;
+        if (is_aggregate(arg) || arg->kind == TY_STRING) {
+          error(n->kids[i]->pos,
+                "'%s' cannot pass %s through '...'; pass .ptr and .len",
+                sym->name.c_str(), type_str(arg).c_str());
+          return false;
+        }
+      }
+    } else if (n->kids.size() != wanted) {
       error(n->pos, "'%s' takes %zu argument%s, got %zu",
             sym->name.c_str(), wanted, wanted == 1 ? "" : "s", n->kids.size());
       return false;
     }
-    for (size_t i = 0; i < n->kids.size(); i++) {
+    for (size_t i = 0; i < wanted; i++) {
       Type *want = sig->params[i + skip];
       Type *arg = already_checked ? n->kids[i]->type : check_expr(n->kids[i]);
       if (!arg) return false;
@@ -1456,8 +1479,14 @@ struct Checker {
   Type *check_package_call(Node *n, Package *other) {
     Node *field = n->lhs;
     Symbol *sym = find_in(other->globals, field->name, false);
+    // `colour.Shade(2)` is a conversion, and the same one it is inside the
+    // package that declares Shade. A function of that name shadows it, which
+    // is the rule at home too.
+    if (!sym)
+      if (Type *named = find_in(other->type_names, field->name, false))
+        return check_convert(n, named);
     if (!sym) {
-      error(field->pos, "package '%s' has no exported function '%s'",
+      error(field->pos, "package '%s' has no exported function or type '%s'",
             other->name.c_str(), field->name.c_str());
       return nullptr;
     }
@@ -1669,6 +1698,30 @@ struct Checker {
 
   // `nameof(k)` is the name of the member `k` is, or empty when it is not one.
   // It calls the function synthesized alongside the enum.
+  // `hashof(x)`: one number per value, which is what a table needs to decide
+  // where to keep a key. Defined for what `==` compares — integers, enums,
+  // bools and strings — because a hash is only useful next to an equality that
+  // agrees with it. A generic keyed by anything else is refused where it is
+  // instantiated, which is where the caller can see what it asked for.
+  Type *check_hashof(Node *n) {
+    if (n->kids.size() != 1) {
+      error(n->pos, "'hashof' takes one value");
+      return nullptr;
+    }
+    if (!check_expr(n->kids[0])) return nullptr;
+    Type *arg = settle(n->kids[0]);
+    if (!arg) return nullptr;
+    if (!is_integer(arg) && arg->kind != TY_ENUM && arg->kind != TY_BOOL &&
+        arg->kind != TY_STRING) {
+      error(n->kids[0]->pos,
+            "'hashof' takes an integer, an enum, a bool or a string, got %s",
+            type_str(arg).c_str());
+      return nullptr;
+    }
+    n->form = CALL_HASH;
+    return n->type = types.named("u64");
+  }
+
   Type *check_nameof(Node *n) {
     if (n->kids.size() != 1) {
       error(n->pos, "'nameof' takes one enum value");
@@ -1878,6 +1931,7 @@ struct Checker {
       return nullptr;
     }
     if (n->lhs->name == "nameof" && !lookup("nameof")) return check_nameof(n);
+    if (n->lhs->name == "hashof" && !lookup("hashof")) return check_hashof(n);
     // `close(ch)`, the third of the three things a channel needs a word for.
     if (n->lhs->name == "close" && !lookup("close") && n->kids.size() == 1) {
       Type *what = check_expr(n->kids[0]);
@@ -2344,6 +2398,14 @@ struct Checker {
             sym->name.c_str());
       return nullptr;
     }
+    // How the extra arguments travel is settled at the call site, from the
+    // signature. A call through a value has none, and would put them where the
+    // callee does not look.
+    if (sym->type->is_c_variadic) {
+      error(n->pos, "'%s' is variadic, so it can only be called by name",
+            shown_name(sym->name).c_str());
+      return nullptr;
+    }
     return n->type = sym->type;
   }
 
@@ -2455,7 +2517,7 @@ struct Checker {
   // How a call reaches its target, kept in `form`.
   enum CallForm {
     CALL_DIRECT, CALL_METHOD, CALL_DYNAMIC, CALL_ATOMIC, CALL_INDIRECT,
-    CALL_SHARED
+    CALL_SHARED, CALL_HASH
   };
 
   // Whether a place lives in this function's frame. The walk stops at the first
@@ -3567,6 +3629,8 @@ struct Checker {
       sym->decl = fn;
       fn->sym = sym;
       if (!method_of.empty()) continue;
+
+      if (fn->is_c_variadic) sym->type->is_c_variadic = true;
 
       // Aggregates cross our own call boundary as a pointer, which is not the
       // C ABI; the FFI boundary has to stay scalar.

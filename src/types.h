@@ -65,6 +65,9 @@ struct Type {
   // because passing a function that writes where the caller expected one that
   // does not would hand out permission nobody granted.
   std::vector<bool> param_mut;
+  // TY_FUNC on an extern: C's `...`. The call site is what decides how the
+  // extra arguments travel, so the call has to carry the signature too.
+  bool is_c_variadic = false;
   Type *ret = nullptr;
 };
 

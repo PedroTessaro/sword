@@ -103,13 +103,15 @@ optionals, error unions, `switch` with completeness checking over an enum,
 scheduler behind it, channels included.
 
 The standard library covers memory (`std/mem`), byte buffers (`std/bytes`),
-byte-level strings (`std/strings`), generic containers (`std/collections`),
-printing and formatting (`std/io`, `std/fmt`), JSON (`std/json`), hashing
-(`std/crypto`), arguments and environment (`std/os`), files and standard input
-(`std/fs`), clocks and durations (`std/time`), scheduler counters
-(`std/runtime`), TCP (`std/net`), TLS (`std/tls`), HTTP/1.1 with keep-alive,
-routing, timeouts, static files and HTTPS, server and client (`std/http`), and
-tests (`std/testing`, run by `shield test`).
+byte-level strings (`std/strings`), UTF-8 and the width of a character
+(`std/unicode`), generic containers and sorting (`std/collections`), printing
+and formatting (`std/io`, `std/fmt`), JSON (`std/json`), hashing
+(`std/crypto`), arguments and environment (`std/os`), files, directories and
+standard input (`std/fs`), running another program (`std/process`), clocks and
+durations (`std/time`), scheduler counters (`std/runtime`), TCP (`std/net`),
+TLS (`std/tls`), HTTP/1.1 with keep-alive, routing, timeouts, static files and
+HTTPS, server and client (`std/http`), and tests (`std/testing`, run by
+`shield test`).
 
 A task has its own stack, so a task waiting on a socket is put down rather than
 holding a thread: the descriptor goes to a poller and the worker moves on.

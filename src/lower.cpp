@@ -63,6 +63,9 @@ struct Lowerer {
   };
   std::vector<Chunk> chunks;
   int task_serial = 0;
+  // Whether anything hashed a string, which is the only thing that needs the
+  // loop written out.
+  bool wants_hash_bytes = false;
 
   // Maps an enum onto the function that names its members, which is how a
   // boxed enum comes out as a name rather than a number.
@@ -1138,9 +1141,62 @@ struct Lowerer {
     return header;
   }
 
+  // What C does to an argument that travels through `...`: anything narrower
+  // than an int arrives as one, an f32 as an f64. Getting this wrong is not a
+  // wrong number but garbage, since the callee reads the wider slot either way.
+  int promoted(int value, Type *from) {
+    if (from->kind == TY_FLOAT)
+      return from->bits < 64 ? widen(value, types.named("f64")) : value;
+    if (from->kind == TY_BOOL ||
+        ((from->kind == TY_INT || from->kind == TY_ENUM) && from->bits < 32))
+      return widen(value, types.named("i32"));
+    return value;
+  }
+
+  // `hashof(x)`. An integer is mixed here and now — splitmix64's finaliser,
+  // which is what keeps keys 0, 1 and 2 from landing in neighbouring slots —
+  // and a string goes to `hash.bytes`, which is written once for the program
+  // rather than inlined at every call.
+  int hash_of(Node *arg) {
+    Type *u64 = types.named("u64");
+    Type *from = arg->type;
+    if (from->kind == TY_STRING) {
+      wants_hash_bytes = true;
+      int s = expr(arg);
+      IrInst in{};
+      in.op = IR_CALL;
+      in.callee = "hash.bytes";
+      in.type = u64;
+      in.args.push_back(load(gep_slice_ptr(s), types.rawptr(types.u8_ty)));
+      in.args.push_back(load(gep_slice_len(s), types.usize_ty));
+      in.dst = new_value(u64);
+      emit(in);
+      return in.dst;
+    }
+    int v = expr(arg);
+    if (from->kind == TY_BOOL || from->bits != 64) v = widen(v, u64);
+    return mix64(v);
+  }
+
+  // Multiplies wrap here on purpose, which is why these go through binop
+  // rather than through the checked arithmetic a `*` would get.
+  int mix64(int v) {
+    Type *u64 = types.named("u64");
+    auto shift_xor = [&](int value, int64_t by) {
+      return binop(IR_XOR, value,
+                   binop(IR_SHR, value, constant(by, u64), u64), u64);
+    };
+    v = shift_xor(v, 30);
+    v = binop(IR_MUL, v, constant((int64_t)0xbf58476d1ce4e5b9ull, u64), u64);
+    v = shift_xor(v, 27);
+    v = binop(IR_MUL, v, constant((int64_t)0x94d049bb133111ebull, u64), u64);
+    return shift_xor(v, 31);
+  }
+
   int call(Node *n) {
     if (n->form == 3) return atomic_call(n);
     if (n->form == 5) return shared_call(n);
+    if (n->form == 6) return hash_of(n->kids[0]);
     IrInst in{};
     in.op = IR_CALL;
     in.callee = n->name.empty() ? n->lhs->name : n->name;
@@ -1168,8 +1224,16 @@ struct Lowerer {
 
     size_t fixed = n->variadic_at >= 0 ? (size_t)n->variadic_at
                                        : n->kids.size();
-    for (size_t i = 0; i < fixed; i++)
-      in.args.push_back(materialize(n->kids[i]));
+    // Past an extern's `...` the C promotions apply, and the callee reads the
+    // promoted width whatever the call site wrote.
+    size_t declared = n->sym && n->sym->type->is_c_variadic
+                          ? n->sym->type->params.size()
+                          : fixed;
+    for (size_t i = 0; i < fixed; i++) {
+      int arg = materialize(n->kids[i]);
+      if (i >= declared) arg = promoted(arg, n->kids[i]->type);
+      in.args.push_back(arg);
+    }
     if (n->variadic_at >= 0) {
       // Already a list: hand it over rather than copying it into a new one.
       if (n->is_variadic) in.args.push_back(expr(n->kids.back()));
@@ -2034,6 +2098,61 @@ struct Lowerer {
     entry.insert(entry.begin(), entry_allocas.begin(), entry_allocas.end());
   }
 
+  // `hash.bytes`: FNV-1a over a run of bytes, for `hashof` over a string.
+  // Written here rather than in Sword because nothing in the language can be
+  // reached from lowering, and written once rather than at every call site.
+  void hash_bytes(IrFunc &out) {
+    fn = &out;
+    cur = 0;
+    sret = -1;
+    entry_allocas.clear();
+    loops.clear();
+    scopes.clear();
+
+    Type *u64 = types.named("u64");
+    Type *raw = types.rawptr(types.u8_ty);
+    out.name = "hash.bytes";
+    out.params.push_back(raw);
+    out.params.push_back(types.usize_ty);
+    out.ret = ret = u64;
+    out.is_internal = true;
+
+    int ptr = new_value(raw);
+    int len = new_value(types.usize_ty);
+    new_block();
+
+    // Both cross a block boundary, so they live in slots rather than values.
+    int h = alloca_slot(u64);
+    int at = alloca_slot(types.usize_ty);
+    store(constant((int64_t)0xcbf29ce484222325ull, u64), h, u64);
+    store(constant(0, types.usize_ty), at, types.usize_ty);
+
+    int head = new_block();
+    branch(head);
+    cur = head;
+    int i = load(at, types.usize_ty);
+    int more = binop(IR_LT, i, len, types.bool_ty);
+    int body = new_block();
+    int done = new_block();
+    cond_branch(more, body, done);
+
+    cur = body;
+    int byte = load(gep_index(ptr, i, types.u8_ty), types.u8_ty);
+    int mixed = binop(IR_XOR, load(h, u64), widen(byte, u64), u64);
+    // The multiply is meant to overflow, which is what FNV is.
+    store(binop(IR_MUL, mixed, constant((int64_t)1099511628211ull, u64), u64),
+          h, u64);
+    store(binop(IR_ADD, i, constant(1, types.usize_ty), types.usize_ty), at,
+          types.usize_ty);
+    branch(head);
+
+    cur = done;
+    emit_ret(load(h, u64), u64);
+
+    auto &entry = out.blocks[0].insts;
+    entry.insert(entry.begin(), entry_allocas.begin(), entry_allocas.end());
+  }
+
   void func(Node *decl, IrFunc &out) {
     fn = &out;
     cur = 0;
@@ -2045,6 +2164,7 @@ struct Lowerer {
     out.name = decl->name;
     out.ret = ret = decl->sym->type->ret;
     out.is_extern = decl->is_extern;
+    out.is_c_variadic = decl->is_c_variadic;
     out.is_internal = decl->is_hidden;
     out.ret_by_pointer = is_aggregate(out.ret);
     for (Node *p : decl->kids) out.params.push_back(p->type);
@@ -2145,6 +2265,10 @@ void lower(Program &prog, TypeTable &types, Mode mode, IrModule &mod) {
   if (prog.error_message) {
     mod.funcs.emplace_back();
     lowerer.error_table(mod.funcs.back(), true);
+  }
+  if (lowerer.wants_hash_bytes) {
+    mod.funcs.emplace_back();
+    lowerer.hash_bytes(mod.funcs.back());
   }
 
   for (const auto &thunk : lowerer.thunks) {

@@ -3,6 +3,10 @@
 #   // expect: <exit status>        must compile, run, and exit with that code
 #   // expect-output: <line>        stdout must contain that line
 #   // expect-error: <substring>    must fail to compile with that message
+#
+# Compiler output goes through printf rather than echo: /bin/sh here reads
+# backslash escapes in echo's argument, so a diagnostic that mentions '\x1b'
+# arrived at grep with an ESC in it and matched nothing.
 set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -24,9 +28,9 @@ for src in "$root"/tests/*.sword; do
         if [ $? -eq 0 ]; then
             echo "FAIL $name: compiled, expected error '$want_error'"
             fail=$((fail + 1))
-        elif ! echo "$out" | grep -qF "$want_error"; then
+        elif ! printf '%s\n' "$out" | grep -qF "$want_error"; then
             echo "FAIL $name: wrong error"
-            echo "$out" | sed 's/^/     /'
+            printf '%s\n' "$out" | sed 's/^/     /'
             fail=$((fail + 1))
         else
             pass=$((pass + 1))
@@ -46,7 +50,7 @@ for src in "$root"/tests/*.sword; do
     if [ "$got" != "$want_exit" ]; then
         echo "FAIL $name: exit $got, want $want_exit"
         fail=$((fail + 1))
-    elif [ -n "$want_output" ] && ! echo "$output" | grep -qF "$want_output"; then
+    elif [ -n "$want_output" ] && ! printf '%s\n' "$output" | grep -qF "$want_output"; then
         echo "FAIL $name: output '$output', want '$want_output'"
         fail=$((fail + 1))
     else
@@ -62,13 +66,125 @@ printf 'func main() int {\n    return helper()\n}\n' > "$tmp/mixed/main.sword"
 printf 'func helper() int {\n    return 0\n}\n' > "$tmp/mixed/old.sw"
 for target in "$tmp/alone/old.sw" "$tmp/alone" "$tmp/mixed"; do
     out=$("$shield" "$target" -o "$tmp/prog" 2>&1)
-    if [ $? -eq 0 ] || ! echo "$out" | grep -qF "old.sw' ends in .sw; Sword files end in .sword"; then
+    if [ $? -eq 0 ] || ! printf '%s\n' "$out" | grep -qF "old.sw' ends in .sw; Sword files end in .sword"; then
         echo "FAIL stale .sw in $(basename "$target"): $out"
         fail=$((fail + 1))
     else
         pass=$((pass + 1))
     fi
 done
+
+# The flags file beside the runtime archive is one command line however many
+# lines it is written on. A newline left in the middle of it ends the clang
+# invocation and runs the rest of the file as a command of its own, so the
+# object on the second line is never linked.
+mkdir -p "$tmp/flags"
+cp "$shield" "$root/libsword_rt.a" "$tmp/flags/"
+printf 'int sword_flags_shim(void) { return 7; }\n' > "$tmp/flags/shim.c"
+cc -c "$tmp/flags/shim.c" -o "$tmp/flags/shim.o" 2>/dev/null
+{ cat "$root/libsword_rt.flags"; echo "$tmp/flags/shim.o"; } \
+    > "$tmp/flags/libsword_rt.flags"
+cat > "$tmp/flags/main.sword" <<'EOF'
+extern func sword_flags_shim() i32
+
+func main() int {
+    return int(sword_flags_shim())
+}
+EOF
+if ! "$tmp/flags/shield" "$tmp/flags/main.sword" -o "$tmp/flags/prog" \
+        > "$tmp/flags/log" 2>&1; then
+    echo "FAIL flags file of two lines: compilation failed"
+    sed 's/^/     /' "$tmp/flags/log"
+    fail=$((fail + 1))
+else
+    "$tmp/flags/prog"
+    got=$?
+    if [ "$got" != 7 ]; then
+        echo "FAIL flags file of two lines: exit $got, want 7"
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+fi
+
+# --link puts an object of the caller's own on the link line. The path is
+# quoted on the way to the shell, so one with a space in it is a path.
+cp "$tmp/flags/shim.o" "$tmp/flags/a shim.o"
+if ! "$shield" "$tmp/flags/main.sword" -o "$tmp/flags/linked" \
+        --link "$tmp/flags/a shim.o" > "$tmp/flags/log" 2>&1; then
+    echo "FAIL --link: compilation failed"
+    sed 's/^/     /' "$tmp/flags/log"
+    fail=$((fail + 1))
+else
+    "$tmp/flags/linked"
+    got=$?
+    if [ "$got" != 7 ]; then
+        echo "FAIL --link: exit $got, want 7"
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+fi
+
+# An extern that ends in '...' is called the way C calls a variadic function.
+# On Apple's arm64 that is the whole difference: a variadic argument travels on
+# the stack while a fixed one travels in a register, so the same call declared
+# with a fixed arity reaches the callee as garbage. The shim reads its
+# arguments with va_arg, which is what makes the two tell apart.
+mkdir -p "$tmp/varargs"
+cat > "$tmp/varargs/shim.c" <<'EOF'
+#include <stdarg.h>
+
+long sword_vsum(int n, ...) {
+  va_list ap;
+  va_start(ap, n);
+  long total = 0;
+  for (int i = 0; i < n; i++) total += va_arg(ap, long);
+  va_end(ap);
+  return total;
+}
+
+// C promotes anything narrower than an int, and a float to a double; the
+// callee reads the promoted width whatever the call site passed.
+int sword_vpromote(int tag, ...) {
+  va_list ap;
+  va_start(ap, tag);
+  int small = va_arg(ap, int);
+  double wide = va_arg(ap, double);
+  va_end(ap);
+  return small + (int)wide;
+}
+EOF
+cc -c "$tmp/varargs/shim.c" -o "$tmp/varargs/shim.o" 2>/dev/null
+cat > "$tmp/varargs/main.sword" <<'EOF'
+extern func sword_vsum(n i32, ...) i64
+extern func sword_vpromote(tag i32, ...) i32
+
+func main() int {
+    if sword_vsum(3, i64(10), i64(20), i64(12)) != 42 {
+        return 1
+    }
+    if sword_vpromote(0, u8(200), f32(1.5)) != 201 {
+        return 2
+    }
+    return 0
+}
+EOF
+if ! "$shield" "$tmp/varargs/main.sword" -o "$tmp/varargs/prog" \
+        --link "$tmp/varargs/shim.o" > "$tmp/varargs/log" 2>&1; then
+    echo "FAIL variadic extern: compilation failed"
+    sed 's/^/     /' "$tmp/varargs/log"
+    fail=$((fail + 1))
+else
+    "$tmp/varargs/prog"
+    got=$?
+    if [ "$got" != 0 ]; then
+        echo "FAIL variadic extern: exit $got"
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+fi
 
 # `shield test -run` keeps the tests it names and refuses a name that is not
 # one: a package with a passing and a failing test tells the three apart.
@@ -89,9 +205,9 @@ picked() { # expected exit, expected text, arguments
     shift 2
     out=$("$shield" test "$tmp/picked" "$@" 2>&1)
     got=$?
-    if [ "$got" != "$want" ] || ! echo "$out" | grep -qF "$text"; then
+    if [ "$got" != "$want" ] || ! printf '%s\n' "$out" | grep -qF "$text"; then
         echo "FAIL shield test $*: exit $got, want $want with '$text'"
-        echo "$out" | sed 's/^/     /'
+        printf '%s\n' "$out" | sed 's/^/     /'
         fail=$((fail + 1))
     else
         pass=$((pass + 1))

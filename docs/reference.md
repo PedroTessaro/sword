@@ -29,6 +29,26 @@ For looking things up. [The tour](tour.md) is the place to learn from.
 `?*T`, `?[*]T` and `?func(...)` cost one word. Over anything else, `?T` is the
 value with a flag beside it.
 
+### String literals
+
+Bytes between double quotes. The escapes, and there are no others:
+
+| | |
+|---|---|
+| `\n` `\t` `\r` | newline, tab, carriage return |
+| `\0` | a zero byte |
+| `\e` | ESC, the same byte as `\x1b` |
+| `\xNN` | the byte NN, two hex digits, either case |
+| `\\` `\"` `\'` | the character itself |
+
+`\xNN` is what a terminal sequence is written with, and it is what lets one be
+a constant:
+
+```sword
+const ClearScreen = "\x1b[2J"
+const Home = "\e[H"
+```
+
 ## Declarations
 
 ```sword
@@ -52,6 +72,7 @@ func name[T, U: Constraint](a T) R { ... }
 func (r *T) Method() R { ... }
 func (mut r *T) Method() R { ... }
 extern func c_name(a T) R          // C ABI, name unchanged
+extern func c_name(a T, ...) R     // C's own variadic: ioctl, fcntl, printf
 
 struct Name { field T ... }
 struct Name[T] { field T ... }     // generic; a type only once instantiated
@@ -169,6 +190,28 @@ site — there is no reflection anywhere. It is four fields:
 
 `std/fmt` mirrors the tags as `KindBool`, `KindInt` and so on.
 
+### C's variadic
+
+An `extern` declaration may end in `...`, which is a different thing: it
+gathers nothing, and says that the arguments after the declared ones travel by
+the platform's rules.
+
+```sword
+extern func ioctl(fd i32, request u64, ...) i32
+```
+
+It matters. On Apple's arm64 a variadic argument goes on the stack while a
+fixed one goes in a register, so declaring the arity you happen to use —
+`ioctl(fd i32, request u64, p [*]u8)` — puts the third argument somewhere the
+callee never looks. The same declaration passes on x86-64, which is the worst
+way for it to be wrong.
+
+What C promotes, Sword promotes: anything narrower than an `i32` arrives as
+one, an `f32` as an `f64`. Only scalars fit through — a `string` is two words
+here and a pointer there, so pass `.ptr` and `.len`. And a variadic function
+can only be called by name: a function value carries one word and no
+signature, which is not enough to know where the extra arguments go.
+
 ## Atomics
 
 `atomic[T]` over an integer or a bool. It is the one thing several tasks may
@@ -197,7 +240,8 @@ consistent ordering.
 whole structure — a map, a queue, a cache — by putting a mutex in front of it.
 
 ```sword
-mut table := shared[collections.Map[u64]](try collections.NewMap[u64](&a, 64))
+mut table := shared[collections.Map[string, u64]](
+    try collections.NewMap[u64](&a, 64))
 
 lock m := &table {
     seen := m.Get(key) orelse 0
@@ -394,11 +438,19 @@ F(value)               // type argument inferred
 F[i32](value)          // written out
 sizeof[T]()            // compile-time constant
 alignof[T]()
+hashof(x)              // u64, for a value `==` can compare
 ```
 
 Constraints are interfaces. A call through a constraint is resolved when the
 function is instantiated and compiles to a direct call; a call through an
 interface parameter goes via the method table.
+
+`hashof` takes an integer, an enum, a bool or a string — what `==` compares,
+since a hash is only worth anything beside an equality that agrees with it. It
+is what lets a generic table key itself on whatever it was given: a string goes
+through FNV-1a, anything else through a few instructions of mixing. Anything
+else is refused where the generic is instantiated, which is where the caller
+can see what it asked for.
 
 Type arguments written out have to be type names. Composite types come from
 inference.
@@ -492,7 +544,15 @@ func (mut b *Buffer) WriteByte(c u8) !void
 func (mut b *Buffer) Write(from []u8) !void
 func (mut b *Buffer) WriteString(s string) !void
 func (mut b *Buffer) WriteU64(v u64) !void
+func (mut b *Buffer) Insert(at u64, from []u8) !void
+func (mut b *Buffer) Delete(at u64, count u64) !void
+func (mut b *Buffer) Truncate(to u64)
 ```
+
+`Insert` grows the way `Write` does and moves the tail up; `Delete` moves it
+back down. A range that is not inside the buffer is `error.OutOfRange` rather
+than a clamp — `at` may be the length, which appends, and nothing past it.
+`Truncate` only ever shortens.
 
 ### `std/strings`
 
@@ -513,6 +573,35 @@ func ToLower(c u8) u8
 func ParseU64(s string) !u64
 ```
 
+### `std/unicode`
+
+Where a character starts, what it cost, and how wide it is. Nothing here
+allocates.
+
+```sword
+struct Rune { Code u32; Bytes u64 }
+
+func Decode(s string, at u64) ?Rune       // nil off a boundary or off UTF-8
+func Encode(r u32, mut into []u8) !u64    // bytes written
+func Valid(s string) bool
+func Count(s string) u64                  // characters, not bytes
+func Width(r u32) u64                     // 0, 1 or 2 columns
+```
+
+`Decode` answers nil for three different things — past the end, inside a
+character, and bytes that are not UTF-8 — because none of them should come
+back as a character nobody wrote. `Bytes` is what a cursor moving right adds
+to its position; stepping by one byte instead lands in the middle of a
+character, and the terminal draws something that is not what is in the file.
+
+`Width` is what decides whether a screen lines up: a combining mark hangs off
+the character before it and takes no column, and a CJK character takes two.
+The ranges it knows are the ones that decide a terminal — the combining
+blocks, East Asian Wide and Fullwidth, and the emoji every terminal draws
+double — rather than the whole of Unicode, which is a standard and a generated
+table. Normalisation, case folding past ASCII and grapheme clusters are not
+here.
+
 ### `std/collections`
 
 ```sword
@@ -528,26 +617,43 @@ func (mut l *List[T]) Reset()
 func (mut l *List[T]) Free()
 ```
 
-A hash map with string keys, open addressing and linear probing:
+A hash map, open addressing and linear probing:
 
 ```sword
-func NewMap[V](mut a mem.Allocator, capacity u64) !Map[V]
+func NewMap[V](mut a mem.Allocator, capacity u64) !Map[string, V]
+func NewMapOf[K, V](mut a mem.Allocator, capacity u64) !Map[K, V]
 func Hash(key string) u64
-func (m *Map[V]) Len() u64
-func (m *Map[V]) Get(key string) ?V
-func (m *Map[V]) Has(key string) bool
-func (mut m *Map[V]) Set(key string, value V) !void
-func (mut m *Map[V]) Delete(key string) bool
-func (mut m *Map[V]) Free()
+func (m *Map[K, V]) Len() u64
+func (m *Map[K, V]) Get(key K) ?V
+func (m *Map[K, V]) Has(key K) bool
+func (mut m *Map[K, V]) Set(key K, value V) !void
+func (mut m *Map[K, V]) Delete(key K) bool
+func (mut m *Map[K, V]) Free()
 
 // Iteration is by slot: walk 0..Slots() and ask each one.
-func (m *Map[V]) Slots() u64
-func (m *Map[V]) KeyAt(i u64) ?string
-func (m *Map[V]) ValueAt(i u64) V
+func (m *Map[K, V]) Slots() u64
+func (m *Map[K, V]) KeyAt(i u64) ?K
+func (m *Map[K, V]) ValueAt(i u64) V
 ```
 
-Keys are strings. A key type parameter would need hashing and equality as
-constraints, and there is nowhere to hang those yet.
+The key is anything `hashof` and `==` both understand — an integer, an enum, a
+bool or a string — so a table from a key code to a command needs no string to
+look itself up with. `NewMap` is the string case, which most of them are; a key
+of another kind is refused where the map is instantiated.
+
+Sorting, over a comparison that is an ordinary function value:
+
+```sword
+func Sort[T](mut xs []T, less func(T, T) bool)
+func BinarySearch[T](xs []T, target T, less func(T, T) bool) ?u64
+```
+
+`Sort` is an introsort — quicksort, insertion sort for short runs, heapsort
+once the recursion goes deeper than it should — so an adversarial input costs
+n log n rather than n². It allocates nothing and it is not stable.
+`BinarySearch` answers the leftmost index that compares equal, and nil when
+there is none; a slice that is not sorted by the same `less` gives a wrong
+answer rather than a slow one.
 
 ### `std/fmt`
 
@@ -669,6 +775,7 @@ enum Signal i32 { Hangup = 1, Interrupt = 2, Quit = 3, Terminate = 15 }
 
 func Catch(sig Signal) !void      // start catching it
 func WaitSignal() !Signal         // the next one, without holding a thread
+func StopSignals()                // every wait answers NoSignals, for good
 func Kill(pid u64, sig Signal) !void
 
 func MaxFiles() u64               // descriptors this process may open
@@ -681,6 +788,16 @@ func Hostname() ?string
 A signal handler may do almost nothing safely, so a signal arrives down a pipe
 and `WaitSignal` is an ordinary task parked on the other end. That is the whole
 of a graceful shutdown: wait, call `Close`, let the scope drain.
+
+`StopSignals` is the other end of that. A task parked in `WaitSignal` has
+nothing else to end it, and the scope that spawned it will not close until it
+does; after this every wait answers `error.NoSignals` and keeps answering it.
+The signals being caught go back to their default behaviour, so a program that
+has stopped listening does not swallow a `SIGTERM`, and `Catch` afterwards is
+an error rather than a way back.
+
+Any signal number is catchable, not only the four the enum names:
+`os.Catch(os.Signal(28))` asks for SIGWINCH.
 
 `Args` fills an array you supply instead of allocating, and returns the part of
 it that was used:
@@ -803,6 +920,7 @@ enum Mode i32 { Read, Write, Append }   // Write truncates or creates
 
 func Open(path string, mode Mode) !File
 func Of(fd i32) File                    // wrap one the process already has
+func (f *File) Fd() i32                 // negative: a file nobody opened
 func (f *File) Read(mut into []u8) !u64 // 0 means the end of the file
 func (f *File) Write(from []u8) !void
 func (f *File) WriteString(s string) !void
@@ -816,15 +934,80 @@ func RemoveDir(path string) !void             // an empty one only
 func ReadAll(path string, mut a mem.Allocator) ![]u8
 func WriteAll(path string, data []u8) !void
 func ReadStdin(mut a mem.Allocator, most u64) ![]u8
+
+struct Entry { Name string; IsDir bool }
+struct Info { Size u64; IsDir bool; ModifiedNanos i64; Mode u32 }
+
+func Stat(path string) !Info
+func Rename(from string, to string) !void
+func ReadDir(path string, mut a mem.Allocator) ![]Entry
+func TempPath(prefix string, mut into []u8) !string
 ```
 
 `Stdin`, `Stdout` and `Stderr` are the descriptors the process starts with.
+
+`Stat` answers what `Size` could not: missing, a directory, and cannot be read
+were all the same nil. `Mode` is the permission bits and nothing else.
+
+`ReadDir` leaves out `.` and `..`, gives names rather than paths, and copies
+them into the allocator's memory so they outlive the walk. The order is
+whatever the filesystem keeps.
+
+`Rename` moves a file over whatever is already there, which is how a file is
+saved without risking it — and `TempPath` is the other half. Its prefix is a
+path, so the new file lands beside the one being replaced, in the same
+filesystem, which is what makes the rename atomic:
+
+```sword
+mut room := [256]u8{}
+scratch := try fs.TempPath("notes.txt.", room[..])
+try fs.WriteAll(scratch, updated)
+try fs.Rename(scratch, "notes.txt")
+```
+
+The file is made, not merely named: a path that is only unlikely to be taken is
+a race the caller cannot see. `fs.WriteAll` on its own truncates first, so a
+crash halfway through it loses what was there.
 
 A file is never "not ready yet" — the wait is the disk, and no poller has
 anything to say about it. So a file call goes to a thread kept for exactly that,
 and the task waiting on it is put down like any other. Forty tasks reading at once
 run on a pool of ten, not forty threads; `SWORD_IO_THREADS` is the cap and
 `runtime.Read().IoThreads` is the count.
+
+### `std/process`
+
+Running another program, and talking to it.
+
+```sword
+struct Child { Pid u64; In fs.File; Out fs.File; Err fs.File }
+
+func Start(path string, args []string, mut a mem.Allocator) !Child
+func Run(path string, args []string, mut a mem.Allocator) !i32
+func (mut c *Child) Wait() !i32
+func (mut c *Child) Kill(sig i32) !void
+func (mut c *Child) CloseIn()
+func (mut c *Child) Close()
+```
+
+`args` is what comes after the program's own name. A path with no slash in it
+is looked up in `PATH`, the way a shell would, and the child gets this
+process's environment. The allocator holds `argv` while it is being built and
+nothing after that.
+
+`Start` gives the child a pipe on each of its three descriptors, which is the
+part that matters: a language server is a conversation over the child's stdin
+and stdout rather than a command whose output you collect. `Run` leaves it the
+descriptors this process has and answers the status.
+
+`Wait` answers the exit status, or 128 plus the signal when one killed it — the
+shell's convention, and the only thing a single number can carry. Until
+something waits, a child that has finished stays a zombie. `CloseIn` is how a
+program reading until the end of its input is told that was all of it.
+
+Starting a program and waiting for one both stop a thread and neither is
+anything a poller can help with, so both go to the same pool as file I/O and
+the task waiting is put down like any other.
 
 ### `std/runtime`
 
@@ -1110,6 +1293,7 @@ shield test <file.sword | directory> [options]
 
   -o <path>       output binary, default a.out
   -I <dir>        another directory to search for packages
+  --link <arg>    an object, a library or a linker option; one per --link
   --mode=<m>      debug | safe | fast | small, default safe
   -O<level>       override the optimisation level
   -p <n>          test only: how many tests may run at once
@@ -1121,6 +1305,16 @@ shield test <file.sword | directory> [options]
 ```
 
 A `.sword` file compiles alone. A directory compiles as one package.
+
+`--link` reaches the linker, which is how a program calls C that `extern` alone
+cannot describe — a function taking a struct whose layout differs between
+systems, say. One argument each, in the order given, after the program's own
+object:
+
+```
+shield sheath.sword -o sheath --link shim.o --link -L/opt/homebrew/lib \
+    --link -lsomething
+```
 
 `shield test` builds the package together with its `*_test.sword` files behind a
 generated entry point, runs it, and hands back its exit status. Those files are

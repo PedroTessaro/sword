@@ -1,0 +1,10 @@
+// expect-error: cannot pass string through '...'; pass .ptr and .len
+// The FFI boundary stays scalar on the other side of the '...' too: a string
+// is two words here and one pointer there.
+
+extern func printf(fmt [*]u8, ...) i32
+
+func main() int {
+    name := "world"
+    return int(printf("hello %s\n".ptr, name))
+}

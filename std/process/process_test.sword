@@ -1,0 +1,73 @@
+package process
+
+import "std/strings"
+import "std/testing"
+
+// `t.Mem` is the test's own arena, reset before each test. A child holds it
+// only while argv is being built.
+
+func TestRunAnswersTheStatus(mut t *testing.T) !void {
+    mut args := [2]string{"-c", "exit 7"}
+    try t.Equal(try Run("sh", args[..], t.Mem), 7)
+
+    mut fine := [2]string{"-c", "true"}
+    try t.Equal(try Run("sh", fine[..], t.Mem), 0)
+}
+
+func TestStartReadsBothStreams(mut t *testing.T) !void {
+    mut args := [2]string{"-c", "printf out; printf err >&2; exit 2"}
+    mut c := try Start("sh", args[..], t.Mem)
+    c.CloseIn()
+
+    mut room := [64]u8{}
+    n := try c.Out.Read(room[..])
+    try t.Equal(string(room[0..n]), "out")
+
+    mut other := [64]u8{}
+    m := try c.Err.Read(other[..])
+    try t.Equal(string(other[0..m]), "err")
+
+    try t.Equal(try c.Wait(), 2)
+    c.Close()
+}
+
+// The descriptors are the point: a language server is a conversation over the
+// child's stdin and stdout, not a command whose output you collect.
+func TestTalkToIt(mut t *testing.T) !void {
+    mut args := [2]string{"-c", "while read line; do echo \"got $line\"; done"}
+    mut c := try Start("sh", args[..], t.Mem)
+
+    try c.In.WriteString("one\n")
+    mut room := [64]u8{}
+    n := try c.Out.Read(room[..])
+    try t.Equal(string(room[0..n]), "got one\n")
+
+    try c.In.WriteString("two\n")
+    m := try c.Out.Read(room[..])
+    try t.Equal(string(room[0..m]), "got two\n")
+
+    // Closing its input is how it is told that was all of it.
+    c.CloseIn()
+    try t.Equal(try c.Wait(), 0)
+    c.Close()
+}
+
+func TestKill(mut t *testing.T) !void {
+    mut args := [2]string{"-c", "sleep 30"}
+    mut c := try Start("sh", args[..], t.Mem)
+    try t.Require(c.Pid > 0)
+
+    try c.Kill(15) // SIGTERM
+    // 128 plus the signal, which is what a shell reports.
+    try t.Equal(try c.Wait(), 143)
+    c.Close()
+}
+
+func TestNoSuchProgram(mut t *testing.T) !void {
+    mut none := [0]string{}
+    Run("sword_no_such_program", none[..], t.Mem) catch |e| {
+        try t.Equal(e, error.CannotStart)
+        return
+    }
+    try t.Failf("ran a program that is not there")
+}

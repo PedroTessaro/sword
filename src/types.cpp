@@ -406,6 +406,7 @@ std::string type_str(const Type *t) {
       if (i < t->param_mut.size() && t->param_mut[i]) s += "mut ";
       s += type_str(t->params[i]);
     }
+    if (t->is_c_variadic) s += t->params.empty() ? "..." : ", ...";
     s += ")";
     if (t->ret && t->ret->kind != TY_VOID) s += " " + type_str(t->ret);
     return s;
@@ -430,6 +431,7 @@ bool type_eq(const Type *a, const Type *b) {
   case TY_STRUCT: case TY_ENUM: return a->name == b->name;
   case TY_FUNC: {
     if (a->params.size() != b->params.size()) return false;
+    if (a->is_c_variadic != b->is_c_variadic) return false;
     if (!type_eq(a->ret, b->ret)) return false;
     for (size_t i = 0; i < a->params.size(); i++) {
       if (!type_eq(a->params[i], b->params[i])) return false;

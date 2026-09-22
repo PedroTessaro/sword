@@ -23,7 +23,7 @@ func bump(mut t *shared[Tally], n u64) {
 
 // No `mut` on the pointer: a shared carries its own permission, the same way an
 // atomic does.
-func count(table *shared[collections.Map[u64]], keys []string) !void {
+func count(table *shared[collections.Map[string, u64]], keys []string) !void {
     for i in 0..keys.len {
         lock m := table {
             seen := m.Get(keys[i]) orelse 0
@@ -99,7 +99,7 @@ func main() !int {
         }
     }
 
-    mut table := shared[collections.Map[u64]](
+    mut table := shared[collections.Map[string, u64]](
         try collections.NewMap[u64](&arena, 64))
     mut words := [4]string{}
     words[0] = "ada"

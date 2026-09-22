@@ -1,6 +1,7 @@
 #include "sword_os.h"
 #include "sword_rt.h"
 
+#include <atomic>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -21,6 +22,13 @@ char **saved_argv = nullptr;
 // writes a byte down a pipe — and the waiting is ordinary polled reading on the
 // other end, which the scheduler already knows how to put a task down for.
 int signal_pipe[2] = {-1, -1};
+
+// Which signals were asked for, so that giving up on them can put each one
+// back the way it was. Anything past 63 is not tracked and not catchable here.
+std::atomic<uint64_t> caught{0};
+// Set once and never cleared: a program that has said it is done watching for
+// signals gets the same answer every time it asks again.
+std::atomic<bool> stopped{false};
 
 void on_signal(int sig) {
   unsigned char which = (unsigned char)sig;
@@ -84,13 +92,37 @@ void sword_os_ignore_sigpipe(void) {
 // Starts catching a signal. Until this is called the default stands, so a
 // program that asks for nothing behaves as it always did.
 int32_t sword_os_catch(int32_t sig) {
+  // Asking again after the program has given up on signals is a mistake, not a
+  // way back: the waits are already answering, and nothing would read what the
+  // handler wrote.
+  if (stopped.load(std::memory_order_acquire)) return -1;
+  if (sig < 0 || sig >= 64) return -1;
   if (!open_signal_pipe()) return -1;
   struct sigaction action;
   memset(&action, 0, sizeof(action));
   action.sa_handler = on_signal;
   sigemptyset(&action.sa_mask);
   action.sa_flags = SA_RESTART;
-  return sigaction(sig, &action, nullptr) == 0 ? 0 : -1;
+  if (sigaction(sig, &action, nullptr) != 0) return -1;
+  caught.fetch_or((uint64_t)1 << sig, std::memory_order_acq_rel);
+  return 0;
+}
+
+// Ends every wait, now and later. The byte is what wakes whoever is parked on
+// the pipe, and it is deliberately never read: the descriptor stays readable,
+// so a task that parks afterwards comes straight back out and is told the same
+// thing. Each signal goes back to doing what it would have done — a program
+// that has stopped listening should not be one that swallows a SIGTERM.
+void sword_os_stop_signals(void) {
+  if (stopped.exchange(true, std::memory_order_acq_rel)) return;
+  uint64_t asked = caught.load(std::memory_order_acquire);
+  for (int sig = 0; sig < 64; sig++)
+    if (asked & ((uint64_t)1 << sig)) signal(sig, SIG_DFL);
+  if (signal_pipe[1] >= 0) {
+    unsigned char wake = 0;
+    ssize_t ignored = write(signal_pipe[1], &wake, 1);
+    (void)ignored;
+  }
 }
 
 // The next signal that was asked for, waiting without holding a thread. -1 when
@@ -98,6 +130,7 @@ int32_t sword_os_catch(int32_t sig) {
 int32_t sword_os_wait_signal(void) {
   if (signal_pipe[0] < 0) return -1;
   while (true) {
+    if (stopped.load(std::memory_order_acquire)) return -1;
     unsigned char which = 0;
     ssize_t n = read(signal_pipe[0], &which, 1);
     if (n == 1) return (int32_t)which;

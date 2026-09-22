@@ -29,6 +29,8 @@ void usage() {
         "  -p <n>         test only: how many tests may run at once\n"
         "  -run <name>    test only: run just this test; repeat for more\n"
         "  -I <dir>       add a directory to the package search path\n"
+        "  --link <arg>   an object, a library or a linker option to link\n"
+        "                 against; one argument each, repeat for more\n"
         "  --mode=<m>     debug | safe | fast | small (default safe)\n"
         "                 debug and safe check bounds and integer overflow\n"
         "  -O<level>      override the optimization level\n"
@@ -108,23 +110,38 @@ void dump_ast(Node *n, int depth) {
   dump_ast(n->els, depth + 1);
 }
 
+// The command goes to a shell, so anything that came from the command line is
+// quoted on its way in: a path with a space in it is ordinary, and a path with
+// anything worse in it should reach the linker as a path.
+std::string quoted(const std::string &arg) {
+  std::string out = "'";
+  for (char c : arg) {
+    if (c == '\'') out += "'\\''";
+    else out += c;
+  }
+  return out + "'";
+}
+
 // Hands the generated LLVM IR to clang, which assembles and links it. This is
 // also where LLVM's own optimization pipeline runs.
 bool assemble(const std::string &ll_path, const std::string &out_path,
               const std::string &opt_level, const std::string &runtime,
-              const std::string &extra) {
+              const std::string &extra, const std::vector<std::string> &link) {
   // The archive only contributes objects the program actually references, so
   // a program that never spawns links nothing from it.
   // `-x none` puts clang back into guess-by-extension mode, so the archive is
   // read as an archive and not as more LLVM IR.
   std::string cmd = "clang -O" + opt_level + " -Wno-override-module -x ir " +
-                    ll_path;
+                    quoted(ll_path);
   // -pthread because the scheduler runs threads, and on older Linux they are
   // not in libc; on Darwin it is accepted and does nothing.
   if (!runtime.empty()) cmd += " -x none " + runtime + " -lc++ -pthread";
   // Whatever the runtime was built against, from the file beside the archive.
   if (!runtime.empty() && !extra.empty()) cmd += " " + extra;
-  cmd += " -o " + out_path;
+  // After the program's own object, which is where a linker expects to be told
+  // what resolves what is still missing.
+  for (const std::string &arg : link) cmd += " " + quoted(arg);
+  cmd += " -o " + quoted(out_path);
   int status = system(cmd.c_str());
   if (status != 0) {
     fprintf(stderr, "shield: clang failed while assembling %s\n",
@@ -139,6 +156,8 @@ bool assemble(const std::string &ll_path, const std::string &out_path,
 int main(int argc, char **argv) {
   const char *input = nullptr;
   std::vector<std::string> search;
+  // Objects and libraries of the caller's own, in the order they were given.
+  std::vector<std::string> link_with;
   std::string output = "a.out";
   Stage stage = STAGE_BINARY;
   Mode mode = MODE_SAFE;
@@ -157,6 +176,8 @@ int main(int argc, char **argv) {
     const char *arg = argv[i];
     if (!strcmp(arg, "-o") && i + 1 < argc) { output = argv[++i]; named = true; }
     else if (!strcmp(arg, "-I") && i + 1 < argc) search.push_back(argv[++i]);
+    else if (!strcmp(arg, "--link") && i + 1 < argc)
+      link_with.push_back(argv[++i]);
     else if (!strncmp(arg, "-O", 2) && arg[2]) opt_level = arg + 2;
     else if (!strncmp(arg, "--mode=", 7)) {
       const char *name = arg + 7;
@@ -254,7 +275,7 @@ int main(int argc, char **argv) {
   fclose(ll);
 
   bool ok = assemble(ll_path, output, opt_level, runtime_archive(),
-                     runtime_link_flags());
+                     runtime_link_flags(), link_with);
   unlink(ll_path.c_str());
   if (!ok) return 1;
   if (!testing) return 0;

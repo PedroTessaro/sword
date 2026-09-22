@@ -318,7 +318,33 @@ func main() !int {
 ```
 
 Indexing a string gives you bytes. Decoding UTF-8 is a library's job, not the
-type's.
+type's — `std/unicode` is that library:
+
+```sword
+import "std/io"
+import "std/unicode"
+
+func main() !int {
+    word := "ação"
+    try io.Printf("{} bytes, {} characters\n", word.len, unicode.Count(word))
+
+    // Walking it by character rather than by byte. Stepping one byte at a
+    // time lands in the middle of one, and the terminal then draws something
+    // that is not what is in the file.
+    mut at u64 = 0
+    mut columns u64 = 0
+    for at < word.len {
+        r := unicode.Decode(word, at) orelse break
+        columns += unicode.Width(r.Code)
+        at += r.Bytes
+    }
+    try io.Printf("{} columns\n", columns)
+    return 0
+}
+```
+
+`Width` is what decides whether a program that draws a screen lines up: a
+combining mark takes no columns and a CJK character takes two.
 
 `==` and `!=` compare content, so a string behaves the way you would expect and
 `switch` over one works:

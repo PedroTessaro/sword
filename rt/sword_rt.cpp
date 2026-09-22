@@ -416,6 +416,11 @@ struct Pool {
   std::atomic<int64_t> started{0};
   std::atomic<int64_t> finished{0};
   std::mutex hire_lock;
+  // The workers past the one that started the pool are not there from the
+  // beginning: `main` is a task, so every program has a pool, and a program
+  // that never spawns has exactly one thing to run.
+  std::atomic<bool> workers_up{false};
+  std::mutex start_lock;
 };
 
 Pool &pool();
@@ -701,7 +706,6 @@ Pool &pool() {
     p->ceiling = env_count("SWORD_MAX_THREADS", kDefaultCeiling);
     if (p->ceiling < p->target) p->ceiling = p->target;
     for (int i = 0; i < n; i++) p->workers.push_back(new Worker());
-    for (int i = 1; i < n; i++) p->threads.emplace_back(worker_loop, i);
     tl_worker = 0; // the thread that starts the pool owns queue 0
     watch_for_overflow();
     atexit(stop_pool);
@@ -711,11 +715,28 @@ Pool &pool() {
   return *instance;
 }
 
+// The queues exist from the start; the threads that serve them are started by
+// the first spawn. A program whose only task is `main` runs on the thread the
+// process came with, and a thread per core for it would be a cost nobody asked
+// for.
+void start_workers(Pool &p) {
+  if (p.workers_up.load(std::memory_order_acquire)) return;
+  std::lock_guard<std::mutex> held(p.start_lock);
+  if (p.workers_up.load(std::memory_order_relaxed)) return;
+  if (p.stopping.load(std::memory_order_acquire)) return;
+  for (size_t i = 1; i < p.workers.size(); i++)
+    p.threads.emplace_back(worker_loop, (int)i);
+  p.workers_up.store(true, std::memory_order_release);
+}
+
 void stop_pool() {
   Pool &p = pool();
   sword_poll_stop();
   p.stopping.store(true, std::memory_order_release);
   p.wake.notify_all();
+  // Against a spawn landing at the same moment as the exit: whoever holds this
+  // has either started the threads already or will see `stopping` and not.
+  std::lock_guard<std::mutex> held(p.start_lock);
   for (std::thread &t : p.threads)
     if (t.joinable()) t.join();
   // Hired threads are detached, so give them a moment to notice. One that is
@@ -1036,6 +1057,7 @@ namespace {
 // nobody was using for anything. The cap is a millisecond, so the join answers
 // promptly once work appears.
 void drain_until(Scope *scope) {
+  Pool &p = pool();
   int idle = 0;
   int64_t nap = 50000; // nanoseconds, doubling to a millisecond
   while (scope->outstanding.load(std::memory_order_acquire) > 0) {
@@ -1047,7 +1069,12 @@ void drain_until(Scope *scope) {
       std::this_thread::yield();
       continue;
     } else {
-      std::this_thread::sleep_for(std::chrono::nanoseconds(nap));
+      // Waiting on the pool rather than sleeping on the clock: whatever makes
+      // a task runnable notifies it, and this may be the only thread there is —
+      // `main` is a task, and a program that never spawns has nobody else to
+      // pick it up when the poller wakes it. The nap stays as the ceiling.
+      std::unique_lock<std::mutex> held(p.sleep_lock);
+      p.wake.wait_for(held, std::chrono::nanoseconds(nap));
       if (nap < 1000000) nap *= 2;
       continue;
     }
@@ -1146,20 +1173,11 @@ int64_t offload_threads() {
   return o.threads;
 }
 
-} // namespace
-
-extern "C" {
-
-void sword_scope_begin(void *blob) {
-  Scope *scope = new (blob) Scope();
-  scope->outstanding.store(0, std::memory_order_relaxed);
-  scope->failed.store(0, std::memory_order_relaxed);
-  pool();
-}
-
-void sword_scope_spawn(void *blob, sword_task_fn fn, const void *args,
-                       int64_t size) {
-  Scope *scope = (Scope *)blob;
+// Puts a task on this thread's queue. What a spawn does on top of it is start
+// the workers and cover for anyone parked; the main task wants neither, since
+// it is the only thing there is to run until it says otherwise.
+void queue_task(Scope *scope, sword_task_fn fn, const void *args,
+                int64_t size) {
   Task *task = fresh_task();
   task->fn = fn;
   task->scope = scope;
@@ -1181,10 +1199,41 @@ void sword_scope_spawn(void *blob, sword_task_fn fn, const void *args,
   }
   p.pending.fetch_add(1, std::memory_order_relaxed);
   p.wake.notify_one();
+}
+
+} // namespace
+
+extern "C" {
+
+void sword_scope_begin(void *blob) {
+  Scope *scope = new (blob) Scope();
+  scope->outstanding.store(0, std::memory_order_relaxed);
+  scope->failed.store(0, std::memory_order_relaxed);
+  pool();
+}
+
+void sword_scope_spawn(void *blob, sword_task_fn fn, const void *args,
+                       int64_t size) {
+  queue_task((Scope *)blob, fn, args, size);
+  Pool &p = pool();
+  // A spawn is the first sign that the program has more than one thing to do,
+  // which is when the rest of the workers are worth starting.
+  start_workers(p);
   // Work arriving while threads are parked is the other half of the hiring
   // rule: without this, a task spawned after everyone blocked would wait for
   // the next blocking call to notice it.
   cover_for_parked(p);
+}
+
+// `main` is a task like anything else. Parking is a fiber's trick, so before
+// this the wait in a program whose whole job is one loop over one descriptor
+// could not work: sword_park_fd found no fiber, answered -1, and a loop
+// written to stop on an error stopped on its first read.
+uint16_t sword_run_main(sword_task_fn fn, const void *args, int64_t size) {
+  alignas(8) unsigned char blob[SWORD_SCOPE_SIZE];
+  sword_scope_begin(blob);
+  queue_task((Scope *)blob, fn, args, size);
+  return sword_scope_end(blob);
 }
 
 // Waits for a descriptor from inside a task, without holding the thread: the
@@ -1226,7 +1275,11 @@ void sword_runtime_stats(struct sword_stats *out) {
   out->stack_bytes = (int64_t)stack_bytes();
   Pool *p = running.load(std::memory_order_acquire);
   if (!p) return;
-  out->threads = p->target + p->hired.load(std::memory_order_relaxed);
+  // Until the first spawn there is one worker: the thread the program came
+  // with, running `main`. Reporting the target before that would be reporting
+  // threads that do not exist.
+  int64_t workers = p->workers_up.load(std::memory_order_acquire) ? p->target : 1;
+  out->threads = workers + p->hired.load(std::memory_order_relaxed);
   out->queued = p->pending.load(std::memory_order_relaxed);
   out->parked = p->parked.load(std::memory_order_relaxed);
   out->stacks = p->stacks.load(std::memory_order_relaxed);

@@ -1,0 +1,8 @@
+// expect-error: '\x' takes two hex digits, as in '\x1b'
+// One digit is a typo, not a byte: guessing at the value would write a
+// different byte than the one that was meant.
+
+func main() int {
+    esc := "\x1"
+    return int(esc.len)
+}

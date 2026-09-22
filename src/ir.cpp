@@ -67,7 +67,8 @@ void ir_print(const IrModule &mod, FILE *out) {
 
   for (const IrFunc &fn : mod.funcs) {
     if (fn.is_extern) {
-      fprintf(out, "extern func %s\n", fn.name.c_str());
+      fprintf(out, "extern func %s%s\n", fn.name.c_str(),
+              fn.is_c_variadic ? " ..." : "");
       continue;
     }
     fprintf(out, "func %s(", fn.name.c_str());
