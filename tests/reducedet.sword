@@ -1,0 +1,73 @@
+// expect: 0
+// A reduction combines one partial answer per piece of the range, in the order
+// the pieces were cut. The cut depends on the range and nothing else, so the
+// answer is the same on one thread and on sixteen — which for floating point
+// it was not: folding each piece in as it finished made the last bits a
+// function of how many workers happened to be running.
+//
+// tests/run.sh runs this at several thread counts and compares what it prints.
+
+import "std/io"
+
+func bitsOf(v f64) u64 {
+    mut x := v
+    p := [*]u8(&x)
+    mut bits u64 = 0
+    for i in 0..8 {
+        bits |= u64(p[i]) << (u64(i) * 8)
+    }
+    return bits
+}
+
+func main() !int {
+    // The harmonic series: every partial sum rounds, so the order shows.
+    mut total f64 = 0.0
+    parallel for i in 1..2000001 reduce(+: total) {
+        total += 1.0 / f64(i)
+    }
+
+    // The other four folds, which are exact and so only have to agree with
+    // themselves — but they go through the same combining loop.
+    mut sum i64 = 0
+    parallel for i in 0..100000 reduce(+: sum) {
+        sum += i64(i)
+    }
+    mut bits u64 = 0
+    parallel for i in 0..64 reduce(|: bits) {
+        bits |= u64(1) << u64(i % 64)
+    }
+    mut all u64 = 0xFFFFFFFFFFFFFFFF
+    parallel for i in 0..64 reduce(&: all) {
+        all &= (u64(1) << u64(i % 8)) ^ 0xFFFFFFFFFFFFFFFF
+    }
+    mut lowest i64 = 0
+    parallel for i in 0..100000 reduce(min: lowest) {
+        v := i64(i) - 50000
+        if v < lowest {
+            lowest = v
+        }
+    }
+    mut highest i64 = 0
+    parallel for i in 0..100000 reduce(max: highest) {
+        if i64(i) > highest {
+            highest = i64(i)
+        }
+    }
+
+    try io.Printf("{} {} {} {} {} {}\n", bitsOf(total), sum, bits, all, lowest,
+                  highest)
+
+    if sum != 4999950000 {
+        return 1
+    }
+    if bits != 0xFFFFFFFFFFFFFFFF || all != 0xFFFFFFFFFFFFFF00 {
+        return 2
+    }
+    if lowest != -50000 || highest != 99999 {
+        return 3
+    }
+    if total < 15.0 || total > 15.2 {
+        return 4
+    }
+    return 0
+}

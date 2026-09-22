@@ -302,14 +302,36 @@ parallel for i in 0..n reduce(max: biggest) {
 }
 ```
 
-Each worker gets a private copy, started at the operator's identity, and they
-are folded together once at the end — so there is no contention per iteration.
-Without the `reduce` clause, writing the variable in the body is an error, and
-the message tells you to add it.
+The range is cut into pieces; each piece accumulates into a private copy
+started at the operator's identity, and the copies are combined once at the
+end — so there is no contention per iteration. Without the `reduce` clause,
+writing the variable in the body is an error, and the message tells you to add
+it.
 
-The body does the per-element combining; the clause only says how the workers'
+The body does the per-element combining; the clause only says how the pieces'
 copies are joined. `+`, `&`, `|`, `min` and `max` are available, and `+` also
 applies to floats.
+
+### The answer does not depend on the threads
+
+How the range is cut depends on the range and nothing else, each piece keeps
+its partial answer in a slot of its own, and they are combined in the order the
+pieces were cut. So a reduction answers the same thing on one thread and on
+sixteen, and the same thing twice in a row.
+
+For integers that was already true — addition of whole numbers does not care
+about order. For floating point it was not: the pieces used to be folded in as
+they finished, and the harmonic series over two million terms printed a
+different number for each of six thread counts. Now it prints one.
+
+What is *not* claimed is that it equals the sequential sum. The pieces are
+summed separately and then combined, which is a different order of roundings
+from adding the terms one after another. Reproducible is not the same as
+sequential, and the difference is real for floating point.
+
+Only the cut is fixed. How many tasks run it is the scheduler's business — with
+few workers one task walks several pieces in a row — because who ran a piece
+and when cannot change what that piece answers.
 
 ### How much faster
 

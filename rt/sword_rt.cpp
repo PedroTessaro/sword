@@ -1334,35 +1334,56 @@ uint16_t sword_scope_end(void *blob) {
 }
 
 uint16_t sword_parallel_for(int64_t lo, int64_t hi, sword_chunk_fn fn,
-                            void *env) {
+                            void *env, int64_t *pieces) {
+  if (pieces) *pieces = 0;
   if (hi <= lo) return 0;
 
-  Pool &p = pool();
   int64_t total = hi - lo;
-  // Several chunks per worker: enough slack for stealing to even out an
-  // uneven body, without paying task overhead per iteration.
-  int64_t want = (int64_t)p.workers.size() * 4;
+  // The cut depends on the range and nothing else. It used to be four pieces
+  // per worker, which made the list a reduction combines — and so the answer
+  // it gives for floating point — a function of how many threads happened to
+  // be running.
+  int64_t want = total < SWORD_CHUNKS ? total : SWORD_CHUNKS;
   int64_t chunk = (total + want - 1) / want;
   if (chunk < 1) chunk = 1;
+  int64_t count = (total + chunk - 1) / chunk;
 
-  struct Range {
+  // How many tasks run that cut is another matter, and it is allowed to
+  // depend on the pool: a piece answers in its own slot, so who ran it and in
+  // what order changes nothing. With few workers one task walks several
+  // pieces in a row, which is what keeps the fixed cut from costing anything.
+  Pool &p = pool();
+  int64_t tasks = (int64_t)p.workers.size() * 4;
+  if (tasks < 1) tasks = 1;
+  if (tasks > count) tasks = count;
+  int64_t each = (count + tasks - 1) / tasks;
+
+  struct Run {
     sword_chunk_fn fn;
     void *env;
-    int64_t lo, hi;
+    int64_t lo, hi, chunk, first, last;
   };
 
   alignas(8) unsigned char blob[SWORD_SCOPE_SIZE];
   sword_scope_begin(blob);
-  for (int64_t at = lo; at < hi; at += chunk) {
-    Range r{fn, env, at, at + chunk > hi ? hi : at + chunk};
+  for (int64_t at = 0; at < count; at += each) {
+    Run r{fn, env, lo, hi, chunk, at, at + each > count ? count : at + each};
     sword_scope_spawn(
         blob,
         [](void *args) -> uint16_t {
-          Range *r = (Range *)args;
-          return r->fn(r->env, r->lo, r->hi);
+          Run *r = (Run *)args;
+          uint16_t failed = 0;
+          for (int64_t i = r->first; i < r->last; i++) {
+            int64_t from = r->lo + i * r->chunk;
+            int64_t to = from + r->chunk > r->hi ? r->hi : from + r->chunk;
+            uint16_t code = r->fn(r->env, from, to, i);
+            if (code && !failed) failed = code;
+          }
+          return failed;
         },
-        &r, (int64_t)sizeof(Range));
+        &r, (int64_t)sizeof(Run));
   }
+  if (pieces) *pieces = count;
   return sword_scope_end(blob);
 }
 }

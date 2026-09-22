@@ -186,6 +186,31 @@ else
     fi
 fi
 
+# A reduction has to answer the same thing whatever the pool looks like. The
+# float sum is the one that shows it: adding the pieces in the order they
+# finish rounds differently from adding them in the order they were cut, so
+# before the partials this printed a different number for every thread count.
+if ! "$shield" "$root/tests/reducedet.sword" -o "$tmp/reducedet" \
+        > "$tmp/reducedet.log" 2>&1; then
+    echo "FAIL reduction determinism: compilation failed"
+    sed 's/^/     /' "$tmp/reducedet.log"
+    fail=$((fail + 1))
+else
+    answers=$(for threads in 1 2 3 4 8 16; do
+        SWORD_THREADS=$threads perl -e 'alarm 60; exec @ARGV' "$tmp/reducedet"
+    done | sort -u | wc -l | tr -d ' ')
+    if [ "$answers" != 1 ]; then
+        echo "FAIL reduction determinism: $answers answers across thread counts"
+        for threads in 1 2 3 4 8 16; do
+            printf '     %2s: ' "$threads"
+            SWORD_THREADS=$threads "$tmp/reducedet"
+        done
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+fi
+
 # `shield test -run` keeps the tests it names and refuses a name that is not
 # one: a package with a passing and a failing test tells the three apart.
 mkdir -p "$tmp/picked"

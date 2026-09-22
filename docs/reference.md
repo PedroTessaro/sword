@@ -351,9 +351,19 @@ parallel for i in a..b reduce(op: acc) { ... }
 ```
 
 `op` is `+`, `&`, `|`, `min` or `max`; only `+` applies to a float. The body
-combines one element into the worker's private copy — `acc += xs[i]` for a sum,
-`if xs[i] > acc { acc = xs[i] }` for a maximum — and the clause says how the
-copies are folded together at the end.
+combines one element into the private copy that piece of the range has —
+`acc += xs[i]` for a sum, `if xs[i] > acc { acc = xs[i] }` for a maximum — and
+the clause says how those copies are combined at the end.
+
+The answer does not depend on how many threads ran it. The range is cut into a
+fixed number of pieces, each keeps its own partial answer, and they are
+combined in the order they were cut. That matters for floating point, where
+adding in a different order is a different number: the same program answers the
+same bits on one thread and on sixteen. How many tasks run those pieces is
+still up to the scheduler — it is the cut that is fixed, not the schedule.
+
+It is not the same number a sequential loop would reach, since the pieces are
+summed separately before being combined. Reproducible, not sequential.
 
 ## Errors
 
