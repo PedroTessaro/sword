@@ -1,0 +1,38 @@
+# The suite on both systems the runtime is written for, with TLS and without,
+# and then the suite again at every pool size from 1 to 16 threads. The second
+# half is the one that matters most: a program's answer is not supposed to
+# depend on how many threads ran it, and tests/threads.sh is where that is
+# checked rather than claimed.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        tls: [with, without]
+    name: ${{ matrix.os }}, ${{ matrix.tls }} TLS
+    runs-on: ${{ matrix.os }}
+    env:
+      SWORD_NO_TLS: ${{ matrix.tls == 'without' && '1' || '' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # clang is needed to run the compiler, not only to build it. Emacs is here
+      # so the indentation check has both of the editors that implement the rule.
+      - name: Dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libssl-dev vim emacs-nox
+
+      - run: make
+      - run: make test
+      - name: The suite at 1, 2, 3, 4, 8 and 16 threads
+        run: ./tests/threads.sh
