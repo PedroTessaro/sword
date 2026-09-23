@@ -71,6 +71,7 @@ func name(a T, rest ...U) R { ... } // the last one gathers what is left
 func name[T, U: Constraint](a T) R { ... }
 func (r *T) Method() R { ... }
 func (mut r *T) Method() R { ... }
+det func name(a T) R { ... }        // checked: the answer is a function of a
 extern func c_name(a T) R          // C ABI, name unchanged
 extern func c_name(a T, ...) R     // C's own variadic: ioctl, fcntl, printf
 
@@ -93,6 +94,36 @@ mutable binding can be passed to one.
 A name is exported from its package when it starts with a capital letter. That
 covers a struct's fields as well: a type can be public and its insides private,
 which is why `time.Duration` has methods rather than a reachable `ns`.
+
+### `det`
+
+`det` on a function is a claim the compiler checks: what it answers depends on
+its arguments and on nothing else — not on how many threads ran it, not on the
+order they ran in, not on the clock, and not on where anything landed in
+memory. It changes no generated code.
+
+What takes it away, and each of these is a way for something other than the
+arguments to reach the answer:
+
+| | |
+|---|---|
+| an `atomic`, a `shared`, a channel | which task got there first decides |
+| an `extern` call | the clock, the operating system, malloc's addresses |
+| an address turned into a number | the layout decides |
+| a call through an interface or a function value | unless every target is det |
+| a call to anything that is not det | |
+
+What is *not* on that list is the point: `scope`, `spawn` and `parallel for`
+are all fine. Two tasks cannot touch the same memory — the race checker says
+so — and a reduction combines its pieces in the order they were cut, so the
+answer does not depend on the pool.
+
+Every function is analysed, whether or not it says `det`; writing it asks to be
+told when the property is lost, and the message walks the chain from what was
+claimed to the call that lost it. A pointer is opaque to whoever is handed one,
+so an arena doing arithmetic on addresses to align what it hands out does not
+make its callers depend on the layout — only reading an address as a number
+here does.
 
 ## Statements
 

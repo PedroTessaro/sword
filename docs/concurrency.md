@@ -143,6 +143,50 @@ In practice this means doing the fallible work before the scope rather than
 inside it. It is the restriction you will bump into most, and it is the price
 of the join being a brace rather than something you have to remember.
 
+### `det`: the compiler says so
+
+Everything above is about what cannot go wrong. `det` is how a function asks
+to be told when it does:
+
+```sword
+det func total(xs []f64) f64 {
+    mut sum := num.NewKahan()
+    parallel for i in 0..xs.len reduce(num.Merge: sum) {
+        sum.Add(xs[i])
+    }
+    return sum.Value()
+}
+```
+
+The claim is that what it answers depends on its arguments and on nothing
+else: not on the number of threads, not on the order they ran in, not on the
+clock, and not on where anything sits in memory. The compiler checks it, and
+it changes nothing about the code that comes out.
+
+A `scope` full of tasks and a `parallel for` with a reduction are both allowed
+inside one, which is the whole point of the rest of this chapter: two tasks
+cannot reach the same memory, and a reduction combines its pieces in the order
+they were cut. What is refused is an `atomic`, a `shared`, a channel, a call
+that leaves the language, an address read as a number, and a call through an
+interface or a function value that something not det implements.
+
+Every function is analysed whether or not it says `det`; the word asks for the
+answer. When it is lost, the message walks the chain:
+
+```
+error: 'doubled' is marked det, but what it answers can depend on more than
+       its arguments
+note: doubled calls mem.Alloc$i64, which is not det
+note: mem.Alloc$i64 calls through an interface, and System.Alloc is not det
+note: System.Alloc calls out of the language
+```
+
+That last one is worth reading twice. Allocating from an arena is det;
+allocating from the system allocator is not, because the addresses it hands
+back are the operating system's business. The same call is one or the other
+depending on what the program binds into the interface, and the compiler knows
+which because it can see the whole program.
+
 ## The race checker
 
 One rule covers it:

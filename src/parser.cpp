@@ -1192,7 +1192,18 @@ struct Parser {
       return error_decl();
 
     bool is_extern = match(TK_EXTERN);
-    if (kind() == TK_FUNC) return func_decl(is_extern);
+    // `det func f(...)`: a claim the compiler checks — what this answers is a
+    // function of what it was given, and of nothing else.
+    bool is_det = match(TK_DET);
+    if (kind() == TK_FUNC) {
+      Node *fn = func_decl(is_extern);
+      if (fn) fn->is_det = is_det;
+      return fn;
+    }
+    if (is_det) {
+      fail("'det' belongs to a function");
+      return nullptr;
+    }
     if (kind() == TK_STRUCT) return struct_decl(is_extern);
     if (kind() == TK_INTERFACE && !is_extern) return interface_decl();
     if (kind() == TK_ENUM && !is_extern) return enum_decl();

@@ -5,6 +5,7 @@
 
 #include <cctype>
 #include <functional>
+#include <map>
 #include <set>
 
 #include <unordered_map>
@@ -3783,6 +3784,265 @@ struct Checker {
 
 } // namespace
 
+namespace {
+
+// --- determinism -----------------------------------------------------------
+//
+// `det` says that what a function answers depends on its arguments and on
+// nothing else: not on how many threads ran it, not on the order they ran in,
+// not on the clock, and not on an address. It is *inferred* for every function
+// and only *checked* where it is written, so a program gets the guarantee
+// without annotating anything — writing `det` asks to be told when it is lost,
+// and the message says where.
+//
+// What takes it away is short, and every one of them is a way for something
+// other than the arguments to reach the answer:
+//
+//   an atomic, a `shared`, a channel — the two tasks' order decides
+//   an extern call — the clock, the operating system, malloc's addresses
+//   a pointer turned into a number — the layout decides
+//   a call through a value or an interface, unless every target is det
+//   a call to something that is not det
+//
+// `scope`, `spawn` and `parallel for` are *not* on that list, which is the
+// whole point: the race checker already says two tasks cannot touch the same
+// memory, and a reduction combines its pieces in the order they were cut.
+struct Determinism {
+  struct Why {
+    Pos at;
+    const char *what = nullptr; // what was reached for, when it was local
+    Symbol *through = nullptr;  // or the callee that lost it
+  };
+
+  Program &prog;
+  TypeTable &types;
+  std::map<Symbol *, Why> lost;             // functions known not to be det
+  // An address turned into a number is a reason of its own: it is not carried
+  // to the callers. A pointer is opaque to whoever gets it, so a library that
+  // does arithmetic on one — an arena aligning what it hands out — does not
+  // make its callers depend on the layout. Doing it *here* does.
+  std::map<Symbol *, Why> local_lost;
+  std::map<Symbol *, std::vector<Node *>> bodies;
+  std::map<std::string, Symbol *> by_name;  // every function, by linker name
+  std::vector<Symbol *> order;
+
+  Determinism(Program &p, TypeTable &t) : prog(p), types(t) {}
+
+  static void each(Node *n, const std::function<void(Node *)> &see) {
+    if (!n) return;
+    see(n);
+    for (Node *kid : n->kids) each(kid, see);
+    each(n->lhs, see);
+    each(n->rhs, see);
+    each(n->cond, see);
+    each(n->body, see);
+    each(n->els, see);
+  }
+
+  void mark(Symbol *fn, Pos at, const char *what, Symbol *through) {
+    if (!fn || lost.count(fn)) return;
+    lost[fn] = Why{at, what, through};
+  }
+
+  void mark_local(Symbol *fn, Pos at, const char *what) {
+    if (!fn || local_lost.count(fn)) return;
+    local_lost[fn] = Why{at, what, nullptr};
+  }
+
+  // Everything the program can reach through a value or a vtable. A call that
+  // goes through one of those is det when every target is, which is worth
+  // knowing precisely: an allocator that is an arena is det, and the same call
+  // through an allocator that is malloc is not.
+  std::set<Symbol *> by_value;
+  std::map<std::string, std::set<Symbol *>> by_interface;
+
+  void take(Node *decl) {
+    if (decl->kind != ND_FUNC || !decl->sym || decl->is_extern) return;
+    if (!decl->tparams.empty()) return; // only instances are compiled
+    if (!bodies.count(decl->sym)) order.push_back(decl->sym);
+    by_name[decl->sym->name] = decl->sym;
+    bodies[decl->sym].push_back(decl->body);
+  }
+
+  void collect() {
+    for (Package *pkg : prog.order) {
+      for (Node *decl : pkg->unit->kids) take(decl);
+      // A generic's instances live beside the package rather than in it, and
+      // a channel is one of those: without them a `chan` looked like a call to
+      // something nobody had ever heard of.
+      for (Node *decl : pkg->instances) take(decl);
+    }
+
+    for (const TypeTable::VTable &table : types.vtables()) {
+      size_t cut = table.key.find('>');
+      if (cut == std::string::npos) continue;
+      std::string iface = table.key.substr(cut + 1);
+      for (const std::string &entry : table.entries)
+        if (Symbol *fn = by_name.count(entry) ? by_name[entry] : nullptr)
+          by_interface[iface].insert(fn);
+        else
+          by_interface[iface].insert(nullptr); // an entry nobody checked
+    }
+  }
+
+  // The interface a dynamic call goes through, by name.
+  static std::string interface_of(Node *call) {
+    if (!call->lhs || !call->lhs->lhs) return "";
+    Type *base = call->lhs->lhs->type;
+    if (base && base->kind == TY_PTR) base = base->elem;
+    return base && base->is_interface ? base->name : "";
+  }
+
+  void scan(Symbol *fn, Node *body) {
+    std::set<Node *> callee_names;
+    each(body, [&](Node *n) {
+      if (n->kind == ND_CALL && n->lhs && n->lhs->kind == ND_IDENT)
+        callee_names.insert(n->lhs);
+    });
+
+    each(body, [&](Node *n) {
+      // A function named without being called is a value, and a call through
+      // one can go anywhere the program takes an address.
+      if (n->kind == ND_IDENT && n->sym && n->sym->is_func &&
+          !callee_names.count(n))
+        by_value.insert(n->sym);
+
+      switch (n->kind) {
+      case ND_LOCK:
+        mark(fn, n->pos, "holds a shared value", nullptr);
+        return;
+      case ND_SEND:
+      case ND_RECV:
+      case ND_SELECT:
+        mark(fn, n->pos, "uses a channel", nullptr);
+        return;
+      case ND_CONVERT: {
+        // An address turned into a number is the layout reaching the answer.
+        Type *from = n->kids.empty() ? nullptr : n->kids[0]->type;
+        bool address = from && (from->kind == TY_PTR || from->kind == TY_RAWPTR ||
+                                from->kind == TY_FUNC);
+        if (address && n->type && n->type->kind == TY_INT)
+          mark_local(fn, n->pos, "turns an address into a number");
+        return;
+      }
+      case ND_CALL:
+        if (n->form == 3) mark(fn, n->pos, "reads or writes an atomic", nullptr);
+        else if (n->form == 5) mark(fn, n->pos, "waits on a shared value", nullptr);
+        else if (n->sym && n->sym->decl && n->sym->decl->is_extern)
+          mark(fn, n->pos, "calls out of the language", nullptr);
+        return;
+      default:
+        return;
+      }
+    });
+  }
+
+  // The first target a call of this shape can reach that is not det, or null
+  // when every one of them is. `found` says whether the targets are known at
+  // all: an interface nothing implements in this program is not one of them.
+  Symbol *stray_target(Node *call, bool &known) {
+    known = true;
+    if (call->form == 2) { // through an interface
+      std::string iface = interface_of(call);
+      auto at = by_interface.find(iface);
+      if (iface.empty() || at == by_interface.end()) {
+        known = false;
+        return nullptr;
+      }
+      for (Symbol *target : at->second) {
+        if (!target) {
+          known = false;
+          return nullptr;
+        }
+        if (lost.count(target)) return target;
+      }
+      return nullptr;
+    }
+    for (Symbol *target : by_value)
+      if (lost.count(target)) return target;
+    return nullptr;
+  }
+
+  void settle() {
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      for (Symbol *fn : order) {
+        if (lost.count(fn)) continue;
+        for (Node *body : bodies[fn]) {
+          each(body, [&](Node *n) {
+            if (n->kind != ND_CALL || lost.count(fn)) return;
+            if (n->form == 2 || n->form == 4) {
+              bool known = true;
+              Symbol *stray = stray_target(n, known);
+              if (stray || !known) {
+                mark(fn, n->pos,
+                     n->form == 2 ? "calls through an interface"
+                                  : "calls through a function value",
+                     stray);
+                changed = true;
+                return;
+              }
+            }
+            if (n->sym && lost.count(n->sym)) {
+              mark(fn, n->pos, nullptr, n->sym);
+              changed = true;
+            }
+          });
+        }
+      }
+    }
+  }
+
+  // The chain from what was claimed to what lost it, since the reason is
+  // rarely in the function that was marked.
+  void blame(Symbol *fn) {
+    if (!lost.count(fn)) {
+      const Why &why = local_lost[fn];
+      note(why.at, "%s %s", shown_name(fn->name).c_str(), why.what);
+      return;
+    }
+    std::set<Symbol *> seen;
+    Symbol *at = fn;
+    while (at && !seen.count(at)) {
+      seen.insert(at);
+      const Why &why = lost[at];
+      std::string here = shown_name(at->name);
+      if (why.what && why.through)
+        note(why.at, "%s %s, and %s is not det", here.c_str(), why.what,
+             shown_name(why.through->name).c_str());
+      else if (why.through)
+        note(why.at, "%s calls %s, which is not det", here.c_str(),
+             shown_name(why.through->name).c_str());
+      else
+        note(why.at, "%s %s", here.c_str(),
+             why.what ? why.what : "cannot be checked");
+      if (!why.through) return;
+      at = why.through;
+    }
+  }
+
+  void run() {
+    collect();
+    for (Symbol *fn : order)
+      for (Node *body : bodies[fn]) scan(fn, body);
+    settle();
+
+    for (Package *pkg : prog.order)
+      for (Node *decl : pkg->unit->kids) {
+        if (decl->kind != ND_FUNC || !decl->is_det || !decl->sym) continue;
+        if (!lost.count(decl->sym) && !local_lost.count(decl->sym)) continue;
+        error(decl->pos,
+              "'%s' is marked det, but what it answers can depend on more than"
+              " its arguments",
+              shown_name(decl->sym->name).c_str());
+        blame(decl->sym);
+      }
+  }
+};
+
+} // namespace
+
 bool check(Program &prog, TypeTable &types) {
   for (Package *pkg : prog.order)
     if (!Checker(prog, *pkg, types).run()) return false;
@@ -3800,5 +4060,10 @@ bool check(Program &prog, TypeTable &types) {
     prog.pending.pop_back();
     if (!Checker(prog, *job.owner, types).run_instance(job)) return false;
   }
+  if (error_count() > 0) return false;
+
+  // Last, over the whole program: whether a function answers the same thing
+  // every time is not a question about one package.
+  Determinism(prog, types).run();
   return error_count() == 0;
 }

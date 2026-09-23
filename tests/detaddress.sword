@@ -1,0 +1,13 @@
+// expect-error: turns an address into a number
+// Where a value landed is not part of what it is. A det function may hold a
+// pointer and hand one on — it is opaque — but reading it as a number lets the
+// layout into the answer.
+
+det func where(xs []i64) u64 {
+    return u64(xs.ptr) % 64
+}
+
+func main() !int {
+    mut room := [4]i64{1, 2, 3, 4}
+    return int(where(room[..]))
+}
