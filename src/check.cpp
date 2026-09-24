@@ -421,6 +421,27 @@ struct Checker {
       return e;
     }
 
+    // Two constant strings join at compile time, into the binary's read-only
+    // data like any literal. Nothing is allocated, which is the only reason
+    // `+` is allowed on strings here and nowhere else.
+    if (a->kind == ND_STRING_LIT && b->kind == ND_STRING_LIT) {
+      switch (e->op) {
+      case TK_PLUS:
+        e->kind = ND_STRING_LIT;
+        e->text = a->text + b->text;
+        e->type = a->type;
+        return e;
+      case TK_EQ: case TK_NE:
+        e->kind = ND_BOOL_LIT;
+        e->ival = (a->text == b->text) == (e->op == TK_EQ) ? 1 : 0;
+        e->type = types.bool_ty;
+        return e;
+      default:
+        error(e->pos, "'%s' is not allowed between strings", tok_name(e->op));
+        return nullptr;
+      }
+    }
+
     bool numeric = (a->kind == ND_INT_LIT || a->kind == ND_FLOAT_LIT) &&
                    (b->kind == ND_INT_LIT || b->kind == ND_FLOAT_LIT);
     if (!numeric) {
@@ -1179,6 +1200,13 @@ struct Checker {
       if (!is_numeric(lhs)) {
         error(n->pos, "'%s' needs numeric operands, got %s",
               tok_name(n->op), type_str(lhs).c_str());
+        // The one people reach for first. Joining two strings at run time
+        // needs somewhere to put the answer, and memory comes from an
+        // allocator the caller names.
+        if (n->op == TK_PLUS && lhs->kind == TY_STRING)
+          note(n->pos, "joining strings allocates: use strings.Concat(a, x, "
+                       "y), which takes the allocator; '+' works between "
+                       "constants");
         return nullptr;
       }
       return n->type = lhs;

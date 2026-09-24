@@ -62,7 +62,8 @@ const Name = expr      // package level; folded at compile time
 
 A constant's initialiser has to be literals, operators and other constants.
 Declaration order does not matter, and a cycle is an error. A constant that is
-an integer may be used as an array length.
+an integer may be used as an array length. Two constant strings join with `+`,
+at compile time; at run time joining allocates, and that is `strings.Concat`.
 
 ```sword
 func name(a T, mut b U) R { ... }
@@ -161,7 +162,7 @@ By precedence, tightest first:
 | | |
 |---|---|
 | `*` `/` `%` `<<` `>>` `&` | |
-| `+` `-` `\|` `^` | |
+| `+` `-` `\|` `^` | `+` on strings only between constants |
 | `==` `!=` `<` `<=` `>` `>=` | `==` on strings compares content |
 | `&&` | short-circuits |
 | `\|\|` | short-circuits |
