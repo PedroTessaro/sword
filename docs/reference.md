@@ -617,7 +617,10 @@ than a clamp — `at` may be the length, which appends, and nothing past it.
 ### `std/strings`
 
 Byte-oriented, which is what a protocol parser wants. `IndexByte` and `Index`
-return the length of the haystack when there is no match.
+return the length of the haystack when there is no match. `Concat` and `Join`
+are the only two that allocate, so they are the only two that take an
+allocator; the answer is measured first and allocated once, at its exact
+length.
 
 ```sword
 func Equal(a string, b string) bool
@@ -631,6 +634,9 @@ func Contains(s string, needle string) bool
 func TrimSpace(s string) string
 func ToLower(c u8) u8
 func ParseU64(s string) !u64
+
+func Concat(mut a mem.Allocator, parts ...string) !string
+func Join(mut a mem.Allocator, parts []string, sep string) !string
 ```
 
 ### `std/unicode`
