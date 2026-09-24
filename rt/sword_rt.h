@@ -80,6 +80,8 @@ int32_t sword_in_task(void);
 int sword_park_timer(int64_t deadline_ns);
 // Drops anything waiting on a descriptor about to be closed.
 void sword_forget_fd(int32_t fd);
+// Tells the poller a descriptor is new, so a number forgotten before is usable.
+void sword_adopt_fd(int32_t fd);
 
 // Runs one call on a thread kept for calls that cannot be put down — file I/O,
 // name resolution — and puts the calling task down meanwhile. Outside a task it

@@ -1290,6 +1290,8 @@ void sword_runtime_stats(struct sword_stats *out) {
 
 void sword_forget_fd(int32_t fd) { sword_poll_forget((int)fd); }
 
+void sword_adopt_fd(int32_t fd) { sword_poll_adopt((int)fd); }
+
 // Hands one call to a thread set aside for calls that cannot be put down, and
 // puts the calling task down until it comes back. Outside a task there is
 // nothing to put down, so it runs here and the blocking hints cover for it — the
