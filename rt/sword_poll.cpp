@@ -282,6 +282,8 @@ void sword_poll_start(sword_wake_fn wake) {
       fputs("sword: cannot create the poller's pipe\n", stderr);
       abort();
     }
+    // Its number may be one a socket had before; the poller waits on it too.
+    sword_poll_adopt(p.nudge[0]);
     // Non-blocking, so draining it never parks the poller itself.
     for (int end = 0; end < 2; end++) {
       int flags = fcntl(p.nudge[end], F_GETFL, 0);
