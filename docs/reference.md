@@ -854,6 +854,23 @@ ones added to 1e16 come to 1e16 by plain addition, and to 1e16 + 1000000 here.
 `Merge` is what `parallel for ... reduce(num.Merge: total)` calls, and the zero
 value is the identity, so it is also the shape any reduction of your own takes.
 
+The elementary functions give the same bits on every machine: they use only
+IEEE `+ - * /`, which every processor rounds alike, and the compiler never fuses
+a multiply into an add. Each is within one unit in the last place of the true
+value, and `Sqrt` is correctly rounded. They are det, which the C library's are
+not — a det function cannot call out of the language.
+
+```sword
+func Sqrt(x f64) f64
+func Exp(x f64) f64
+func Log(x f64) f64
+func Sin(x f64) f64       // any finite x: the reduction is exact
+func Cos(x f64) f64
+func Inf() f64
+func NaN() f64
+func IsNaN(v f64) bool
+```
+
 ### `std/par`
 
 Operations over a slice that use every core and answer the same thing at any
