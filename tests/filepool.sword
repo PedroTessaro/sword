@@ -1,5 +1,6 @@
 // expect: 42
 // expect-output: reads on a pool
+// output-varies: it reports how large the io pool grew
 // A file read cannot be put down — the wait is the disk, and no poller knows
 // anything about it. Forty of them at once used to mean forty threads, one per
 // read in flight. Now they go to a pool, and what it costs is the pool.

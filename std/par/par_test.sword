@@ -1,0 +1,128 @@
+package par
+
+import "std/mem"
+import "std/rand"
+import "std/testing"
+
+func add(a i64, b i64) i64 {
+    return a + b
+}
+
+func even(v i64) bool {
+    return v % 2 == 0
+}
+
+func lessI64(a i64, b i64) bool {
+    return a < b
+}
+
+// Long enough to be cut into many pieces: the carrying between them is what
+// can go wrong.
+const many = 100000
+
+// The test's own arena is too small for slices this long, so these come from
+// the C allocator, freed with the process.
+
+func TestScan(mut t *testing.T) !void {
+    mut sys := mem.NewSystem()
+    mut xs := mem.Alloc[i64](&sys, many) orelse return error.OutOfMemory
+    mut out := mem.Alloc[i64](&sys, many) orelse return error.OutOfMemory
+    for i in 0..many {
+        xs[i] = i64(i % 7) - 3
+    }
+    try Scan[i64](xs, out, add)
+    mut running i64 = 0
+    for i in 0..many {
+        running += xs[i]
+        if out[i] != running {
+            try t.Failf("at {}: got {} want {}", i, out[i], running)
+            return
+        }
+    }
+
+    one := [1]i64{5}
+    mut single := [1]i64{}
+    try Scan[i64](one[..], single[..], add)
+    try t.Equal(single[0], i64(5))
+
+    empty := [0]i64{}
+    mut none := [0]i64{}
+    try Scan[i64](empty[..], none[..], add)
+
+    Scan[i64](one[..], none[..], add) catch |e| {
+        try t.Equal(e, error.LengthMismatch)
+        return
+    }
+    try t.Failf("scanned into an output of the wrong length")
+}
+
+func TestKeepKeepsTheOrder(mut t *testing.T) !void {
+    mut sys := mem.NewSystem()
+    mut xs := mem.Alloc[i64](&sys, many) orelse return error.OutOfMemory
+    mut out := mem.Alloc[i64](&sys, many) orelse return error.OutOfMemory
+    for i in 0..many {
+        xs[i] = i64(many - i)
+    }
+    n := try Keep[i64](&sys, xs, out, even)
+    try t.Equal(n, u64(many / 2))
+    for i in 0..n {
+        if out[i] != i64(many) - i64(i) * 2 {
+            try t.Failf("at {}: got {}", i, out[i])
+            return
+        }
+    }
+
+    mut small := [3]i64{}
+    Keep[i64](&sys, xs, small[..], even) catch |e| {
+        try t.Equal(e, error.NoRoom)
+        return
+    }
+    try t.Failf("kept more than there was room for")
+}
+
+func TestMinIndexTakesTheFirst(mut t *testing.T) !void {
+    mut sys := mem.NewSystem()
+    mut xs := mem.Alloc[i64](&sys, many) orelse return error.OutOfMemory
+    for i in 0..many {
+        xs[i] = 10
+    }
+    // The same smallest value in two pieces: the earlier one is the answer.
+    xs[70000] = -1
+    xs[3000] = -1
+    xs[90000] = -1
+    try t.Equal(MinIndex[i64](xs, lessI64) orelse 0, u64(3000))
+    empty := [0]i64{}
+    try t.Require(MinIndex[i64](empty[..], lessI64) == nil)
+}
+
+struct Item {
+    Key   u64
+    Place u64
+}
+
+func byKey(a Item, b Item) bool {
+    return a.Key < b.Key
+}
+
+// Few distinct keys, so most elements tie with many others: a sort that is not
+// stable shows it at once.
+func TestSortIsStable(mut t *testing.T) !void {
+    mut sys := mem.NewSystem()
+    for n in [5]u64{0, 1, 50, 5000, many} {
+        mut xs := mem.Alloc[Item](&sys, n) orelse return error.OutOfMemory
+        mut r := rand.Stream(11, n)
+        for i in 0..n {
+            xs[i] = Item{Key: r.Below(40), Place: i}
+        }
+        Sort[Item](xs, byKey)
+        for i in 1..n {
+            a := xs[i - 1]
+            b := xs[i]
+            if a.Key > b.Key || (a.Key == b.Key && a.Place > b.Place) {
+                try t.Failf("n {} at {}: {}/{} before {}/{}", n, i, a.Key,
+                            a.Place, b.Key, b.Place)
+                return
+            }
+        }
+    }
+}

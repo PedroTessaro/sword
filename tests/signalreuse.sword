@@ -1,0 +1,39 @@
+// expect: 42
+// expect-output: caught on a reused number
+// Closing a socket marks its number, so a wait that arrives on the way to the
+// close fails at once instead of sleeping forever. The mark comes off when the
+// number names something new — and the signal pipe is something new that the
+// poller waits on, created here with the listener's old number.
+
+import "std/io"
+import "std/net"
+import "std/os"
+import "std/time"
+
+func listener(mut got *atomic[u64]) !void {
+    sig := try os.WaitSignal()
+    got.Store(u64(i32(sig)))
+}
+
+func sender() !void {
+    time.Sleep(time.Millis(30))
+    try os.Kill(os.Pid(), os.Signal.Terminate)
+}
+
+func main() !int {
+    l := try net.Listen(0)
+    l.Close()
+
+    try os.Catch(os.Signal.Terminate)
+    mut got := atomic[u64](0)
+    scope {
+        spawn listener(&got)
+        spawn sender()
+    }
+    if got.Load() != 15 {
+        try io.Printf("got {}\n", got.Load())
+        return 1
+    }
+    try io.Print("caught on a reused number\n")
+    return 42
+}

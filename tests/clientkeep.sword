@@ -92,8 +92,11 @@ func liar(l *net.Listener, mut served *atomic[u64]) !void {
         mut buf := [1024]u8{}
         n := c.Read(buf[..]) catch 0
         if n > 0 {
-            c.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok") catch {}
+            // Counted before the answer goes out: the client checks the count as
+            // soon as it has read the third, which can be before this task runs
+            // another line.
             served.Add(1)
+            c.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok") catch {}
         }
         c.Close()
     }

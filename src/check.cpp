@@ -4,7 +4,9 @@
 #include "package.h"
 
 #include <cctype>
+#include <deque>
 #include <functional>
+#include <map>
 #include <set>
 
 #include <unordered_map>
@@ -418,6 +420,27 @@ struct Checker {
       e->ival = result ? 1 : 0;
       e->type = types.bool_ty;
       return e;
+    }
+
+    // Two constant strings join at compile time, into the binary's read-only
+    // data like any literal. Nothing is allocated, which is the only reason
+    // `+` is allowed on strings here and nowhere else.
+    if (a->kind == ND_STRING_LIT && b->kind == ND_STRING_LIT) {
+      switch (e->op) {
+      case TK_PLUS:
+        e->kind = ND_STRING_LIT;
+        e->text = a->text + b->text;
+        e->type = a->type;
+        return e;
+      case TK_EQ: case TK_NE:
+        e->kind = ND_BOOL_LIT;
+        e->ival = (a->text == b->text) == (e->op == TK_EQ) ? 1 : 0;
+        e->type = types.bool_ty;
+        return e;
+      default:
+        error(e->pos, "'%s' is not allowed between strings", tok_name(e->op));
+        return nullptr;
+      }
     }
 
     bool numeric = (a->kind == ND_INT_LIT || a->kind == ND_FLOAT_LIT) &&
@@ -1178,6 +1201,13 @@ struct Checker {
       if (!is_numeric(lhs)) {
         error(n->pos, "'%s' needs numeric operands, got %s",
               tok_name(n->op), type_str(lhs).c_str());
+        // The one people reach for first. Joining two strings at run time
+        // needs somewhere to put the answer, and memory comes from an
+        // allocator the caller names.
+        if (n->op == TK_PLUS && lhs->kind == TY_STRING)
+          note(n->pos, "joining strings allocates: use strings.Concat(a, x, "
+                       "y), which takes the allocator; '+' works between "
+                       "constants");
         return nullptr;
       }
       return n->type = lhs;
@@ -3783,6 +3813,530 @@ struct Checker {
 
 } // namespace
 
+namespace {
+
+// --- determinism -----------------------------------------------------------
+//
+// `det` says that what a function answers depends on its arguments and on
+// nothing else: not on how many threads ran it, not on the order they ran in,
+// not on the clock, and not on an address. It is *inferred* for every function
+// and only *checked* where it is written, so a program gets the guarantee
+// without annotating anything — writing `det` asks to be told when it is lost,
+// and the message says where.
+//
+// What takes it away is short, and every one of them is a way for something
+// other than the arguments to reach the answer:
+//
+//   an atomic, a `shared`, a channel — the two tasks' order decides
+//   an extern call — the clock, the operating system, malloc's addresses
+//   a pointer turned into a number — the layout decides
+//   a call through a value or an interface, unless every target is det
+//   a call to something that is not det
+//
+// `scope`, `spawn` and `parallel for` are *not* on that list, which is the
+// whole point: the race checker already says two tasks cannot touch the same
+// memory, and a reduction combines its pieces in the order they were cut.
+struct Determinism {
+  struct Why {
+    Pos at;
+    const char *what = nullptr; // what was reached for, when it was local
+    Symbol *through = nullptr;  // or the callee that lost it
+  };
+
+  Program &prog;
+  TypeTable &types;
+  std::map<Symbol *, Why> lost;             // functions known not to be det
+  // An address turned into a number is a reason of its own: it is not carried
+  // to the callers. A pointer is opaque to whoever gets it, so a library that
+  // does arithmetic on one — an arena aligning what it hands out — does not
+  // make its callers depend on the layout. Doing it *here* does.
+  std::map<Symbol *, Why> local_lost;
+  std::map<Symbol *, std::vector<Node *>> bodies;
+  std::map<std::string, Symbol *> by_name;  // every function, by linker name
+  std::vector<Symbol *> order;
+  std::map<Symbol *, Node *> decls;
+  // Reasons that name something, kept here so the text outlives the check.
+  std::deque<std::string> texts;
+
+  Determinism(Program &p, TypeTable &t) : prog(p), types(t) {}
+
+  static void each(Node *n, const std::function<void(Node *)> &see) {
+    if (!n) return;
+    see(n);
+    for (Node *kid : n->kids) each(kid, see);
+    each(n->lhs, see);
+    each(n->rhs, see);
+    each(n->cond, see);
+    each(n->body, see);
+    each(n->els, see);
+  }
+
+  void mark(Symbol *fn, Pos at, const char *what, Symbol *through) {
+    if (!fn || lost.count(fn)) return;
+    lost[fn] = Why{at, what, through};
+  }
+
+  void mark_local(Symbol *fn, Pos at, const char *what) {
+    if (!fn || local_lost.count(fn)) return;
+    local_lost[fn] = Why{at, what, nullptr};
+  }
+
+  // Everything the program can reach through a value or a vtable. A call that
+  // goes through one of those is det when every target is, which is worth
+  // knowing precisely: an allocator that is an arena is det, and the same call
+  // through an allocator that is malloc is not.
+  std::set<Symbol *> by_value;
+  std::map<std::string, std::set<Symbol *>> by_interface;
+
+  void take(Node *decl) {
+    if (decl->kind != ND_FUNC || !decl->sym || decl->is_extern) return;
+    if (!decl->tparams.empty()) return; // only instances are compiled
+    if (!bodies.count(decl->sym)) order.push_back(decl->sym);
+    if (!decls.count(decl->sym)) decls[decl->sym] = decl;
+    by_name[decl->sym->name] = decl->sym;
+    bodies[decl->sym].push_back(decl->body);
+  }
+
+  void collect() {
+    for (Package *pkg : prog.order) {
+      for (Node *decl : pkg->unit->kids) take(decl);
+      // A generic's instances live beside the package rather than in it, and
+      // a channel is one of those: without them a `chan` looked like a call to
+      // something nobody had ever heard of.
+      for (Node *decl : pkg->instances) take(decl);
+    }
+
+    for (const TypeTable::VTable &table : types.vtables()) {
+      size_t cut = table.key.find('>');
+      if (cut == std::string::npos) continue;
+      std::string iface = table.key.substr(cut + 1);
+      for (const std::string &entry : table.entries)
+        if (Symbol *fn = by_name.count(entry) ? by_name[entry] : nullptr)
+          by_interface[iface].insert(fn);
+        else
+          by_interface[iface].insert(nullptr); // an entry nobody checked
+    }
+  }
+
+  // The interface a dynamic call goes through, by name.
+  static std::string interface_of(Node *call) {
+    if (!call->lhs || !call->lhs->lhs) return "";
+    Type *base = call->lhs->lhs->type;
+    if (base && base->kind == TY_PTR) base = base->elem;
+    return base && base->is_interface ? base->name : "";
+  }
+
+  void scan(Symbol *fn, Node *body) {
+    std::set<Node *> callee_names;
+    each(body, [&](Node *n) {
+      if (n->kind == ND_CALL && n->lhs && n->lhs->kind == ND_IDENT)
+        callee_names.insert(n->lhs);
+    });
+
+    each(body, [&](Node *n) {
+      // A function named without being called is a value, and a call through
+      // one can go anywhere the program takes an address.
+      if (n->kind == ND_IDENT && n->sym && n->sym->is_func &&
+          !callee_names.count(n))
+        by_value.insert(n->sym);
+
+      switch (n->kind) {
+      case ND_LOCK:
+        mark(fn, n->pos, "holds a shared value", nullptr);
+        return;
+      case ND_SEND:
+      case ND_RECV:
+        mark(fn, n->pos, "uses a channel", nullptr);
+        return;
+      case ND_SELECT:
+        mark(fn, n->pos,
+             "waits on several channels at once, and which is ready first"
+             " decides",
+             nullptr);
+        return;
+      case ND_CONVERT: {
+        // An address turned into a number is the layout reaching the answer.
+        Type *from = n->kids.empty() ? nullptr : n->kids[0]->type;
+        bool address = from && (from->kind == TY_PTR || from->kind == TY_RAWPTR ||
+                                from->kind == TY_FUNC);
+        if (address && n->type && n->type->kind == TY_INT)
+          mark_local(fn, n->pos, "turns an address into a number");
+        return;
+      }
+      case ND_CALL:
+        if (n->form == 3) mark(fn, n->pos, "reads or writes an atomic", nullptr);
+        else if (n->form == 5) mark(fn, n->pos, "waits on a shared value", nullptr);
+        else if (n->sym && n->sym->decl && n->sym->decl->is_extern)
+          mark(fn, n->pos, "calls out of the language", nullptr);
+        return;
+      default:
+        return;
+      }
+    });
+  }
+
+  // The first target a call of this shape can reach that is not det, or null
+  // when every one of them is. `found` says whether the targets are known at
+  // all: an interface nothing implements in this program is not one of them.
+  Symbol *stray_target(Node *call, bool &known) {
+    known = true;
+    if (call->form == 2) { // through an interface
+      std::string iface = interface_of(call);
+      auto at = by_interface.find(iface);
+      if (iface.empty() || at == by_interface.end()) {
+        known = false;
+        return nullptr;
+      }
+      for (Symbol *target : at->second) {
+        if (!target) {
+          known = false;
+          return nullptr;
+        }
+        if (lost.count(target)) return target;
+      }
+      return nullptr;
+    }
+    for (Symbol *target : by_value)
+      if (lost.count(target)) return target;
+    return nullptr;
+  }
+
+  // --- channels, Kahn's way ---------------------------------------------------
+  //
+  // A channel is where two tasks' order usually reaches the answer, and in
+  // general it does. But Kahn showed in 1974 that a network of processes joined
+  // by channels computes a function of its inputs when each channel has one
+  // writer and one reader, and a reader can only wait for the next value — never
+  // ask whether one is there yet. The order values arrive in is then the order
+  // they were sent, which one task decided on its own.
+  //
+  // So a channel keeps a function det when, within every scope, at most one of
+  // the things running at once sends on it (closing is part of sending) and at
+  // most one receives. A spawn is one of those things, or many if it sits in a
+  // loop; the body of a parallel loop is many; the scope's own function is one.
+  // What each function does with a channel it is handed is worked out from its
+  // body, through its calls, so the counting happens where the channel is
+  // shared out. `select`, TrySend, TryRecv, Len and the rest ask what only the
+  // timing knows and still take det away, and so does letting a channel go
+  // anywhere the compiler cannot follow: a copy, a field, a return.
+
+  enum { SENDS = 1, RECEIVES = 2 };
+
+  static bool channel_type(const Type *t) {
+    if (!t) return false;
+    const Type *owner = t->kind == TY_PTR ? t->elem : t;
+    const std::string mark = "std.chan.Chan$";
+    return owner && owner->name.compare(0, mark.size(), mark) == 0;
+  }
+
+  static bool in_chan_package(const Symbol *s) {
+    return s && s->name.compare(0, 9, "std.chan.") == 0;
+  }
+
+  // The method a call makes on a channel, or "" when it is not one. `New` is
+  // the constructor, which the checker turns `chan[T](a, n)` into.
+  static std::string channel_member_name(Node *call) {
+    if (!call || call->kind != ND_CALL || !in_chan_package(call->sym)) return "";
+    size_t dot = call->sym->name.rfind('.');
+    std::string last = call->sym->name.substr(dot + 1);
+    if (last.compare(0, 4, "New$") == 0) return "New";
+    return last;
+  }
+
+  static bool channel_member(Node *call) {
+    return !channel_member_name(call).empty();
+  }
+
+  struct Party {
+    Node *spawn = nullptr; // null: the scope's own function
+    int roles = 0;
+    bool many = false;
+    Pos at;
+  };
+
+  struct Shared {
+    Node *scope;
+    int loop_base;
+    std::map<Symbol *, std::vector<Party>> uses;
+  };
+
+  // What each function does with each channel parameter, by position.
+  std::map<Symbol *, std::vector<int>> param_roles;
+
+  struct Walk {
+    Symbol *fn;
+    bool checking;
+    std::vector<Shared> open;
+    int loops = 0;
+    int parallel = 0;
+    std::map<Symbol *, int> roles; // everything this function does, per binding
+  };
+
+  bool is_channel_binding(Node *n) {
+    return n && n->kind == ND_IDENT && n->sym && !n->sym->is_func &&
+           channel_type(n->type);
+  }
+
+  void lose(Walk &w, Pos at, std::string text) {
+    if (!w.checking) return;
+    texts.push_back(std::move(text));
+    mark(w.fn, at, texts.back().c_str(), nullptr);
+  }
+
+  void use(Walk &w, Symbol *channel, int roles, Node *spawn, Pos at) {
+    if (!roles) return;
+    w.roles[channel] |= roles;
+    bool many = w.parallel > 0 ||
+                (spawn && !w.open.empty() && w.loops > w.open.back().loop_base);
+    for (Shared &s : w.open) s.uses[channel].push_back(Party{spawn, roles, many, at});
+  }
+
+  int roles_of(Symbol *callee, size_t index) {
+    auto found = param_roles.find(callee);
+    if (found == param_roles.end() || index >= found->second.size()) return 0;
+    return found->second[index];
+  }
+
+  // A call that hands channels on: to a function whose parameters say what it
+  // does with them, and nowhere else.
+  void pass_on(Walk &w, Node *call, Node *spawn) {
+    Symbol *callee = call->sym;
+    bool followed = call->form == 0 && callee && decls.count(callee) &&
+                    call->variadic_at < 0;
+    for (size_t i = 0; i < call->kids.size(); i++) {
+      Node *arg = call->kids[i];
+      if (!is_channel_binding(arg)) {
+        visit(w, arg, nullptr);
+        continue;
+      }
+      if (!followed) {
+        lose(w, arg->pos,
+             "hands channel '" + shown_name(arg->sym->name) +
+                 "' to something the compiler cannot follow");
+        continue;
+      }
+      use(w, arg->sym, roles_of(callee, i), spawn, arg->pos);
+    }
+  }
+
+  void visit(Walk &w, Node *n, Node *spawn) {
+    if (!n) return;
+    switch (n->kind) {
+    case ND_SCOPE: {
+      w.open.push_back(Shared{n, w.loops, {}});
+      visit(w, n->body, nullptr);
+      Shared done = std::move(w.open.back());
+      w.open.pop_back();
+      judge(w, done);
+      return;
+    }
+    case ND_SPAWN:
+      if (n->lhs && n->lhs->kind == ND_CALL) pass_on(w, n->lhs, n);
+      return;
+    case ND_FOR: {
+      bool spread = n->is_parallel;
+      w.loops++;
+      if (spread) w.parallel++;
+      for (Node *kid : n->kids) visit(w, kid, nullptr);
+      visit(w, n->lhs, nullptr);
+      visit(w, n->rhs, nullptr);
+      visit(w, n->cond, nullptr);
+      visit(w, n->body, nullptr);
+      if (spread) w.parallel--;
+      w.loops--;
+      return;
+    }
+    case ND_CALL: {
+      std::string member = channel_member_name(n);
+      if (member == "New") {
+        for (Node *kid : n->kids) visit(w, kid, nullptr);
+        return;
+      }
+      if (!member.empty()) {
+        Node *on = n->lhs && n->lhs->kind == ND_FIELD ? n->lhs->lhs : nullptr;
+        for (Node *kid : n->kids) visit(w, kid, nullptr);
+        if (!is_channel_binding(on)) {
+          lose(w, n->pos,
+               "reaches a channel through something the compiler cannot follow");
+          return;
+        }
+        std::string name = shown_name(on->sym->name);
+        if (member == "Send" || member == "Close")
+          use(w, on->sym, SENDS, nullptr, n->pos);
+        else if (member == "Recv")
+          use(w, on->sym, RECEIVES, nullptr, n->pos);
+        else if (member != "Free")
+          lose(w, n->pos,
+               "asks channel '" + name + "' something only the timing knows (" +
+                   member + ")");
+        return;
+      }
+      pass_on(w, n, nullptr);
+      visit(w, n->lhs, nullptr);
+      return;
+    }
+    case ND_VAR:
+      // A binding made from another is a second name for the same channel.
+      if (channel_type(n->type) && is_channel_binding(n->rhs ? n->rhs : n->lhs))
+        lose(w, n->pos, "copies a channel, and the copies cannot be told apart");
+      break;
+    case ND_IDENT:
+      if (is_channel_binding(n))
+        lose(w, n->pos,
+             "lets channel '" + shown_name(n->sym->name) +
+                 "' go where the compiler cannot follow it");
+      return;
+    default:
+      break;
+    }
+    for (Node *kid : n->kids) visit(w, kid, nullptr);
+    visit(w, n->lhs, nullptr);
+    visit(w, n->rhs, nullptr);
+    visit(w, n->cond, nullptr);
+    visit(w, n->body, nullptr);
+    visit(w, n->els, nullptr);
+  }
+
+  // One scope's worth of sharing: at most one sender and one receiver among
+  // the things that run at once. A scope inside another also runs beside the
+  // outer one's tasks, which is why every open scope hears about every use.
+  void judge(Walk &w, Shared &s) {
+    for (auto &[channel, parties] : s.uses) {
+      std::map<Node *, int> senders, receivers; // by party; null is the function
+      bool many_send = false, many_recv = false;
+      for (const Party &p : parties) {
+        if (p.roles & SENDS) {
+          senders[p.spawn] = 1;
+          many_send |= p.many;
+        }
+        if (p.roles & RECEIVES) {
+          receivers[p.spawn] = 1;
+          many_recv |= p.many;
+        }
+      }
+      std::string name = shown_name(channel->name);
+      if (senders.size() > 1 || many_send)
+        lose(w, s.scope->pos,
+             "lets more than one task at a time send on channel '" + name + "'");
+      else if (receivers.size() > 1 || many_recv)
+        lose(w, s.scope->pos,
+             "lets more than one task at a time receive from channel '" + name +
+                 "'");
+    }
+  }
+
+  void kahn() {
+    // What each function does with the channels it is handed, until nothing
+    // new is learned; then once more, keeping what it finds.
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      for (Symbol *fn : order) {
+        if (in_chan_package(fn)) continue;
+        Walk w{fn, false, {}, 0, 0, {}};
+        for (Node *body : bodies[fn]) visit(w, body, nullptr);
+        std::vector<int> roles;
+        for (Node *param : decls[fn]->kids)
+          roles.push_back(param->kind == ND_PARAM && param->sym
+                              ? w.roles[param->sym]
+                              : 0);
+        if (param_roles[fn] != roles) {
+          param_roles[fn] = roles;
+          changed = true;
+        }
+      }
+    }
+    for (Symbol *fn : order) {
+      if (in_chan_package(fn)) continue;
+      Walk w{fn, true, {}, 0, 0, {}};
+      for (Node *body : bodies[fn]) visit(w, body, nullptr);
+    }
+  }
+
+  void settle() {
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      for (Symbol *fn : order) {
+        if (lost.count(fn)) continue;
+        for (Node *body : bodies[fn]) {
+          each(body, [&](Node *n) {
+            if (n->kind != ND_CALL || lost.count(fn)) return;
+            if (n->form == 2 || n->form == 4) {
+              bool known = true;
+              Symbol *stray = stray_target(n, known);
+              if (stray || !known) {
+                mark(fn, n->pos,
+                     n->form == 2 ? "calls through an interface"
+                                  : "calls through a function value",
+                     stray);
+                changed = true;
+                return;
+              }
+            }
+            // A channel's own methods are outside the language underneath;
+            // whether using them keeps a function det is the Kahn check's
+            // question, not this one's.
+            if (n->sym && lost.count(n->sym) && !channel_member(n)) {
+              mark(fn, n->pos, nullptr, n->sym);
+              changed = true;
+            }
+          });
+        }
+      }
+    }
+  }
+
+  // The chain from what was claimed to what lost it, since the reason is
+  // rarely in the function that was marked.
+  void blame(Symbol *fn) {
+    if (!lost.count(fn)) {
+      const Why &why = local_lost[fn];
+      note(why.at, "%s %s", shown_name(fn->name).c_str(), why.what);
+      return;
+    }
+    std::set<Symbol *> seen;
+    Symbol *at = fn;
+    while (at && !seen.count(at)) {
+      seen.insert(at);
+      const Why &why = lost[at];
+      std::string here = shown_name(at->name);
+      if (why.what && why.through)
+        note(why.at, "%s %s, and %s is not det", here.c_str(), why.what,
+             shown_name(why.through->name).c_str());
+      else if (why.through)
+        note(why.at, "%s calls %s, which is not det", here.c_str(),
+             shown_name(why.through->name).c_str());
+      else
+        note(why.at, "%s %s", here.c_str(),
+             why.what ? why.what : "cannot be checked");
+      if (!why.through) return;
+      at = why.through;
+    }
+  }
+
+  void run() {
+    collect();
+    for (Symbol *fn : order)
+      for (Node *body : bodies[fn]) scan(fn, body);
+    kahn();
+    settle();
+
+    for (Package *pkg : prog.order)
+      for (Node *decl : pkg->unit->kids) {
+        if (decl->kind != ND_FUNC || !decl->is_det || !decl->sym) continue;
+        if (!lost.count(decl->sym) && !local_lost.count(decl->sym)) continue;
+        error(decl->pos,
+              "'%s' is marked det, but what it answers can depend on more than"
+              " its arguments",
+              shown_name(decl->sym->name).c_str());
+        blame(decl->sym);
+      }
+  }
+};
+
+} // namespace
+
 bool check(Program &prog, TypeTable &types) {
   for (Package *pkg : prog.order)
     if (!Checker(prog, *pkg, types).run()) return false;
@@ -3800,5 +4354,10 @@ bool check(Program &prog, TypeTable &types) {
     prog.pending.pop_back();
     if (!Checker(prog, *job.owner, types).run_instance(job)) return false;
   }
+  if (error_count() > 0) return false;
+
+  // Last, over the whole program: whether a function answers the same thing
+  // every time is not a question about one package.
+  Determinism(prog, types).run();
   return error_count() == 0;
 }

@@ -362,6 +362,42 @@ func main() int {
 }
 ```
 
+Joining two strings makes a third, and the third has to live somewhere. In
+Sword nothing allocates without being handed an allocator, so there is no `+`
+between strings at run time; there is `strings.Concat`, which takes one:
+
+```sword
+import "std/io"
+import "std/mem"
+import "std/strings"
+
+const Greeting = "hello, "     // constants join at compile time with +
+const Banner = Greeting + "world"
+
+func main() !int {
+    name := "ada"
+
+    // The C allocator, for a string that lives as long as you like.
+    mut sys := mem.NewSystem()
+    line := try strings.Concat(&sys, Greeting, name, "!\n")
+    try io.Print(line)
+
+    // Or space on the stack, gone when the function returns and never freed.
+    mut room := [64]u8{}
+    mut arena := mem.NewArena(room[..])
+    fields := [3]string{"a", "b", "c"}
+    csv := try strings.Join(&arena, fields[..], ",")
+    try io.Printf("{} {}\n", Banner, csv)
+    return 0
+}
+```
+
+The allocator is not ceremony. It is what lets you read a signature and know a
+function cannot touch the heap, and it is what lets a server answer a request
+out of an arena that is reset, all at once, when the request is done. Printing
+needs none of this: `io.Printf` writes straight out, and `fmt.Sprintf` takes an
+allocator for the same reason `Concat` does.
+
 ## Structs
 
 ```sword

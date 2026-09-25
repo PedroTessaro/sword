@@ -1,5 +1,6 @@
 // expect: 42
 // expect-output: six 100ms tests together
+// output-varies: it reports how long the tests took
 // Tests run at the same time unless told otherwise. Six that sleep for a tenth
 // of a second each take a tenth of a second, not six.
 

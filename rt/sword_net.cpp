@@ -130,6 +130,7 @@ int32_t sword_net_listen_on(const char *host, int64_t host_len, int32_t port,
   sword_os_ignore_sigpipe();
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) return -1;
+  sword_adopt_fd(fd);
 
   int on = 1;
   setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
@@ -194,6 +195,7 @@ int32_t sword_net_accept(int32_t fd) {
   while (true) {
     int client = accept(fd, nullptr, nullptr);
     if (client >= 0) {
+      sword_adopt_fd(client);
       int on = 1;
       setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
       unblock(client);
@@ -272,6 +274,7 @@ int32_t sword_net_dial_timeout(const char *host, int64_t host_len, int32_t port,
   for (addrinfo *at = found; at; at = at->ai_next) {
     fd = socket(at->ai_family, at->ai_socktype, at->ai_protocol);
     if (fd < 0) continue;
+    sword_adopt_fd(fd);
     if (connect_within(fd, at->ai_addr, at->ai_addrlen, millis) == 0) break;
     timed_out = errno == ETIMEDOUT;
     close(fd);

@@ -1,6 +1,7 @@
 #include "sword_rt.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdint.h>
@@ -44,6 +45,23 @@ void shut(Pipe &p) {
   p.theirs = -1;
 }
 
+// Close-on-exec from the start, both ends. Without it a second program
+// started at the same moment — tests run in parallel — inherits this one's
+// stdin, and closing ours no longer ends its input: a `sleep 30` next door held
+// a pipe open for thirty seconds. The child still gets its own ends, because
+// the dup2 that puts them on 0, 1 and 2 makes copies without the flag.
+// Linux sets it atomically; elsewhere there is a moment between the two calls.
+int open_pipe(int pair[2]) {
+#ifdef __linux__
+  return pipe2(pair, O_CLOEXEC);
+#else
+  if (pipe(pair) != 0) return -1;
+  fcntl(pair[0], F_SETFD, FD_CLOEXEC);
+  fcntl(pair[1], F_SETFD, FD_CLOEXEC);
+  return 0;
+#endif
+}
+
 int64_t do_spawn(void *p) {
   SpawnCall *c = (SpawnCall *)p;
 
@@ -62,20 +80,20 @@ int64_t do_spawn(void *p) {
 
   if (c->pipes) {
     int pair[2];
-    if (pipe(pair) != 0) {
+    if (open_pipe(pair) != 0) {
       posix_spawn_file_actions_destroy(&actions);
       return -1;
     }
     in.theirs = pair[0]; // the child reads its stdin
     in.ours = pair[1];
-    if (pipe(pair) != 0) {
+    if (open_pipe(pair) != 0) {
       shut(in);
       posix_spawn_file_actions_destroy(&actions);
       return -1;
     }
     out.ours = pair[0];
     out.theirs = pair[1];
-    if (pipe(pair) != 0) {
+    if (open_pipe(pair) != 0) {
       shut(in);
       shut(out);
       posix_spawn_file_actions_destroy(&actions);

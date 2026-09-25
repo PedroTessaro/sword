@@ -1,0 +1,18 @@
+// expect-error: 'stamp' is marked det, but what it answers can depend on more
+// The clock is the outside world: two runs of the same program with the same
+// arguments get different answers out of it. The message walks the chain, from
+// what was claimed to the call that leaves the language.
+
+import "std/time"
+
+func elapsed() i64 {
+    return time.Now().AsNanos()
+}
+
+det func stamp(v i64) i64 {
+    return v + elapsed()
+}
+
+func main() int {
+    return int(stamp(1) % 7)
+}

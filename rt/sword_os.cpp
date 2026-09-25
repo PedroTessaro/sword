@@ -39,6 +39,8 @@ void on_signal(int sig) {
 bool open_signal_pipe() {
   if (signal_pipe[0] >= 0) return true;
   if (pipe(signal_pipe) != 0) return false;
+  // Waited on through the poller, and its number may be a closed socket's.
+  sword_adopt_fd(signal_pipe[0]);
   for (int end = 0; end < 2; end++) {
     int flags = fcntl(signal_pipe[end], F_GETFL, 0);
     fcntl(signal_pipe[end], F_SETFL, flags | O_NONBLOCK);

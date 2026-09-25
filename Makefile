@@ -28,18 +28,40 @@ OPENSSL_PREFIX := $(strip $(SWORD_OPENSSL))
 ifeq ($(OPENSSL_PREFIX),)
 OPENSSL_PREFIX := $(firstword $(wildcard \
     /opt/homebrew/opt/openssl@3 /usr/local/opt/openssl@3 \
-    /opt/homebrew/opt/openssl /usr/local/opt/openssl \
-    /usr/include/openssl/..))
+    /opt/homebrew/opt/openssl /usr/local/opt/openssl /usr))
 endif
 ifeq ($(SWORD_NO_TLS),1)
 OPENSSL_PREFIX :=
 endif
 ifneq ($(strip $(wildcard $(OPENSSL_PREFIX)/include/openssl/ssl.h)),)
+# The system's own copy is already on every search path, and naming
+# /usr/include with -I moves it ahead of the C++ library's wrappers around the
+# C headers, which then cannot find what they wrap.
+ifeq ($(OPENSSL_PREFIX),/usr)
+TLS_CXXFLAGS := -DSWORD_HAVE_TLS=1
+TLS_LDFLAGS  := -lssl -lcrypto
+else
 TLS_CXXFLAGS := -DSWORD_HAVE_TLS=1 -I$(OPENSSL_PREFIX)/include
 TLS_LDFLAGS  := -L$(OPENSSL_PREFIX)/lib -lssl -lcrypto
+endif
 TLS_STAMP    := rt/.tls-on
 else
 TLS_STAMP    := rt/.tls-off
+endif
+
+# The runtime is C++, so a program links against whichever standard library the
+# compiler that built it uses: libc++ from Apple's, libstdc++ from GCC's. Asked
+# of the compiler rather than guessed from the system, since clang on Linux can
+# be either. libstdc++ is named by its directory as well: clang links against the
+# newest GCC it finds, and on Ubuntu 24.04 that is a GCC 14 with no libstdc++
+# beside it while g++ is 13.
+CXXLIB := $(if $(shell $(CXX) -std=c++17 -dM -E -x c++ -include cstddef \
+    /dev/null 2>/dev/null | grep _LIBCPP_VERSION),-lc++,-lstdc++)
+ifeq ($(CXXLIB),-lstdc++)
+CXXLIBDIR := $(dir $(shell $(CXX) -print-file-name=libstdc++.so))
+ifneq ($(filter /%,$(CXXLIBDIR)),)
+CXXLIB := -L$(CXXLIBDIR) -lstdc++
+endif
 endif
 
 all: $(BIN) $(LSP) $(RT) $(RTFLAGS)
@@ -59,7 +81,7 @@ $(RT): $(RTOBJ)
 # it changes, so that the TLS object below is rebuilt exactly when the decision
 # does.
 $(RTFLAGS): FORCE
-	@echo '$(TLS_LDFLAGS)' > $@
+	@echo '$(TLS_LDFLAGS) $(CXXLIB)' > $@
 
 # The decision is in the file's name, so flipping it leaves a prerequisite that
 # does not exist and the object is rebuilt. Comparing timestamps would not do:
