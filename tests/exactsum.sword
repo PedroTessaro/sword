@@ -1,0 +1,44 @@
+// expect: 42
+// expect-output: parallel and sequential agree
+// An exact sum does not round until the end, so the parallel answer is not just
+// the same at every thread count: it is the same double as adding the terms one
+// by one exactly, and the double nearest the true sum. A plain reduction of the
+// same series agrees with itself across thread counts and with nothing else.
+
+import "std/io"
+import "std/num"
+
+func term(i i64) f64 {
+    mut v := 1.0 / f64(i)
+    if i % 3 == 0 {
+        v = -v * 1.0e10
+    }
+    return v
+}
+
+det func parallelSum(n i64) f64 {
+    mut total := num.NewExact()
+    parallel for i in 1..n + 1 reduce(num.MergeExact: total) {
+        total.Add(term(i))
+    }
+    return total.Value()
+}
+
+det func sequentialSum(n i64) f64 {
+    mut total := num.NewExact()
+    for i in 1..n + 1 {
+        total.Add(term(i))
+    }
+    return total.Value()
+}
+
+func main() !int {
+    a := parallelSum(300000)
+    b := sequentialSum(300000)
+    if a != b {
+        try io.Printf("parallel {} sequential {}\n", a, b)
+        return 1
+    }
+    try io.Printf("{} — parallel and sequential agree\n", a)
+    return 42
+}

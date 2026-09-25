@@ -1,0 +1,195 @@
+package num
+
+// A sum with no rounding in it until the end.
+//
+// A compensated sum gets much closer than plain addition, but it is still
+// arithmetic on doubles, and the order of the terms still shows in the last
+// bits. An exact sum holds the total as a fixed-point number wide enough for
+// every double there is — from 2^-1074 to 2^1023, 68 words of 32 bits (Kulisch's
+// long accumulator) — so each Add loses nothing, and Value rounds once, to the
+// double nearest the true sum. The answer depends on which numbers were added
+// and on nothing else: not their order, not how a parallel loop cut them, and not
+// how many threads there were. A parallel sum and a sequential one are the same
+// double.
+//
+//     mut total := num.NewExact()
+//     parallel for i in 0..xs.len reduce(num.MergeExact: total) {
+//         total.Add(xs[i])
+//     }
+//     answer := total.Value()
+//
+// It costs a few hundred bytes and a few more operations per term than a plain
+// sum; Value costs a pass over the words.
+
+const exactWords = 68
+// Each word holds 32 bits but is kept in an i64, so terms of either sign add
+// into it without a carry every time. After this many terms the carries are
+// settled before a word could overflow.
+const unsettledMost = 1073741824
+
+struct Exact {
+    words     [68]i64
+    unsettled u64
+    nan       bool
+    posInf    bool
+    negInf    bool
+}
+
+// Nothing added yet. All zeros, which is also what a piece of a parallel loop
+// starts from.
+func NewExact() Exact {
+    return Exact{words: [68]i64{}, unsettled: 0, nan: false, posInf: false,
+                 negInf: false}
+}
+
+func settle(mut words []i64) {
+    mut carry i64 = 0
+    for i in 0..exactWords - 1 {
+        v := words[i] + carry
+        low := v & 0xFFFFFFFF
+        words[i] = low
+        carry = (v - low) / 4294967296
+    }
+    words[exactWords - 1] += carry
+}
+
+func (mut s *Exact) Add(v f64) {
+    b := bitsOf(v)
+    field := (b >> 52) & 0x7FF
+    fraction := b & 0xFFFFFFFFFFFFF
+    negative := b >> 63 == 1
+    if field == 0x7FF {
+        if fraction != 0 {
+            s.nan = true
+        } else if negative {
+            s.negInf = true
+        } else {
+            s.posInf = true
+        }
+        return
+    }
+    // The value is m·2^(pos - 1074): a subnormal has no hidden bit and the
+    // exponent of the smallest normal.
+    mut m := fraction
+    mut pos u64 = 0
+    if field != 0 {
+        m |= 0x10000000000000
+        pos = field - 1
+    }
+    if m == 0 {
+        return
+    }
+    word := pos / 32
+    shift := pos % 32
+    first := (m & 0xFFFFFFFF) << shift
+    second := ((m >> 32) << shift) + (first >> 32)
+    pieces := [3]i64{i64(first & 0xFFFFFFFF), i64(second & 0xFFFFFFFF),
+                     i64(second >> 32)}
+    for i in 0..3 {
+        if negative {
+            s.words[word + u64(i)] -= pieces[i]
+        } else {
+            s.words[word + u64(i)] += pieces[i]
+        }
+    }
+    s.unsettled += 1
+    if s.unsettled >= unsettledMost {
+        settle(s.words[..])
+        s.unsettled = 0
+    }
+}
+
+// Two partial sums into one. This is what `reduce(num.MergeExact: total)` calls.
+func MergeExact(a Exact, b Exact) Exact {
+    mut out := a
+    mut other := b
+    settle(out.words[..])
+    settle(other.words[..])
+    for i in 0..exactWords {
+        out.words[i] += other.words[i]
+    }
+    out.unsettled = 2
+    out.nan = a.nan || b.nan
+    out.posInf = a.posInf || b.posInf
+    out.negInf = a.negInf || b.negInf
+    return out
+}
+
+// The double nearest the exact sum, ties to even. Infinite terms give an
+// infinite sum, both signs of them a NaN; a finite sum too large for a double is
+// an infinity of its sign.
+func (s Exact) Value() f64 {
+    if s.nan || (s.posInf && s.negInf) {
+        return NaN()
+    }
+    if s.posInf {
+        return Inf()
+    }
+    if s.negInf {
+        return -Inf()
+    }
+    mut words := s.words
+    settle(words[..])
+    negative := words[exactWords - 1] < 0
+    if negative {
+        for i in 0..exactWords {
+            words[i] = -words[i]
+        }
+        settle(words[..])
+    }
+    mut limbs := [68]u64{}
+    mut top i64 = -1
+    for i in 0..exactWords {
+        limbs[i] = u64(words[i])
+        if words[i] != 0 {
+            top = i64(i)
+        }
+    }
+    if top < 0 {
+        return 0.0
+    }
+    if words[exactWords - 1] >= 4294967296 {
+        return signed(Inf(), negative)
+    }
+    lead := u64(top) * 32 + leadingBit(limbs[u64(top)])
+    // Below 2^53 units of 2^-1074 every value is a double already, and its bits
+    // are the number itself.
+    if lead <= 52 {
+        return signed(fromBits(bitsOfLimbs(limbs[..], 0, lead + 1)), negative)
+    }
+    mut mantissa := bitsOfLimbs(limbs[..], lead - 52, 53)
+    mut at := lead
+    half := bitsOfLimbs(limbs[..], lead - 53, 1) == 1
+    mut rest := false
+    if lead >= 54 {
+        below := lead - 53
+        for i in 0..below / 32 {
+            if limbs[i] != 0 {
+                rest = true
+            }
+        }
+        if !rest && below % 32 != 0 &&
+           bitsOfLimbs(limbs[..], (below / 32) * 32, below % 32) != 0 {
+            rest = true
+        }
+    }
+    if half && (rest || mantissa & 1 == 1) {
+        mantissa += 1
+        if mantissa == 0x20000000000000 {
+            mantissa = 0x10000000000000
+            at += 1
+        }
+    }
+    field := at - 51
+    if field >= 0x7FF {
+        return signed(Inf(), negative)
+    }
+    return signed(fromBits(field << 52 | (mantissa & 0xFFFFFFFFFFFFF)), negative)
+}
+
+func signed(v f64, negative bool) f64 {
+    if negative {
+        return -v
+    }
+    return v
+}

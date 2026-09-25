@@ -105,8 +105,8 @@ scheduler behind it, channels included.
 The standard library covers memory (`std/mem`), byte buffers (`std/bytes`),
 byte-level strings (`std/strings`), UTF-8 and the width of a character
 (`std/unicode`), generic containers and sorting (`std/collections`),
-compensated summation and elementary functions with the same bits on every
-machine (`std/num`), random numbers that do not depend on the
+exact and compensated sums and elementary functions with the same bits on
+every machine (`std/num`), random numbers that do not depend on the
 number of threads (`std/rand`), parallel scan, filter, sort and minimum with
 the same property (`std/par`), printing
 and formatting (`std/io`, `std/fmt`), JSON (`std/json`), hashing

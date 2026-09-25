@@ -854,6 +854,19 @@ ones added to 1e16 come to 1e16 by plain addition, and to 1e16 + 1000000 here.
 `Merge` is what `parallel for ... reduce(num.Merge: total)` calls, and the zero
 value is the identity, so it is also the shape any reduction of your own takes.
 
+An exact sum goes further: it holds the total in a fixed-point number wide
+enough for every double (Kulisch's long accumulator, 68 words), so no term is
+rounded and `Value` rounds once, to the double nearest the true sum. The order
+of the terms cannot show, and a parallel sum is the same double as a sequential
+one.
+
+```sword
+func NewExact() Exact
+func (mut s *Exact) Add(v f64)
+func MergeExact(a Exact, b Exact) Exact  // for reduce(num.MergeExact: total)
+func (s Exact) Value() f64               // correctly rounded
+```
+
 The elementary functions give the same bits on every machine: they use only
 IEEE `+ - * /`, which every processor rounds alike, and the compiler never fuses
 a multiply into an add. Each is within one unit in the last place of the true
