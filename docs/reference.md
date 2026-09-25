@@ -854,6 +854,28 @@ ones added to 1e16 come to 1e16 by plain addition, and to 1e16 + 1000000 here.
 `Merge` is what `parallel for ... reduce(num.Merge: total)` calls, and the zero
 value is the identity, so it is also the shape any reduction of your own takes.
 
+### `std/par`
+
+Operations over a slice that use every core and answer the same thing at any
+thread count. The cut depends on the length alone — at most 64 pieces, none
+under 1024 elements — and the pieces are put together in the order they were
+cut. Each is det when the function it is given is.
+
+```sword
+func Scan[T](xs []T, mut out []T, op func(T, T) T) !void   // out[i] = xs[0] op .. op xs[i]
+func Keep[T](mut a mem.Allocator, xs []T, mut out []T,
+             keep func(T) bool) !u64                       // in order; how many
+func MinIndex[T](xs []T, less func(T, T) bool) ?u64        // the first, on a tie
+func Sort[T](mut xs []T, less func(T, T) bool)             // stable, in place
+```
+
+`Scan` equals the sequential answer when `op` is associative; for floating-point
+addition it is a fixed answer rather than the left-to-right one. `Keep` tests on
+every core and gathers the survivors in one pass, and its allocator holds a
+byte per element for the marks. `Sort` is stable, which is what makes it
+deterministic with equal keys: there is exactly one right order. It merges in
+place, the way Go's `sort.Stable` does, so it needs no memory of its own.
+
 ### `std/rand`
 
 Random numbers where the i-th one depends on the seed and i and nothing else, so

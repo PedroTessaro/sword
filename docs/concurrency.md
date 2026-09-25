@@ -407,6 +407,21 @@ Only the cut is fixed. How many tasks run it is the scheduler's business — wit
 few workers one task walks several pieces in a row — because who ran a piece
 and when cannot change what that piece answers.
 
+### Beyond a reduction
+
+`std/par` holds the other operations that fit the same rule — a cut that
+depends on the length, pieces that answer in their own place, and joining in
+the order of the cut: a prefix sum, a filter that keeps the original order, the
+position of the smallest element with ties going to the first, and a stable
+sort. Each is det when the function it is given is, and a det function that
+hands one something that is not is refused with the chain that says why.
+
+```sword
+det func ranks(xs []f64, mut out []f64) !void {
+    try par.Scan[f64](xs, out, add)
+}
+```
+
 ### How much faster
 
 A loop with real work in the body, 8192 iterations, on a ten-core machine:
