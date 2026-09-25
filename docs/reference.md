@@ -854,6 +854,34 @@ ones added to 1e16 come to 1e16 by plain addition, and to 1e16 + 1000000 here.
 `Merge` is what `parallel for ... reduce(num.Merge: total)` calls, and the zero
 value is the identity, so it is also the shape any reduction of your own takes.
 
+### `std/rand`
+
+Random numbers where the i-th one depends on the seed and i and nothing else, so
+a parallel loop draws the same numbers however many threads run it. Philox4x32-10,
+the generator cuRAND and JAX use for that reason. Not for keys or tokens.
+
+```sword
+func At(seed u64, i u64) u64          // the i-th number; the first of Stream(seed, i)
+func Stream(seed u64, i u64) Source   // as many as iteration i needs, its own
+func (mut s *Source) U64() u64
+func (mut s *Source) Below(n u64) u64 // uniform in [0, n), unbiased
+func (mut s *Source) F64() f64        // uniform in [0, 1), 53 bits
+```
+
+Give each iteration its own stream, indexed by the iteration, and a det function
+can use randomness:
+
+```sword
+parallel for i in 0..n reduce(+: inside) {
+    mut r := rand.Stream(seed, u64(i))
+    x := r.F64()
+    y := r.F64()
+    if x * x + y * y < 1.0 {
+        inside += 1
+    }
+}
+```
+
 ### `std/os`
 
 ```sword
