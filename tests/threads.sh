@@ -70,9 +70,11 @@ for src in "$root"/tests/*.sword; do
     fi
 done
 
-for test_file in "$root"/std/*/*_test.sword; do
-    [ -e "$test_file" ] || continue
-    pkg=$(dirname "$test_file")
+# A package, not a file: one with several test files is still tested once.
+for pkg in "$root"/std/*/; do
+    pkg=${pkg%/}
+    set -- "$pkg"/*_test.sword
+    [ -e "$1" ] || continue
     name=std/$(basename "$pkg")
     bad=
     for threads in $counts; do
