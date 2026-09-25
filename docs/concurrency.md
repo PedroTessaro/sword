@@ -112,8 +112,10 @@ func validate(data []i64) !void {
 }
 ```
 
-If any task fails, `validate` fails. The scope waits for everybody first and
-propagates the first error it saw.
+If any task fails, `validate` fails. The scope waits for everybody first, and
+when more than one task failed it reports the one spawned earliest — not the
+one that happened to finish first, which would depend on how many threads ran
+them.
 
 ### Nothing is cancelled
 

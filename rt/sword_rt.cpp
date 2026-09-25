@@ -66,9 +66,17 @@ const int kHelperIdleMillis = 200;
 // syscalls. Threads are cheap next to a socket but not free.
 const int64_t kDefaultCeiling = 512;
 
+// A scope answers with the error of its earliest spawn that failed, not the
+// first failure to arrive: which task finishes first depends on how many
+// threads there are, and a det function that can fail has to fail the same way
+// on one thread and on sixteen. The spawn index and the code share one word so
+// the pair is replaced whole.
+const uint64_t kNoFailure = ~(uint64_t)0;
+
 struct Scope {
   std::atomic<int64_t> outstanding;
-  std::atomic<unsigned> failed; // holds the first error code seen
+  std::atomic<uint64_t> failed; // spawn index << 16 | code, or kNoFailure
+  int64_t spawned;              // only the scope's own task spawns into it
 };
 
 static_assert(sizeof(Scope) <= SWORD_SCOPE_SIZE, "scope blob too small");
@@ -80,6 +88,7 @@ static_assert(alignof(Scope) <= 8, "scope needs more alignment than the"
 struct Task {
   sword_task_fn fn;
   Scope *scope;
+  int64_t index; // its place among the scope's spawns
   void *heap_args;
   alignas(16) unsigned char args[kInlineArgs];
 };
@@ -507,8 +516,12 @@ void recycle(Task *task) {
 void finish_task(Task *task, uint16_t code) {
   Scope *scope = task->scope;
   if (code != 0) {
-    unsigned none = 0;
-    scope->failed.compare_exchange_strong(none, code);
+    uint64_t mine = (uint64_t)task->index << 16 | code;
+    uint64_t seen = scope->failed.load(std::memory_order_relaxed);
+    while (mine < seen &&
+           !scope->failed.compare_exchange_weak(seen, mine,
+                                                std::memory_order_relaxed)) {
+    }
   }
   recycle(task);
   scope->outstanding.fetch_sub(1, std::memory_order_release);
@@ -1181,6 +1194,7 @@ void queue_task(Scope *scope, sword_task_fn fn, const void *args,
   Task *task = fresh_task();
   task->fn = fn;
   task->scope = scope;
+  task->index = scope->spawned++;
   task->heap_args = nullptr;
   if (size > kInlineArgs) {
     task->heap_args = malloc((size_t)size);
@@ -1208,7 +1222,8 @@ extern "C" {
 void sword_scope_begin(void *blob) {
   Scope *scope = new (blob) Scope();
   scope->outstanding.store(0, std::memory_order_relaxed);
-  scope->failed.store(0, std::memory_order_relaxed);
+  scope->failed.store(kNoFailure, std::memory_order_relaxed);
+  scope->spawned = 0;
   pool();
 }
 
@@ -1332,7 +1347,8 @@ void sword_blocking_exit(void) {
 uint16_t sword_scope_end(void *blob) {
   Scope *scope = (Scope *)blob;
   drain_until(scope);
-  return (uint16_t)scope->failed.load(std::memory_order_acquire);
+  uint64_t failed = scope->failed.load(std::memory_order_acquire);
+  return failed == kNoFailure ? 0 : (uint16_t)(failed & 0xFFFF);
 }
 
 uint16_t sword_parallel_for(int64_t lo, int64_t hi, sword_chunk_fn fn,

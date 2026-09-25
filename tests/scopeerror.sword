@@ -1,0 +1,39 @@
+// expect: 42
+// expect-output: the earliest spawn's error
+// Two tasks fail: the first one spawned slowly, the second at once. The scope
+// reports the first one's error however the pool is sized. Taking whichever
+// failure arrived first made the error — and so what a det function answered
+// when it failed — depend on the number of threads.
+
+import "std/io"
+import "std/time"
+
+error Slow, Fast
+
+func slow() !void {
+    time.Sleep(time.Millis(20))
+    return error.Slow
+}
+
+func fast() !void {
+    return error.Fast
+}
+
+func both() !void {
+    scope {
+        spawn slow()
+        spawn fast()
+    }
+}
+
+func main() !int {
+    both() catch |e| {
+        if e != error.Slow {
+            try io.Printf("got {}\n", nameof(e))
+            return 1
+        }
+        try io.Print("the earliest spawn's error\n")
+        return 42
+    }
+    return 2
+}
