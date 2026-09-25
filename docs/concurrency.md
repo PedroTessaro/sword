@@ -168,9 +168,38 @@ it changes nothing about the code that comes out.
 A `scope` full of tasks and a `parallel for` with a reduction are both allowed
 inside one, which is the whole point of the rest of this chapter: two tasks
 cannot reach the same memory, and a reduction combines its pieces in the order
-they were cut. What is refused is an `atomic`, a `shared`, a channel, a call
-that leaves the language, an address read as a number, and a call through an
-interface or a function value that something not det implements.
+they were cut. What is refused is an `atomic`, a `shared`, a call that leaves
+the language, an address read as a number, and a call through an interface or
+a function value that something not det implements.
+
+A channel is refused unless it is used the way Kahn showed is safe: within
+each scope, at most one of the things running at once sends on it (closing is
+part of sending) and at most one receives, and nobody asks it anything but for
+the next value. Then values arrive in the order one task sent them, whoever ran
+when, and a pipeline is det:
+
+```sword
+det func pipeline(n i64, mut a mem.Allocator) !i64 {
+    first := try chan[i64](a, 4)
+    second := try chan[i64](a, 4)
+    mut answer i64 = 0
+    scope {
+        spawn numbers(n, first)          // the only sender on first
+        spawn squares(first, second)     // its only receiver, second's sender
+        spawn fold(second, &answer)      // second's only receiver
+    }
+    return answer
+}
+```
+
+A spawn in a loop is many tasks, and so is the body of a `parallel for`, so a
+pool of workers on one channel is not det — which worker takes which value is
+the scheduler's choice. `select`, `TrySend`, `TryRecv` and `Len` ask what only
+the timing knows, and a channel copied into a second name, a field or a return
+value is one the compiler can no longer follow; all of those take det away. A
+function handed a channel answers from what arrives on it, the way one handed a
+slice answers from what is in it; whether the channel has one sender is checked
+where it is shared out.
 
 Every function is analysed whether or not it says `det`; the word asks for the
 answer. When it is lost, the message walks the chain:

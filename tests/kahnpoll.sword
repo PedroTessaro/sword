@@ -1,0 +1,15 @@
+// expect-error: asks channel 'from' something only the timing knows (TryRecv)
+// Waiting for the next value is fine; asking whether one is there yet is the
+// timing reaching the answer.
+
+func peek(from chan[i64]) i64 {
+    return from.TryRecv() orelse -1
+}
+
+det func poll(from chan[i64]) i64 {
+    return peek(from)
+}
+
+func main() int {
+    return 0
+}

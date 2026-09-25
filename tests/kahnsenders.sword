@@ -1,0 +1,32 @@
+// expect-error: lets more than one task at a time send on channel 'ch'
+// Two senders on one channel: the receiver sees their values interleaved in
+// whatever order the two tasks ran, and a det function cannot promise that.
+
+import "std/mem"
+
+func send(from i64, out chan[i64]) !void {
+    for i in 0..3 {
+        try out <- from + i
+    }
+}
+
+func first(from chan[i64], mut into *i64) {
+    *into = <-from orelse 0
+}
+
+det func race(mut a mem.Allocator) !i64 {
+    ch := try chan[i64](a, 8)
+    mut got i64 = 0
+    scope {
+        spawn send(0, ch)
+        spawn send(100, ch)
+        spawn first(ch, &got)
+    }
+    return got
+}
+
+func main() int {
+    mut room := [4096]u8{}
+    mut arena := mem.NewArena(room[..])
+    return int(race(&arena) catch 0)
+}

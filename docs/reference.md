@@ -108,14 +108,19 @@ arguments to reach the answer:
 
 | | |
 |---|---|
-| an `atomic`, a `shared`, a channel | which task got there first decides |
+| an `atomic`, a `shared` | which task got there first decides |
+| a channel shared by two senders or two receivers at once | the same |
+| `select`, `TrySend`, `TryRecv`, `Len`, `Cap`, `Closed` | the timing decides |
+| a channel copied, stored or returned | the compiler can no longer follow it |
 | an `extern` call | the clock, the operating system, malloc's addresses |
 | an address turned into a number | the layout decides |
 | a call through an interface or a function value | unless every target is det |
 | a call to anything that is not det | |
 
 What is *not* on that list is the point: `scope`, `spawn` and `parallel for`
-are all fine. Two tasks cannot touch the same memory — the race checker says
+are all fine, and so is a channel with one sender and one receiver in each
+scope that only ever waits for the next value — Kahn's condition, under which a
+network of tasks computes a function of its inputs. Two tasks cannot touch the same memory — the race checker says
 so — and a reduction combines its pieces in the order they were cut, so the
 answer does not depend on the pool.
 
