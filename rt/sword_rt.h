@@ -75,6 +75,9 @@ void sword_mutex_notify_all(void *guard);
 // 0 means ready, -2 means the deadline passed.
 int sword_park_fd(int32_t fd, int32_t writable, int64_t deadline_ns);
 int32_t sword_in_task(void);
+// errno, read on the thread the caller is on now. Code that may have parked
+// reads it through this rather than directly — see sword_rt.cpp.
+int sword_errno(void);
 // The same for the clock: waits without holding the thread, and answers -1 when
 // there is no task to put down.
 int sword_park_timer(int64_t deadline_ns);

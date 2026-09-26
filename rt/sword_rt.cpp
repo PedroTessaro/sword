@@ -2,6 +2,7 @@
 #include "sword_poll.h"
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -1283,6 +1284,14 @@ int sword_park_timer(int64_t deadline_ns) {
 }
 
 int32_t sword_in_task(void) { return tl_fiber != nullptr; }
+
+// glibc declares __errno_location const, so within one function the compiler
+// may take errno's address once and keep it. A task that parks can resume on
+// another thread, and then every errno it reads is the old thread's: a connect
+// that answered EINPROGRESS here looked like one that failed with nothing set,
+// because the thread it started on had errno 0. A call into another file, never
+// inlined, has to ask for the address again every time.
+__attribute__((noinline)) int sword_errno(void) { return errno; }
 
 void sword_runtime_stats(struct sword_stats *out) {
   memset(out, 0, sizeof(*out));
