@@ -11,7 +11,7 @@ import "std/mem"
 //
 // All of them are det when the function they are given is.
 
-error NoRoom = "the output is shorter than the answer"
+error ShortOutput = "the output is shorter than the answer"
 error LengthMismatch = "the input and the output are not the same length"
 
 // At most this many pieces, and none smaller than a piece is worth a task.
@@ -115,7 +115,7 @@ func Keep[T](mut a mem.Allocator, xs []T, mut out []T,
     for i in 0..xs.len {
         if marks[i] {
             if kept == out.len {
-                return error.NoRoom
+                return error.ShortOutput
             }
             out[kept] = xs[i]
             kept += 1
