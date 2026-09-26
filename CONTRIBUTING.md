@@ -97,6 +97,41 @@ own. Messages follow the conventional form — `feat(scope):`, `fix(scope):`,
 change was made and what it cost. A number in a commit message or in the
 documentation is one you measured; say how.
 
+## Branches
+
+Two branches live forever, and nobody pushes to either of them: both take
+changes only through a pull request whose checks have passed.
+
+| | |
+|---|---|
+| `main` | released versions only. Each merge into it is tagged `vX.Y.Z`. |
+| `develop` | where finished work is integrated. Pull requests go here. |
+
+Everything else is short-lived, starts from `develop`, and is named for what it
+does, with the same words commits use:
+
+| | |
+|---|---|
+| `feat/<name>` | something the language or the library can do that it could not |
+| `fix/<name>` | a bug |
+| `perf/<name>` | faster or smaller, measured |
+| `refactor/<name>` | the same behaviour, arranged better |
+| `docs/<name>` | documentation only |
+| `test/<name>` | tests only |
+| `ci/<name>`, `chore/<name>` | the build, the workflows, housekeeping |
+
+`<name>` is a few lower-case words joined by hyphens — `feat/udp`,
+`fix/poller-close` — with the issue number in front when there is one:
+`fix/19-string-concat`. A pull request is merged with a merge commit rather than
+squashed, since each commit already builds and passes on its own and says why,
+and the branch is deleted once it is in.
+
+A release is prepared on `release/X.Y.Z`, cut from `develop`: only fixes land
+there, and it goes to `main` through a pull request, is tagged, and is merged
+back into `develop`. A fix that cannot wait for the next release is
+`hotfix/<name>`, cut from `main` and merged into both. The VS Code extension is
+released separately, by a `vscode-vX.Y.Z` tag.
+
 ## Where things are
 
 | | |
