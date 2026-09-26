@@ -114,10 +114,77 @@ handler gets a 16 KiB arena on its own task's stack, serves the request out of i
 and the arena goes away when the task does. No GC pauses to tune, no allocator to
 instrument, no surprise in the middle of a hot path.
 
+It is also why two strings do not join with `+`. The joined string has to live
+somewhere, so `strings.Concat` takes the allocator it goes in; two constants join
+with `+` at compile time, where nothing is allocated at all.
+
 Go's allocation is invisible and its GC is the price — a very well-built price,
 but one you cannot opt out of. C gives you `malloc` and no discipline about it.
 Rust's `Vec` and `String` allocate from a global allocator by default, and
 threading a custom one through a program is still awkward.
+
+## The same answer, however many threads
+
+Parallel code usually answers a little differently from one run to the next. Add
+up a million doubles on four threads and on sixteen and the last digits differ,
+because the pieces are combined in whatever order they finish and floating-point
+addition cares about order. It is rarely a bug anybody can reproduce, which is
+exactly what makes it expensive.
+
+In Sword that difference does not exist, and the compiler checks that it does
+not:
+
+```sword
+det func total(xs []f64) f64 {
+    mut sum := num.NewExact()
+    parallel for i in 0..xs.len reduce(num.MergeExact: sum) {
+        sum.Add(xs[i])
+    }
+    return sum.Value()
+}
+```
+
+`det` is a claim that what a function answers depends on its arguments and on
+nothing else — not on the number of threads, not on the order they ran in, not
+on the clock, not on where anything landed in memory. The work is still spread
+over every core. What is fixed is how it is cut, which depends on the length
+alone, and the order the pieces are put back together in, which is the order
+they were cut. More threads make it finish sooner; they never change what it
+answers.
+
+What takes the claim away is short: an atomic, a lock, the clock or anything
+else outside the language, an address read as a number, and a channel that two
+tasks send on at once. What does *not* take it away is the point — a `scope`
+full of tasks, a `parallel for`, and a pipeline of tasks joined by channels,
+each with one sender and one receiver, which Kahn showed in 1974 computes the
+same thing whichever task runs when. Every function is analysed whether it says
+`det` or not; writing the word asks to be told, with the chain of calls that
+lost it, when it no longer holds.
+
+The standard library carries it the rest of the way:
+
+- **Random numbers** (`std/rand`) where the i-th number depends on the seed and
+  i, so iteration 5000 of a parallel loop draws the same numbers wherever it
+  runs.
+- **Parallel operations** (`std/par`) that keep the rule: a prefix sum, a filter
+  that keeps the original order, the position of the smallest element with ties
+  going to the first, and a stable sort.
+- **Mathematics** (`std/num`) that gives the same bits on every machine.
+  `Sin`, `Cos`, `Exp` and `Log` are within one unit in the last place, and `Sqrt`
+  is the nearest double; they use only operations every processor rounds alike,
+  and they printed identical bits on macOS and Linux, arm64 and x86-64, over 340
+  000 arguments. The C library is not the same program everywhere — macOS's and
+  glibc's disagreed on 9 of about 240 000 of those arguments — and a det
+  function could not call it anyway.
+- **An exact sum** (`num.Exact`) that rounds once, at the end, so a parallel sum
+  is not just the same at every thread count but the same double as adding the
+  numbers one by one.
+
+It is checked, not claimed: every change runs the whole test suite at 1, 2, 3, 4,
+8 and 16 threads, on Linux and on macOS, and requires the same bytes out of
+every program each time. What it does not cover is the edge of the program. A
+server's clients arrive in the order the world sends them, and `main` and the
+network are outside the claim on purpose.
 
 ## Smaller things that add up
 
@@ -139,10 +206,15 @@ Go cannot see. A Sword task is joined by the closing brace of its `scope`, so th
 shape does not exist: a task that never finishes blocks the join instead, which you
 find out about immediately rather than through a memory graph three weeks later.
 
-**The whole thing is small enough to read.** The compiler is about 10 000 lines of
-C++, the runtime 3 300, the language server 1 300, and the standard library 4 900
+**The whole thing is small enough to read.** The compiler is about 11 400 lines of
+C++, the runtime 4 500, the language server 1 300, and the standard library 8 100
 lines of Sword with no hidden compiler primitives behind it. For a language you are
 going to depend on, being able to read all of it in a weekend is worth something.
+
+**It is tested where it runs.** Every change is built and tested on Linux and on
+macOS, with TLS and without, before it can be merged; a program's standard
+library, networking and scheduler are the same code on both, TCP and UDP, IPv4
+and IPv6.
 
 **The compiler is the language server.** `swordls` links the same lexer, parser and
 checker as `shield` and calls the same `check()`. The colouring knows a type from a
@@ -152,9 +224,10 @@ a diagnostic in the editor is the diagnostic the compiler gives.
 ## Against each one in particular
 
 **Go.** The same task model, and Go does it with a decade of polish, a real
-ecosystem and the best tooling in the business. Sword differs in three ways that
+ecosystem and the best tooling in the business. Sword differs in four ways that
 matter: no garbage collector and no hidden allocation, races caught at compile time
-rather than sometimes at run time, and tasks that cannot leak. If you want a
+rather than sometimes at run time, tasks that cannot leak, and parallel code whose
+answer does not depend on the machine it ran on. If you want a
 service written this afternoon with libraries for everything, write Go. If you want
 to know where every byte went and have the compiler refuse your races, that is what
 this is for.
@@ -165,6 +238,13 @@ borrow checker and, for servers, the async split described above. Sword is a muc
 smaller language to hold in your head, and its concurrency reads like straight-line
 code. If you need to prove more than "no races inside this scope", use Rust; it is
 the better tool and it is not close.
+
+**C++ with OpenMP or TBB.** The fastest way to spread a loop over cores today,
+and TBB even has a reduction that answers the same on any number of threads. But
+that promise covers one call: nothing checks what the rest of the function does,
+and one atomic counter or one library call that reads the clock takes it away
+without a word. Sword makes the same promise about a whole function, and the
+compiler says which line broke it.
 
 **C.** Every platform, every library, and an ABI everything speaks — Sword links
 against C for exactly that reason. What it adds on top: slices that know their
@@ -179,8 +259,10 @@ Said plainly, because a page like this is worthless otherwise:
 
 - **No ecosystem.** No package manager, no third-party libraries. The standard
   library is `std/mem`, `std/io`, `std/fmt`, `std/bytes`, `std/strings`,
-  `std/collections`, `std/json`, `std/os`, `std/fs`, `std/time`, `std/runtime`,
-  `std/net`, `std/tls`, `std/http`, `std/chan` and `std/testing`. That is the list.
+  `std/unicode`, `std/collections`, `std/json`, `std/crypto`, `std/num`,
+  `std/rand`, `std/par`, `std/os`, `std/fs`, `std/process`, `std/time`,
+  `std/runtime`, `std/net`, `std/tls`, `std/http`, `std/chan` and `std/testing`.
+  That is the list.
 - **Not memory-safe in Rust's sense.** Sword stops data races, stops a task from
   outliving the memory it borrowed, and refuses a function that hands back its own
   frame. It does not stop you from freeing something and reading it afterwards:
