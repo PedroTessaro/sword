@@ -1,0 +1,248 @@
+package net
+
+import "std/time"
+
+// Datagrams: messages that arrive whole or not at all, in no promised order,
+// with no connection to set up first. What TCP does to make a stream out of the
+// network — ordering, retrying, pacing — is left to whoever needs it, which is
+// why DNS, games, voice and QUIC are built on this rather than on TCP.
+
+error TooLong       = "the datagram was longer than the buffer, and the rest is gone"
+error Refused       = "nothing is listening at the other end"
+error BadAddress    = "that is not an address"
+error ResolveFailed = "the name could not be resolved"
+error SendFailed    = "the datagram could not be sent"
+error BroadcastNotSet = "the socket could not be allowed to broadcast"
+
+extern func sword_udp_listen(host [*]u8, host_len i64, port i32, local i32) i32
+extern func sword_udp_dial(host [*]u8, host_len i64, port i32) i32
+extern func sword_udp_resolve(host [*]u8, host_len i64, port i32,
+                              out [*]u8) i32
+extern func sword_udp_parse(host [*]u8, host_len i64, port i32, out [*]u8) i32
+extern func sword_udp_text(addr [*]u8, out [*]u8, out_len i64) i32
+extern func sword_udp_recv(fd i32, buf [*]u8, len i64, from [*]u8) i64
+extern func sword_udp_send(fd i32, buf [*]u8, len i64, to [*]u8) i64
+extern func sword_udp_broadcast(fd i32, on i32) i32
+extern func sword_udp_local(fd i32, out [*]u8) i32
+
+// An IPv4 or IPv6 address and a port. A value, twenty bytes, so a server can
+// keep the sender of every datagram without allocating anything.
+struct Addr {
+    raw [20]u8
+}
+
+// A numeric address — "127.0.0.1", "::1" — with nothing looked up.
+func ParseAddr(ip string, port i32) !Addr {
+    mut a := Addr{raw: [20]u8{}}
+    if sword_udp_parse(ip.ptr, i64(ip.len), port, a.raw[..].ptr) < 0 {
+        return error.BadAddress
+    }
+    return a
+}
+
+// A name or a numeric address, looked up the way a dial looks one up: the task
+// waits, the thread does not.
+func Resolve(host string, port i32) !Addr {
+    mut a := Addr{raw: [20]u8{}}
+    if sword_udp_resolve(host.ptr, i64(host.len), port, a.raw[..].ptr) < 0 {
+        return error.ResolveFailed
+    }
+    return a
+}
+
+// Every machine on the local network at once. A socket has to be allowed to
+// send to it: SetBroadcast.
+func Broadcast(port i32) Addr {
+    mut a := Addr{raw: [20]u8{}}
+    a.raw[0] = 4
+    for i in 1..5 {
+        a.raw[i] = 255
+    }
+    a.raw[17] = u8((port >> 8) & 255)
+    a.raw[18] = u8(port & 255)
+    return a
+}
+
+func (a *Addr) Port() i32 {
+    return i32(a.raw[17]) << 8 | i32(a.raw[18])
+}
+
+func (a *Addr) IsV6() bool {
+    return a.raw[0] == 6
+}
+
+// The address without the port, written into `into` — 46 bytes holds any.
+func (a *Addr) Text(mut into []u8) !string {
+    n := sword_udp_text(a.raw[..].ptr, into.ptr, i64(into.len))
+    if n < 0 {
+        return error.BadAddress
+    }
+    return string(into[0..u64(n)])
+}
+
+// Same address and same port.
+func (a *Addr) Equal(b Addr) bool {
+    for i in 0..19 {
+        if a.raw[i] != b.raw[i] {
+            return false
+        }
+    }
+    return true
+}
+
+// A UDP socket. Bound with ListenUDP or ListenUDPOn it talks to anyone, through
+// ReadFrom and WriteTo; made with DialUDP it talks to one peer, through Read and
+// Write, and hears only from that peer. Like a Conn, it is its descriptor, and
+// copying it copies the number.
+struct UDPConn {
+    fd i32
+}
+
+// Loopback only, like Listen: nothing off this machine can reach it. Port 0
+// asks the operating system for one; Port says which.
+func ListenUDP(port i32) !UDPConn {
+    empty := ""
+    fd := sword_udp_listen(empty.ptr, 0, port, 1)
+    if fd < 0 {
+        return error.ListenFailed
+    }
+    return UDPConn{fd: fd}
+}
+
+// The address to bind: empty for every interface, IPv4 and IPv6 both; "0.0.0.0"
+// for every IPv4 one; "::" or "::1" or any numeric address of either family.
+func ListenUDPOn(host string, port i32) !UDPConn {
+    fd := sword_udp_listen(host.ptr, i64(host.len), port, 0)
+    if fd < 0 {
+        return error.ListenFailed
+    }
+    return UDPConn{fd: fd}
+}
+
+// A socket for one peer. Nothing is sent to make it: a UDP "connection" is only
+// the kernel remembering where Write goes and whose datagrams Read accepts —
+// and, because it remembers, it can say when nobody is listening there.
+func DialUDP(host string, port i32) !UDPConn {
+    fd := sword_udp_dial(host.ptr, i64(host.len), port)
+    if fd < 0 {
+        return error.DialFailed
+    }
+    return UDPConn{fd: fd}
+}
+
+// A datagram that arrived: how much of it landed, and who sent it. `Truncated`
+// says it was longer than the buffer: `Len` is then the buffer's length, and the
+// rest of the datagram is gone — the kernel does not keep it for a second read.
+struct Datagram {
+    Len       u64
+    From      Addr
+    Truncated bool
+}
+
+func (c *UDPConn) ReadFrom(mut into []u8) !Datagram {
+    mut from := Addr{raw: [20]u8{}}
+    n := sword_udp_recv(c.fd, into.ptr, i64(into.len), from.raw[..].ptr)
+    if n == -2 {
+        return error.Timeout
+    }
+    if n == -3 {
+        return error.Refused
+    }
+    if n < 0 {
+        return error.ReadFailed
+    }
+    cut := from.raw[19] == 1
+    from.raw[19] = 0
+    return Datagram{Len: u64(n), From: from, Truncated: cut}
+}
+
+func (c *UDPConn) WriteTo(to Addr, from []u8) !void {
+    mut where := to
+    n := sword_udp_send(c.fd, from.ptr, i64(from.len), where.raw[..].ptr)
+    if n == -2 {
+        return error.Timeout
+    }
+    if n < 0 {
+        return error.SendFailed
+    }
+}
+
+// The next datagram from the dialled peer. One that did not fit is an error
+// here, since there is nothing else to report it with.
+func (c *UDPConn) Read(mut into []u8) !u64 {
+    got := try c.ReadFrom(into)
+    if got.Truncated {
+        return error.TooLong
+    }
+    return got.Len
+}
+
+// To the dialled peer. Refused means an earlier datagram found nobody there.
+func (c *UDPConn) Write(from []u8) !void {
+    n := sword_udp_send(c.fd, from.ptr, i64(from.len), [*]u8(0))
+    if n == -2 {
+        return error.Timeout
+    }
+    if n == -3 {
+        return error.Refused
+    }
+    if n < 0 {
+        return error.SendFailed
+    }
+}
+
+func (c *UDPConn) WriteString(s string) !void {
+    try c.Write([]u8(s))
+}
+
+// The most any single wait may take — the usual way to give up on an answer and
+// send again. Zero waits as long as it takes.
+func (c *UDPConn) SetTimeout(limit time.Duration) !void {
+    if sword_net_timeout(c.fd, limit.AsMillis()) < 0 {
+        return error.TimeoutNotSet
+    }
+}
+
+func (c *UDPConn) SetDeadline(at time.Instant) !void {
+    if sword_net_deadline(c.fd, at.AsNanos()) < 0 {
+        return error.TimeoutNotSet
+    }
+}
+
+func (c *UDPConn) ClearDeadline() !void {
+    if sword_net_deadline(c.fd, 0) < 0 {
+        return error.TimeoutNotSet
+    }
+}
+
+// Lets WriteTo reach a broadcast address, which the kernel refuses otherwise so
+// that no program floods a network by accident.
+func (c *UDPConn) SetBroadcast(on bool) !void {
+    mut flag i32 = 0
+    if on {
+        flag = 1
+    }
+    if sword_udp_broadcast(c.fd, flag) < 0 {
+        return error.BroadcastNotSet
+    }
+}
+
+// Where this socket is bound.
+func (c *UDPConn) Local() !Addr {
+    mut a := Addr{raw: [20]u8{}}
+    if sword_udp_local(c.fd, a.raw[..].ptr) < 0 {
+        return error.NoPeer
+    }
+    return a
+}
+
+func (c *UDPConn) Port() i32 {
+    mut a := c.Local() catch {
+        return -1
+    }
+    return a.Port()
+}
+
+func (c *UDPConn) Close() {
+    sword_net_close(c.fd)
+}
