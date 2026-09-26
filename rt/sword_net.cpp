@@ -111,7 +111,7 @@ int await(int fd, bool writable) {
   watch.revents = 0;
   int ready = poll(&watch, 1, wait);
   if (ready == 0) return -2;
-  if (ready < 0) return errno == EINTR ? 0 : -1;
+  if (ready < 0) return sword_errno() == EINTR ? 0 : -1;
   return 0;
 }
 
@@ -130,6 +130,7 @@ int32_t sword_net_listen_on(const char *host, int64_t host_len, int32_t port,
   sword_os_ignore_sigpipe();
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) return -1;
+  sword_adopt_fd(fd);
 
   int on = 1;
   setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
@@ -194,14 +195,16 @@ int32_t sword_net_accept(int32_t fd) {
   while (true) {
     int client = accept(fd, nullptr, nullptr);
     if (client >= 0) {
+      sword_adopt_fd(client);
       int on = 1;
       setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
       unblock(client);
       forget_limits(client);
       return client;
     }
-    if (errno == EINTR) continue; // a signal, not a failure
-    if (errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+    int why = sword_errno();
+    if (why == EINTR) continue; // a signal, not a failure
+    if (why != EAGAIN && why != EWOULDBLOCK) return -1;
     // Nothing waiting. Put the task down rather than the thread.
     int ready = await(fd, false);
     if (ready == -2) return -2;
@@ -212,6 +215,10 @@ int32_t sword_net_accept(int32_t fd) {
 // Connect with a deadline. Going through a non-blocking connect and poll is
 // the only way to bound it: the kernel's own connect timeout is over a minute
 // and cannot be shortened per socket.
+//
+// 0 connected, -2 out of time, -1 refused or unreachable. The answer is the
+// return value rather than errno, since a task that waited here may be reading
+// errno on another thread by the time it asks.
 static int connect_within(int fd, const sockaddr *addr, socklen_t len,
                           int64_t millis) {
   unblock(fd);
@@ -223,20 +230,15 @@ static int connect_within(int fd, const sockaddr *addr, socklen_t len,
 
   int result = connect(fd, addr, len);
   if (result == 0) return 0;
-  if (errno != EINPROGRESS) return -1;
+  if (sword_errno() != EINPROGRESS) return -1;
 
   int ready = await(fd, true);
-  if (ready == -2) {
-    errno = ETIMEDOUT;
-    return -1;
-  }
+  if (ready == -2) return -2;
   if (ready < 0) return -1;
 
   int failure = 0;
   socklen_t size = sizeof(failure);
-  if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &failure, &size) < 0)
-    failure = errno;
-  errno = failure;
+  if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &failure, &size) < 0) return -1;
   return failure == 0 ? 0 : -1;
 }
 
@@ -272,8 +274,10 @@ int32_t sword_net_dial_timeout(const char *host, int64_t host_len, int32_t port,
   for (addrinfo *at = found; at; at = at->ai_next) {
     fd = socket(at->ai_family, at->ai_socktype, at->ai_protocol);
     if (fd < 0) continue;
-    if (connect_within(fd, at->ai_addr, at->ai_addrlen, millis) == 0) break;
-    timed_out = errno == ETIMEDOUT;
+    sword_adopt_fd(fd);
+    int connected = connect_within(fd, at->ai_addr, at->ai_addrlen, millis);
+    if (connected == 0) break;
+    timed_out = connected == -2;
     close(fd);
     fd = -1;
   }
@@ -309,8 +313,9 @@ int64_t sword_net_read(int32_t fd, void *buf, int64_t len) {
   while (true) {
     ssize_t n = read(fd, buf, (size_t)len);
     if (n >= 0) return n;
-    if (errno == EINTR) continue;
-    if (errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+    int why = sword_errno();
+    if (why == EINTR) continue;
+    if (why != EAGAIN && why != EWOULDBLOCK) return -1;
     int ready = await(fd, false);
     if (ready == -2) return -2;
     if (ready < 0) return -1;
@@ -323,8 +328,9 @@ int64_t sword_net_write(int32_t fd, const void *buf, int64_t len) {
   while (sent < len) {
     ssize_t n = write(fd, (const char *)buf + sent, (size_t)(len - sent));
     if (n < 0) {
-      if (errno == EINTR) continue;
-      if (errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+      int why = sword_errno();
+      if (why == EINTR) continue;
+      if (why != EAGAIN && why != EWOULDBLOCK) return -1;
       int ready = await(fd, true);
       if (ready == -2) return -2;
       if (ready < 0) return -1;

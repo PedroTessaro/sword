@@ -1,0 +1,329 @@
+package par
+
+import "std/mem"
+
+// Operations over a slice that use every core and still answer the same thing
+// on one thread and on sixteen. Each one follows the rule `parallel for ...
+// reduce` follows: the slice is cut in a way that depends on its length and
+// nothing else, each piece answers in a place of its own, and the pieces are
+// put together in the order they were cut. None of them looks at which task
+// finished first.
+//
+// All of them are det when the function they are given is.
+
+error NoRoom = "the output is shorter than the answer"
+error LengthMismatch = "the input and the output are not the same length"
+
+// At most this many pieces, and none smaller than a piece is worth a task.
+const maxPieces = 64
+const minPiece = 1024
+
+func pieceSize(n u64) u64 {
+    mut size := (n + maxPieces - 1) / maxPieces
+    if size < minPiece {
+        size = minPiece
+    }
+    return size
+}
+
+func lesser(a u64, b u64) u64 {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+// --- scan ------------------------------------------------------------------
+
+func fold[T](xs []T, op func(T, T) T) T {
+    mut acc := xs[0]
+    for i in 1..xs.len {
+        acc = op(acc, xs[i])
+    }
+    return acc
+}
+
+func fill[T](xs []T, mut out []T, op func(T, T) T) {
+    mut acc := xs[0]
+    out[0] = acc
+    for i in 1..xs.len {
+        acc = op(acc, xs[i])
+        out[i] = acc
+    }
+}
+
+func fillFrom[T](xs []T, mut out []T, op func(T, T) T, carry T) {
+    mut acc := carry
+    for i in 0..xs.len {
+        acc = op(acc, xs[i])
+        out[i] = acc
+    }
+}
+
+// out[i] = xs[0] op xs[1] op ... op xs[i]. Each piece totals itself, the totals
+// are carried across in order, and each piece then writes its part starting from
+// what came before it. `op` has to be associative for this to be the sequential
+// answer; floating-point addition is not quite, and gets an answer that is the
+// same at every thread count rather than one equal to adding left to right.
+func Scan[T](xs []T, mut out []T, op func(T, T) T) !void {
+    if xs.len != out.len {
+        return error.LengthMismatch
+    }
+    if xs.len == 0 {
+        return
+    }
+    size := pieceSize(xs.len)
+    count := (xs.len + size - 1) / size
+    mut totals := [maxPieces]T{}
+    parallel for p in 0..count {
+        lo := p * size
+        totals[p] = fold[T](xs[lo..lesser(lo + size, xs.len)], op)
+    }
+    for p in 1..count {
+        totals[p] = op(totals[p - 1], totals[p])
+    }
+    scope {
+        for off, part in out.chunks(size) {
+            if off == 0 {
+                spawn fill[T](xs[0..part.len], part, op)
+            } else {
+                spawn fillFrom[T](xs[off..off + part.len], part, op,
+                                  totals[off / size - 1])
+            }
+        }
+    }
+}
+
+// --- keep ------------------------------------------------------------------
+
+// The elements `keep` accepts, in their original order, at the front of `out`;
+// the answer is how many. The test runs on every core, and the survivors are then
+// gathered in one pass — which is what keeps them in order rather than in the
+// order the tasks got to them. The marks cost one byte per element, which is why
+// this takes an allocator.
+func Keep[T](mut a mem.Allocator, xs []T, mut out []T,
+             keep func(T) bool) !u64 {
+    if xs.len == 0 {
+        return 0
+    }
+    mut marks := mem.Alloc[bool](a, xs.len) orelse return error.OutOfMemory
+    defer mem.Free[bool](a, marks)
+    parallel for i in 0..xs.len {
+        marks[i] = keep(xs[i])
+    }
+    mut kept u64 = 0
+    for i in 0..xs.len {
+        if marks[i] {
+            if kept == out.len {
+                return error.NoRoom
+            }
+            out[kept] = xs[i]
+            kept += 1
+        }
+    }
+    return kept
+}
+
+// --- min -------------------------------------------------------------------
+
+func smallestIn[T](xs []T, less func(T, T) bool) u64 {
+    mut best u64 = 0
+    for i in 1..xs.len {
+        if less(xs[i], xs[best]) {
+            best = i
+        }
+    }
+    return best
+}
+
+// Where the smallest element is, and the first such place when several are
+// equally small: each piece finds its own first, and the pieces are compared
+// in order with a tie going to the earlier one. Nil for an empty slice.
+func MinIndex[T](xs []T, less func(T, T) bool) ?u64 {
+    if xs.len == 0 {
+        return nil
+    }
+    size := pieceSize(xs.len)
+    count := (xs.len + size - 1) / size
+    mut best := [maxPieces]u64{}
+    parallel for p in 0..count {
+        lo := p * size
+        best[p] = lo + smallestIn[T](xs[lo..lesser(lo + size, xs.len)], less)
+    }
+    mut answer := best[0]
+    for p in 1..count {
+        if less(xs[best[p]], xs[answer]) {
+            answer = best[p]
+        }
+    }
+    return answer
+}
+
+// --- sort ------------------------------------------------------------------
+
+// A stable sort has exactly one right answer — equal elements keep the order
+// they came in — so how the work was divided cannot show in the result. Each
+// piece is sorted on its own, and then neighbouring runs are merged pairwise,
+// every merge at one level at the same time, until one run is left.
+//
+// The merging is in place, by rotation, the way Go's sort.Stable does it: no
+// scratch memory, so no allocator, at the price of O(n log² n) moves rather than
+// O(n log n).
+func Sort[T](mut xs []T, less func(T, T) bool) {
+    if xs.len < 2 {
+        return
+    }
+    size := pieceSize(xs.len)
+    scope {
+        for part in xs.chunks(size) {
+            spawn stable[T](part, less)
+        }
+    }
+    mut width := size
+    for width < xs.len {
+        scope {
+            for part in xs.chunks(width * 2) {
+                if part.len > width {
+                    spawn merge[T](part, width, less)
+                }
+            }
+        }
+        width *= 2
+    }
+}
+
+func merge[T](mut xs []T, m u64, less func(T, T) bool) {
+    symMerge[T](xs, 0, m, xs.len, less)
+}
+
+const block = 20
+
+func insertion[T](mut xs []T, a u64, b u64, less func(T, T) bool) {
+    for i in a + 1..b {
+        mut j := i
+        for j > a && less(xs[j], xs[j - 1]) {
+            swap[T](xs, j, j - 1)
+            j -= 1
+        }
+    }
+}
+
+func swap[T](mut xs []T, i u64, j u64) {
+    t := xs[i]
+    xs[i] = xs[j]
+    xs[j] = t
+}
+
+func stable[T](mut xs []T, less func(T, T) bool) {
+    n := xs.len
+    mut a u64 = 0
+    mut b u64 = block
+    for b <= n {
+        insertion[T](xs, a, b, less)
+        a = b
+        b += block
+    }
+    insertion[T](xs, a, n, less)
+    mut width u64 = block
+    for width < n {
+        a = 0
+        b = width * 2
+        for b <= n {
+            symMerge[T](xs, a, a + width, b, less)
+            a = b
+            b += width * 2
+        }
+        if a + width < n {
+            symMerge[T](xs, a, a + width, n, less)
+        }
+        width *= 2
+    }
+}
+
+// Merges the sorted runs xs[a..m] and xs[m..b] in place (Kim and Kutzner,
+// "Stable minimum storage merging by symmetric comparisons", 2004).
+func symMerge[T](mut xs []T, a u64, m u64, b u64, less func(T, T) bool) {
+    if m - a == 1 {
+        mut i := m
+        mut j := b
+        for i < j {
+            h := (i + j) / 2
+            if less(xs[h], xs[a]) {
+                i = h + 1
+            } else {
+                j = h
+            }
+        }
+        for k in a..i - 1 {
+            swap[T](xs, k, k + 1)
+        }
+        return
+    }
+    if b - m == 1 {
+        mut i := a
+        mut j := m
+        for i < j {
+            h := (i + j) / 2
+            if !less(xs[m], xs[h]) {
+                i = h + 1
+            } else {
+                j = h
+            }
+        }
+        mut k := m
+        for k > i {
+            swap[T](xs, k, k - 1)
+            k -= 1
+        }
+        return
+    }
+    mid := (a + b) / 2
+    n := mid + m
+    mut start := a
+    mut r := m
+    if m > mid {
+        start = n - b
+        r = mid
+    }
+    p := n - 1
+    for start < r {
+        c := (start + r) / 2
+        if !less(xs[p - c], xs[c]) {
+            start = c + 1
+        } else {
+            r = c
+        }
+    }
+    end := n - start
+    if start < m && m < end {
+        rotate[T](xs, start, m, end)
+    }
+    if a < start && start < mid {
+        symMerge[T](xs, a, start, mid, less)
+    }
+    if mid < end && end < b {
+        symMerge[T](xs, mid, end, b, less)
+    }
+}
+
+// Turns xs[a..m] xs[m..b] into xs[m..b] xs[a..m] by swapping blocks.
+func rotate[T](mut xs []T, a u64, m u64, b u64) {
+    mut i := m - a
+    mut j := b - m
+    for i != j {
+        if i > j {
+            swapRange[T](xs, m - i, m, j)
+            i -= j
+        } else {
+            swapRange[T](xs, m - i, m + j - i, i)
+            j -= i
+        }
+    }
+    swapRange[T](xs, m - i, m, i)
+}
+
+func swapRange[T](mut xs []T, a u64, b u64, n u64) {
+    for i in 0..n {
+        swap[T](xs, a + i, b + i)
+    }
+}

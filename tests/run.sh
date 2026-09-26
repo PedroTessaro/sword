@@ -3,6 +3,9 @@
 #   // expect: <exit status>        must compile, run, and exit with that code
 #   // expect-output: <line>        stdout must contain that line
 #   // expect-error: <substring>    must fail to compile with that message
+#   // output-varies: <why>         prints something that depends on the clock
+#                                   or the pool, so tests/threads.sh compares
+#                                   only its exit status across thread counts
 #
 # Compiler output goes through printf rather than echo: /bin/sh here reads
 # backslash escapes in echo's argument, so a diagnostic that mentions '\x1b'

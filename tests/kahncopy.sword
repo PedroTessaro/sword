@@ -1,0 +1,18 @@
+// expect-error: copies a channel, and the copies cannot be told apart
+// A second name for the same channel would let two senders hide behind two
+// names, so the compiler stops following a channel that is copied.
+
+import "std/mem"
+
+det func twice(mut a mem.Allocator) !i64 {
+    ch := try chan[i64](a, 2)
+    other := ch
+    try other <- 1
+    return <-ch orelse 0
+}
+
+func main() int {
+    mut room := [4096]u8{}
+    mut arena := mem.NewArena(room[..])
+    return int(twice(&arena) catch 0)
+}

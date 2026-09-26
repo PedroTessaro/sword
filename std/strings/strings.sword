@@ -1,5 +1,7 @@
 package strings
 
+import "std/mem"
+
 error NotANumber = "that is not a number"
 
 // Byte-oriented. Sword strings are UTF-8 but these functions work on bytes,
@@ -130,4 +132,45 @@ func ParseU64(s string) !u64 {
         value = value * 10 + digit
     }
     return value
+}
+
+// Joining allocates, so it takes the allocator like anything else that does:
+// a signature without one cannot touch the heap, and `+` on two strings would
+// have been a signature without one. The result is measured first and
+// allocated once, at exactly its length.
+//
+//     mut sys := mem.NewSystem()
+//     greeting := try strings.Concat(&sys, "hello, ", name, "!")
+func Concat(mut a mem.Allocator, parts ...string) !string {
+    return try Join(a, parts, "")
+}
+
+// The parts with `sep` between each pair, as one new string.
+func Join(mut a mem.Allocator, parts []string, sep string) !string {
+    if parts.len == 0 {
+        return ""
+    }
+    mut total := sep.len * (parts.len - 1)
+    for part in parts {
+        total += part.len
+    }
+    if total == 0 {
+        return ""
+    }
+    mut out := mem.Alloc[u8](a, total) orelse return error.OutOfMemory
+    mut at u64 = 0
+    for i in 0..parts.len {
+        if i > 0 {
+            for j in 0..sep.len {
+                out[at + j] = sep[j]
+            }
+            at += sep.len
+        }
+        part := parts[i]
+        for j in 0..part.len {
+            out[at + j] = part[j]
+        }
+        at += part.len
+    }
+    return string(out)
 }

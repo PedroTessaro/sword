@@ -34,6 +34,9 @@ struct Waiter {
 
 struct Slot {
   std::vector<Waiter> waiting;
+  // Forgotten, and not yet handed out again by the kernel. A registration that
+  // arrives in between is for a descriptor on its way to being closed.
+  bool gone = false;
 };
 
 struct Poller {
@@ -107,27 +110,38 @@ void deliver_one(Poller &p, size_t slot, uint64_t seq, int result) {
   if (token) p.wake(token, result);
 }
 
-void arm(Poller &p, int fd, int writable) {
+// False when the descriptor has been forgotten or the kernel refused it, which
+// is what a closed one gets. Nothing will ever report on it, so the caller has
+// to.
+//
+// Under the lock, and checked against the mark there, so a registration and
+// the close that follows a forget never overlap: one that started finishes
+// before the forget can mark anything, and one that starts later sees the mark.
+// On macOS that is not tidiness. A close racing an EV_ADD on the same socket
+// can wait in the kernel for good, in a state not even SIGKILL ends — reproduced
+// in twenty lines of C with nothing of ours in them.
+bool arm(Poller &p, int fd, int writable) {
+  std::lock_guard<std::mutex> held(p.lock);
+  size_t base = slot_of(fd, 0);
+  if (base + 1 < p.slots.size() && p.slots[base + writable].gone) return false;
 #ifdef SWORD_KQUEUE
   struct kevent change;
   EV_SET(&change, fd, writable ? EVFILT_WRITE : EVFILT_READ,
          EV_ADD | EV_ONESHOT, 0, 0, nullptr);
-  kevent(p.handle, &change, 1, nullptr, 0, nullptr);
+  return kevent(p.handle, &change, 1, nullptr, 0, nullptr) == 0;
 #else
   // epoll is per descriptor rather than per filter, so both directions share
   // one registration and the events are rebuilt from what is still waiting.
-  std::lock_guard<std::mutex> held(p.lock);
   epoll_event ev;
   memset(&ev, 0, sizeof(ev));
   ev.data.fd = fd;
   ev.events = EPOLLONESHOT;
-  size_t base = slot_of(fd, 0);
   if (base < p.slots.size() && !p.slots[base].waiting.empty())
     ev.events |= EPOLLIN;
   if (base + 1 < p.slots.size() && !p.slots[base + 1].waiting.empty())
     ev.events |= EPOLLOUT;
-  if (epoll_ctl(p.handle, EPOLL_CTL_MOD, fd, &ev) != 0)
-    epoll_ctl(p.handle, EPOLL_CTL_ADD, fd, &ev);
+  return epoll_ctl(p.handle, EPOLL_CTL_MOD, fd, &ev) == 0 ||
+         epoll_ctl(p.handle, EPOLL_CTL_ADD, fd, &ev) == 0;
 #endif
 }
 
@@ -282,23 +296,36 @@ void sword_poll_wait(int fd, int writable, void *token, int64_t deadline_ns) {
   Poller &p = poller();
   size_t slot = slot_of(fd, writable);
   uint64_t seq;
+  bool gone;
   {
     std::lock_guard<std::mutex> held(p.lock);
     make_room(p, slot);
-    seq = p.next_seq++;
-    p.slots[slot].waiting.push_back(Waiter{token, seq});
-    if (deadline_ns > 0)
-      p.timers.insert({deadline_ns, {(int)slot, seq}});
+    gone = p.slots[slot].gone;
+    if (!gone) {
+      seq = p.next_seq++;
+      p.slots[slot].waiting.push_back(Waiter{token, seq});
+      if (deadline_ns > 0)
+        p.timers.insert({deadline_ns, {(int)slot, seq}});
+    }
   }
-  arm(p, fd, writable);
+  // A descriptor can be forgotten between the call that answered EAGAIN and
+  // this registration — a listener closed by another task while its acceptor
+  // was on the way here. The forget already told everyone registered, which was
+  // nobody yet. Before the close, the mark says so; after it, the kernel's
+  // refusal does. Either is the only word this waiter will get.
+  if (gone) {
+    p.wake(token, SWORD_POLL_FAILED);
+    return;
+  }
+  if (!arm(p, fd, writable)) {
+    deliver(p, slot, SWORD_POLL_FAILED);
+    return;
+  }
   // A deadline nearer than the one the poller is already waiting on has to cut
   // that wait short, or it would be noticed late.
   if (deadline_ns > 0) nudge(p);
 }
 
-// Whoever is waiting has to be told, not dropped: a descriptor is forgotten
-// when it is about to be closed, and a task still parked on it would never be
-// woken by anything else.
 void sword_poll_sleep(void *token, int64_t deadline_ns) {
   Poller &p = poller();
   {
@@ -310,12 +337,32 @@ void sword_poll_sleep(void *token, int64_t deadline_ns) {
   nudge(p);
 }
 
+// Whoever is waiting has to be told, not dropped: a descriptor is forgotten
+// when it is about to be closed, and a task still parked on it would never be
+// woken by anything else. Marked first, and before the poller need be running,
+// so that nobody can slip in between the telling and the close.
 void sword_poll_forget(int fd) {
   Poller &p = poller();
+  {
+    std::lock_guard<std::mutex> held(p.lock);
+    make_room(p, slot_of(fd, 1));
+    p.slots[slot_of(fd, 0)].gone = true;
+    p.slots[slot_of(fd, 1)].gone = true;
+  }
   if (p.handle < 0) return;
   disarm(p, fd);
   deliver(p, slot_of(fd, 0), SWORD_POLL_FAILED);
   deliver(p, slot_of(fd, 1), SWORD_POLL_FAILED);
+}
+
+// The kernel has handed this number out again, so it names a new descriptor
+// that nobody has forgotten.
+void sword_poll_adopt(int fd) {
+  Poller &p = poller();
+  std::lock_guard<std::mutex> held(p.lock);
+  if (slot_of(fd, 1) >= p.slots.size()) return;
+  p.slots[slot_of(fd, 0)].gone = false;
+  p.slots[slot_of(fd, 1)].gone = false;
 }
 
 void sword_poll_stop(void) {

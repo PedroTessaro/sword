@@ -2,6 +2,7 @@
 #include "sword_poll.h"
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -66,9 +67,17 @@ const int kHelperIdleMillis = 200;
 // syscalls. Threads are cheap next to a socket but not free.
 const int64_t kDefaultCeiling = 512;
 
+// A scope answers with the error of its earliest spawn that failed, not the
+// first failure to arrive: which task finishes first depends on how many
+// threads there are, and a det function that can fail has to fail the same way
+// on one thread and on sixteen. The spawn index and the code share one word so
+// the pair is replaced whole.
+const uint64_t kNoFailure = ~(uint64_t)0;
+
 struct Scope {
   std::atomic<int64_t> outstanding;
-  std::atomic<unsigned> failed; // holds the first error code seen
+  std::atomic<uint64_t> failed; // spawn index << 16 | code, or kNoFailure
+  int64_t spawned;              // only the scope's own task spawns into it
 };
 
 static_assert(sizeof(Scope) <= SWORD_SCOPE_SIZE, "scope blob too small");
@@ -80,6 +89,7 @@ static_assert(alignof(Scope) <= 8, "scope needs more alignment than the"
 struct Task {
   sword_task_fn fn;
   Scope *scope;
+  int64_t index; // its place among the scope's spawns
   void *heap_args;
   alignas(16) unsigned char args[kInlineArgs];
 };
@@ -507,8 +517,12 @@ void recycle(Task *task) {
 void finish_task(Task *task, uint16_t code) {
   Scope *scope = task->scope;
   if (code != 0) {
-    unsigned none = 0;
-    scope->failed.compare_exchange_strong(none, code);
+    uint64_t mine = (uint64_t)task->index << 16 | code;
+    uint64_t seen = scope->failed.load(std::memory_order_relaxed);
+    while (mine < seen &&
+           !scope->failed.compare_exchange_weak(seen, mine,
+                                                std::memory_order_relaxed)) {
+    }
   }
   recycle(task);
   scope->outstanding.fetch_sub(1, std::memory_order_release);
@@ -1181,6 +1195,7 @@ void queue_task(Scope *scope, sword_task_fn fn, const void *args,
   Task *task = fresh_task();
   task->fn = fn;
   task->scope = scope;
+  task->index = scope->spawned++;
   task->heap_args = nullptr;
   if (size > kInlineArgs) {
     task->heap_args = malloc((size_t)size);
@@ -1208,7 +1223,8 @@ extern "C" {
 void sword_scope_begin(void *blob) {
   Scope *scope = new (blob) Scope();
   scope->outstanding.store(0, std::memory_order_relaxed);
-  scope->failed.store(0, std::memory_order_relaxed);
+  scope->failed.store(kNoFailure, std::memory_order_relaxed);
+  scope->spawned = 0;
   pool();
 }
 
@@ -1269,6 +1285,14 @@ int sword_park_timer(int64_t deadline_ns) {
 
 int32_t sword_in_task(void) { return tl_fiber != nullptr; }
 
+// glibc declares __errno_location const, so within one function the compiler
+// may take errno's address once and keep it. A task that parks can resume on
+// another thread, and then every errno it reads is the old thread's: a connect
+// that answered EINPROGRESS here looked like one that failed with nothing set,
+// because the thread it started on had errno 0. A call into another file, never
+// inlined, has to ask for the address again every time.
+__attribute__((noinline)) int sword_errno(void) { return errno; }
+
 void sword_runtime_stats(struct sword_stats *out) {
   memset(out, 0, sizeof(*out));
   // Settings first: they are answerable before a single task has run.
@@ -1289,6 +1313,8 @@ void sword_runtime_stats(struct sword_stats *out) {
 }
 
 void sword_forget_fd(int32_t fd) { sword_poll_forget((int)fd); }
+
+void sword_adopt_fd(int32_t fd) { sword_poll_adopt((int)fd); }
 
 // Hands one call to a thread set aside for calls that cannot be put down, and
 // puts the calling task down until it comes back. Outside a task there is
@@ -1330,7 +1356,8 @@ void sword_blocking_exit(void) {
 uint16_t sword_scope_end(void *blob) {
   Scope *scope = (Scope *)blob;
   drain_until(scope);
-  return (uint16_t)scope->failed.load(std::memory_order_acquire);
+  uint64_t failed = scope->failed.load(std::memory_order_acquire);
+  return failed == kNoFailure ? 0 : (uint16_t)(failed & 0xFFFF);
 }
 
 uint16_t sword_parallel_for(int64_t lo, int64_t hi, sword_chunk_fn fn,

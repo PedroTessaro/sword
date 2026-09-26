@@ -19,7 +19,8 @@ const std::unordered_map<std::string, TokKind> keywords = {
     {"mut", TK_MUT},           {"const", TK_CONST},
     {"struct", TK_STRUCT},     {"interface", TK_INTERFACE},
     {"enum", TK_ENUM},
-    {"extern", TK_EXTERN},     {"defer", TK_DEFER},
+    {"extern", TK_EXTERN},     {"det", TK_DET},
+    {"defer", TK_DEFER},
     {"errdefer", TK_ERRDEFER},
     {"try", TK_TRY},           {"catch", TK_CATCH},
     {"orelse", TK_ORELSE},
@@ -365,6 +366,7 @@ const char *tok_name(TokKind kind) {
   case TK_STRUCT: return "struct";
   case TK_INTERFACE: return "interface";
   case TK_EXTERN: return "extern";
+  case TK_DET: return "det";
   case TK_DEFER: return "defer";
   case TK_ERRDEFER: return "errdefer";
   case TK_TRY: return "try";

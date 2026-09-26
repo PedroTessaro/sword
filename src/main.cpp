@@ -136,8 +136,10 @@ bool assemble(const std::string &ll_path, const std::string &out_path,
                     quoted(ll_path);
   // -pthread because the scheduler runs threads, and on older Linux they are
   // not in libc; on Darwin it is accepted and does nothing.
-  if (!runtime.empty()) cmd += " -x none " + runtime + " -lc++ -pthread";
-  // Whatever the runtime was built against, from the file beside the archive.
+  if (!runtime.empty()) cmd += " -x none " + runtime + " -pthread";
+  // Whatever the runtime was built against, from the file beside the archive:
+  // OpenSSL when it has TLS, and always the C++ library of the compiler that
+  // built it.
   if (!runtime.empty() && !extra.empty()) cmd += " " + extra;
   // After the program's own object, which is where a linker expects to be told
   // what resolves what is still missing.

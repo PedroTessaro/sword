@@ -1,0 +1,42 @@
+// expect: 42
+// expect-output: every directory was already there
+// Making a directory that already exists is not an error, and that has to hold
+// from inside a task. The call runs on an io thread, and whether it failed
+// because the directory was there used to be read from errno afterwards — on
+// the task's thread, whose errno had nothing to do with it.
+
+import "std/fs"
+import "std/io"
+
+func again(path string, mut ok *atomic[u64]) !void {
+    fs.MakeDir(path) catch {
+        return
+    }
+    ok.Add(1)
+}
+
+func main() !int {
+    names := [8]string{
+        "/tmp/sword_makedirs_0", "/tmp/sword_makedirs_1", "/tmp/sword_makedirs_2",
+        "/tmp/sword_makedirs_3", "/tmp/sword_makedirs_4", "/tmp/sword_makedirs_5",
+        "/tmp/sword_makedirs_6", "/tmp/sword_makedirs_7",
+    }
+    for name in names {
+        try fs.MakeDir(name)
+    }
+    mut ok := atomic[u64](0)
+    scope {
+        for name in names {
+            spawn again(name, &ok)
+        }
+    }
+    for name in names {
+        fs.RemoveDir(name) catch {}
+    }
+    if ok.Load() != 8 {
+        try io.Printf("{} of 8 succeeded\n", ok.Load())
+        return 1
+    }
+    try io.Print("every directory was already there\n")
+    return 42
+}

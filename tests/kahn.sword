@@ -1,0 +1,54 @@
+// expect: 42
+// expect-output: the pipeline answers
+// Three tasks joined by two channels, inside a det function. Each channel has
+// one sender and one receiver, and nobody asks a channel whether a value is
+// there yet — only waits for the next one — so the values arrive in the order
+// they were sent, whichever task runs when. Kahn's condition, checked by the
+// compiler rather than promised.
+
+import "std/io"
+import "std/mem"
+
+func numbers(n i64, out chan[i64]) !void {
+    for i in 1..n + 1 {
+        try out <- i
+    }
+    close(out)
+}
+
+func squares(from chan[i64], out chan[i64]) !void {
+    for v := <-from {
+        try out <- v * v
+    }
+    close(out)
+}
+
+// A running total that depends on the order the values come in: the answer
+// would change if two of them were ever swapped.
+func fold(from chan[i64], mut into *i64) {
+    mut acc i64 = 0
+    for v := <-from {
+        acc = (acc * 31 + v) % 1000000007
+    }
+    *into = acc
+}
+
+det func pipeline(n i64, mut a mem.Allocator) !i64 {
+    first := try chan[i64](a, 4)
+    second := try chan[i64](a, 4)
+    mut answer i64 = 0
+    scope {
+        spawn numbers(n, first)
+        spawn squares(first, second)
+        spawn fold(second, &answer)
+    }
+    return answer
+}
+
+func main() !int {
+    mut room := [65536]u8{}
+    mut arena := mem.NewArena(room[..])
+    got := try pipeline(10000, &arena)
+    try io.Printf("{}: the pipeline answers\n", got)
+    return 42
+}

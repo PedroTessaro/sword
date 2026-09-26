@@ -135,8 +135,9 @@ int32_t sword_os_wait_signal(void) {
     ssize_t n = read(signal_pipe[0], &which, 1);
     if (n == 1) return (int32_t)which;
     if (n == 0) return -1;
-    if (errno == EINTR) continue;
-    if (errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+    int why = sword_errno();
+    if (why == EINTR) continue;
+    if (why != EAGAIN && why != EWOULDBLOCK) return -1;
 
     if (sword_in_task()) {
       if (sword_park_fd(signal_pipe[0], 0, 0) < 0) return -1;

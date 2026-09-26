@@ -87,8 +87,11 @@ int64_t do_remove(void *p) {
   return unlink(((PathCall *)p)->name) == 0 ? 0 : -1;
 }
 
+// A directory that is already there is not an error, and the question is asked
+// here, on the thread that made the call: its errno is not the task's.
 int64_t do_mkdir(void *p) {
-  return mkdir(((PathCall *)p)->name, 0755) == 0 ? 0 : -1;
+  if (mkdir(((PathCall *)p)->name, 0755) == 0) return 0;
+  return errno == EEXIST ? 0 : -1;
 }
 
 int64_t do_rmdir(void *p) {
@@ -283,8 +286,7 @@ int32_t sword_fs_make_dir(const char *path, int64_t path_len) {
   char name[1024];
   if (!as_path(path, path_len, name, sizeof(name))) return -1;
   PathCall call{name};
-  if (sword_offload(do_mkdir, &call) == 0) return 0;
-  return errno == EEXIST ? 0 : -1;
+  return (int32_t)sword_offload(do_mkdir, &call);
 }
 
 // Only an empty one, which is deliberate: removing a tree is a decision, not a

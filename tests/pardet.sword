@@ -1,0 +1,65 @@
+// expect: 42
+// expect-output: the same at every thread count
+// The operations in std/par, inside det functions. A prefix sum of doubles is
+// where the order of the additions shows, and it shows here only as a fixed
+// answer: tests/threads.sh runs this from 1 to 16 threads and compares what it
+// prints, to the last bit.
+
+import "std/io"
+import "std/mem"
+import "std/par"
+import "std/rand"
+
+func addF(a f64, b f64) f64 {
+    return a + b
+}
+
+func small(v f64) bool {
+    return v < 0.25
+}
+
+func less(a f64, b f64) bool {
+    return a < b
+}
+
+det func summarise(xs []f64, mut work []f64, mut a mem.Allocator) !u64 {
+    try par.Scan[f64](xs, work, addF)
+    mut bits := u64(0)
+    last := work[work.len - 1]
+    mut x := last
+    p := [*]u8(&x)
+    for i in 0..8 {
+        bits |= u64(p[i]) << (u64(i) * 8)
+    }
+    kept := try par.Keep[f64](a, xs, work, small)
+    first := par.MinIndex[f64](xs, less) orelse 0
+    return bits ^ kept ^ (first << 40)
+}
+
+det func sorted(mut xs []f64) bool {
+    par.Sort[f64](xs, less)
+    for i in 1..xs.len {
+        if xs[i] < xs[i - 1] {
+            return false
+        }
+    }
+    return true
+}
+
+func main() !int {
+    mut room := [400000]u8{}
+    mut arena := mem.NewArena(room[..])
+    n := u64(20000)
+    mut xs := mem.Alloc[f64](&arena, n) orelse return 1
+    mut work := mem.Alloc[f64](&arena, n) orelse return 1
+    for i in 0..n {
+        mut r := rand.Stream(3, i)
+        xs[i] = r.F64()
+    }
+    answer := try summarise(xs, work, &arena)
+    if !sorted(xs) {
+        return 2
+    }
+    try io.Printf("{} is the same at every thread count\n", answer)
+    return 42
+}

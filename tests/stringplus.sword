@@ -1,0 +1,10 @@
+// expect-error: joining strings allocates: use strings.Concat
+// `+` between two strings at run time would have to put the answer somewhere,
+// and nothing allocates without being handed an allocator. The error says where
+// to go instead.
+
+func main() int {
+    name := "ada"
+    greeting := "hello, " + name
+    return int(greeting.len)
+}

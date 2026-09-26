@@ -1,0 +1,32 @@
+// expect: 42
+// expect-output: pi is about 3.14
+// A Monte Carlo estimate of pi, in parallel and inside a det function. Each
+// iteration draws from its own stream, so the points are the same points
+// whichever task draws them, and the count is the same on one thread and on
+// sixteen. tests/threads.sh holds it to that, to the last digit.
+
+import "std/io"
+import "std/rand"
+
+det func estimate(seed u64, n i64) f64 {
+    mut inside i64 = 0
+    parallel for i in 0..n reduce(+: inside) {
+        mut r := rand.Stream(seed, u64(i))
+        x := r.F64()
+        y := r.F64()
+        if x * x + y * y < 1.0 {
+            inside += 1
+        }
+    }
+    return 4.0 * f64(inside) / f64(n)
+}
+
+func main() !int {
+    pi := estimate(2026, 1000000)
+    if pi < 3.13 || pi > 3.15 {
+        try io.Printf("pi came out as {}\n", pi)
+        return 1
+    }
+    try io.Printf("pi is about {}\n", pi)
+    return 42
+}

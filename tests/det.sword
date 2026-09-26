@@ -1,0 +1,90 @@
+// expect: 42
+// `det` is a claim the compiler checks: what this answers depends on its
+// arguments and on nothing else — not on how many threads ran it, not on the
+// order they ran in, not on the clock, and not on an address.
+//
+// What is *not* on the list of things that take it away is the point: a scope
+// with tasks in it, and a parallel loop with a reduction, are both fine. The
+// race checker already says two tasks cannot touch the same memory, and a
+// reduction combines its pieces in the order they were cut.
+
+import "std/mem"
+import "std/num"
+
+det func total(xs []i64) i64 {
+    mut sum i64 = 0
+    for i in 0..xs.len {
+        sum += xs[i]
+    }
+    return sum
+}
+
+det func totalParallel(xs []i64) i64 {
+    mut sum i64 = 0
+    parallel for i in 0..xs.len reduce(+: sum) {
+        sum += xs[i]
+    }
+    return sum
+}
+
+// A reduction of the program's own, out of another package, inside a det
+// function: the guarantee does not depend on the compiler knowing the
+// operation.
+det func compensated(xs []f64) f64 {
+    mut acc := num.NewKahan()
+    parallel for i in 0..xs.len reduce(num.Merge: acc) {
+        acc.Add(xs[i])
+    }
+    return acc.Value()
+}
+
+func square(xs []i64, mut out []i64) {
+    for i in 0..out.len {
+        out[i] = xs[i] * xs[i]
+    }
+}
+
+// Tasks over pieces of one array, which cannot overlap.
+det func squareAll(xs []i64, mut out []i64) {
+    scope {
+        for off, part in out.chunks(8) {
+            spawn square(xs[off..off+part.len], part)
+        }
+    }
+}
+
+// Allocating stays det: a pointer is opaque to whoever is handed one, and the
+// only allocator this program binds into the interface is an arena.
+det func doubled(xs []i64, mut a mem.Allocator) ?[]i64 {
+    mut out := mem.Alloc[i64](a, xs.len) orelse return nil
+    for i in 0..xs.len {
+        out[i] = xs[i] * 2
+    }
+    return out
+}
+
+func main() !int {
+    mut backing := [8192]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut xs := mem.Alloc[i64](&arena, 64) orelse return error.OutOfMemory
+    mut out := mem.Alloc[i64](&arena, 64) orelse return error.OutOfMemory
+    mut reals := mem.Alloc[f64](&arena, 64) orelse return error.OutOfMemory
+    for i in 0..xs.len {
+        xs[i] = i64(i)
+        reals[i] = 1.0 / f64(i + 1)
+    }
+
+    squareAll(xs, out)
+    twice := doubled(xs, &arena) orelse return error.OutOfMemory
+
+    if total(xs) != totalParallel(xs) {
+        return 1
+    }
+    if out[7] != 49 || twice[7] != 14 {
+        return 2
+    }
+    if compensated(reals) < 4.7 || compensated(reals) > 4.8 {
+        return 3
+    }
+    return 42
+}

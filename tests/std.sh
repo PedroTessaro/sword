@@ -9,9 +9,11 @@ shield="$root/shield"
 
 failed=0
 found=0
-for test_file in "$root"/std/*/*_test.sword; do
-    [ -e "$test_file" ] || continue
-    pkg=$(dirname "$test_file")
+# A package, not a file: one with several test files is still tested once.
+for pkg in "$root"/std/*/; do
+    pkg=${pkg%/}
+    set -- "$pkg"/*_test.sword
+    [ -e "$1" ] || continue
     found=$((found + 1))
     printf '%-24s ' "$(basename "$pkg")"
     if ! "$shield" test "$pkg"; then

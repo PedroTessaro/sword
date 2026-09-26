@@ -1,0 +1,13 @@
+// expect-error: reads or writes an atomic
+// An atomic is one of the two ways the language lets two tasks reach the same
+// memory, and which of them got there first is not a function of the input.
+
+det func counted(v i64) i64 {
+    mut hits := atomic[u64](0)
+    hits.Add(u64(v))
+    return i64(hits.Load())
+}
+
+func main() int {
+    return int(counted(42))
+}

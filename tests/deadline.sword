@@ -1,5 +1,6 @@
 // expect: 42
 // expect-output: gave up after
+// output-varies: it reports when the deadline was taken, to the millisecond
 // A timeout bounds one wait; a deadline bounds the whole exchange. A client
 // that sends a byte every twenty milliseconds never runs a five-second timeout
 // out, and would hold the connection forever without the second limit.

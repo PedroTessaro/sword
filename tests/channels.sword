@@ -1,5 +1,6 @@
 // expect: 42
 // expect-output: channels work
+// output-varies: it reports how long the slow consumer held things back
 // Four consumers and one producer over one channel, then a handover with no
 // buffer at all, then a channel of one slot against a slow consumer. Waiting on
 // a channel costs a stack and not a thread, which is why the thread count stays

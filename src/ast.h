@@ -112,6 +112,10 @@ struct Node {
   // nothing. What the call site writes after the fixed parameters is what the
   // callee reads, by the platform's rules rather than by ours.
   bool is_c_variadic = false;
+  // ND_FUNC: `det`, a claim that what this answers depends on its arguments
+  // and on nothing else — not on the schedule, the thread count, the clock or
+  // an address. The compiler checks it and it changes no generated code.
+  bool is_det = false;
   int form = 0;    // return/call/for: which shape the checker settled on
   int reduce_kind = 0;    // which fold a parallel loop combines its pieces with
   // `reduce(f: acc)`: the function that combines two partial answers. The
@@ -186,6 +190,7 @@ struct Ast {
     copy->is_parallel = src->is_parallel;
     copy->is_variadic = src->is_variadic;
     copy->is_c_variadic = src->is_c_variadic;
+    copy->is_det = src->is_det;
     copy->lhs = clone(src->lhs);
     copy->rhs = clone(src->rhs);
     copy->cond = clone(src->cond);

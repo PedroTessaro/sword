@@ -6,6 +6,10 @@ const MaxHeaders = 32
 const Port = 8080
 const Pi = 3.14159
 const Greeting = "hi"
+// Joined at compile time: nothing allocates, so `+` is allowed here.
+const Banner = Greeting + ", " + Name + "!"
+const Name = "ada"
+const Same = Banner == "hi, ada!"
 const Debug = false
 
 func main() int {
@@ -18,6 +22,9 @@ func main() int {
     }
     if Debug || Greeting.len != 2 {
         return 3
+    }
+    if Banner != "hi, ada!" || !Same {
+        return 4
     }
     return 42
 }

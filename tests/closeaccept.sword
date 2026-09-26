@@ -1,0 +1,50 @@
+// expect: 42
+// expect-output: closed under every acceptor
+// A listener closed by one task while another is on its way into Accept. There
+// is a window between the accept that answers "nothing yet" and the acceptor
+// registering with the poller, and a close that lands in it has already told
+// everyone registered — nobody, at that moment. The registration then goes to a
+// descriptor that no longer exists, and the kernel's refusal was the only word
+// the acceptor would ever get: it was dropped, and the task slept for good. It
+// showed up as the static-files test hanging once in a few hundred runs on
+// Linux, with every socket already closed.
+//
+// On macOS the same race had a second way to hang: a close that overlaps a
+// kqueue registration on the same socket can wait in the kernel for good. The
+// poller now registers under its lock and checks the mark there, so the two
+// never overlap.
+//
+// Two thousand races give the window plenty of chances. A hang here is the bug.
+
+import "std/io"
+import "std/net"
+
+func accept(l *net.Listener, mut refused *atomic[u64]) {
+    mut c := l.Accept() catch {
+        refused.Add(1)
+        return
+    }
+    c.Close()
+}
+
+func shut(l *net.Listener) {
+    l.Close()
+}
+
+func main() !int {
+    rounds := u64(2000)
+    mut refused := atomic[u64](0)
+    for i in 0..rounds {
+        l := try net.Listen(0)
+        scope {
+            spawn accept(&l, &refused)
+            spawn shut(&l)
+        }
+    }
+    if refused.Load() != rounds {
+        try io.Printf("{} of {} acceptors came back\n", refused.Load(), rounds)
+        return 1
+    }
+    try io.Print("closed under every acceptor\n")
+    return 42
+}

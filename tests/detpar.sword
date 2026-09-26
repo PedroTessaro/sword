@@ -1,0 +1,22 @@
+// expect-error: 'running' is marked det, but what it answers can depend on more
+// std/par is det only when what it is given is. An operation that reads the
+// clock answers differently on every run, and the scan hands that answer on;
+// the message follows the chain into the library and out to the clock.
+
+import "std/par"
+import "std/time"
+
+func stamped(a i64, b i64) i64 {
+    return a + b + time.Now().AsNanos() % 2
+}
+
+det func running(xs []i64, mut out []i64) !void {
+    try par.Scan[i64](xs, out, stamped)
+}
+
+func main() int {
+    xs := [3]i64{1, 2, 3}
+    mut out := [3]i64{}
+    running(xs[..], out[..]) catch {}
+    return 0
+}
