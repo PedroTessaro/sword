@@ -361,3 +361,313 @@ int32_t sword_net_stop(int32_t fd) {
   return close(fd);
 }
 }
+
+// --- UDP ---------------------------------------------------------------------
+//
+// An address crosses into Sword as twenty bytes rather than as a sockaddr, whose
+// layout differs between systems and between the two families: the family (4 or
+// 6), sixteen bytes of address (an IPv4 one in the first four), the port in
+// network order, and one byte that says a datagram did not fit.
+
+namespace {
+
+enum { kAddrBytes = 20, kTruncatedAt = 19 };
+
+void put_addr(const sockaddr_storage &from, uint8_t *out) {
+  memset(out, 0, kAddrBytes);
+  if (from.ss_family == AF_INET) {
+    const sockaddr_in *v4 = (const sockaddr_in *)&from;
+    out[0] = 4;
+    memcpy(out + 1, &v4->sin_addr, 4);
+    memcpy(out + 17, &v4->sin_port, 2);
+    return;
+  }
+  const sockaddr_in6 *v6 = (const sockaddr_in6 *)&from;
+  // A dual-stack socket reports an IPv4 peer as ::ffff:a.b.c.d. It is an IPv4
+  // peer, and it is written back as one.
+  if (IN6_IS_ADDR_V4MAPPED(&v6->sin6_addr)) {
+    out[0] = 4;
+    memcpy(out + 1, (const uint8_t *)&v6->sin6_addr + 12, 4);
+  } else {
+    out[0] = 6;
+    memcpy(out + 1, &v6->sin6_addr, 16);
+  }
+  memcpy(out + 17, &v6->sin6_port, 2);
+}
+
+// The sockaddr for `addr`, shaped for a socket of family `family`: an IPv4
+// address sent from a dual-stack socket goes as a mapped one.
+socklen_t get_addr(const uint8_t *addr, int family, sockaddr_storage &to) {
+  memset(&to, 0, sizeof(to));
+  if (family == AF_INET) {
+    if (addr[0] != 4) return 0;
+    sockaddr_in *v4 = (sockaddr_in *)&to;
+    v4->sin_family = AF_INET;
+    memcpy(&v4->sin_addr, addr + 1, 4);
+    memcpy(&v4->sin_port, addr + 17, 2);
+    return sizeof(sockaddr_in);
+  }
+  sockaddr_in6 *v6 = (sockaddr_in6 *)&to;
+  v6->sin6_family = AF_INET6;
+  if (addr[0] == 4) {
+    uint8_t *raw = (uint8_t *)&v6->sin6_addr;
+    raw[10] = 0xff;
+    raw[11] = 0xff;
+    memcpy(raw + 12, addr + 1, 4);
+  } else {
+    memcpy(&v6->sin6_addr, addr + 1, 16);
+  }
+  memcpy(&v6->sin6_port, addr + 17, 2);
+  return sizeof(sockaddr_in6);
+}
+
+int family_of(int fd) {
+  sockaddr_storage self;
+  socklen_t len = sizeof(self);
+  if (getsockname(fd, (sockaddr *)&self, &len) < 0) return -1;
+  return self.ss_family;
+}
+
+// A C string of a Sword one, or false when it does not fit.
+bool terminated(const char *host, int64_t host_len, char *into, size_t room) {
+  if (host_len < 0 || (size_t)host_len >= room) return false;
+  memcpy(into, host, (size_t)host_len);
+  into[host_len] = '\0';
+  return true;
+}
+
+// Every address this name has, of either family, through the io pool.
+addrinfo *resolve_dgram(const char *name, int32_t port) {
+  addrinfo hints;
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_DGRAM;
+  // A name asks only for the families this machine has an address in, so an
+  // IPv4-only host is not handed IPv6 results it cannot use. A numeric address
+  // is taken as written: glibc applies that filter to "::1" as well, and on a
+  // machine whose only IPv6 is loopback the answer was nothing at all.
+  uint8_t probe[16];
+  bool numeric = inet_pton(AF_INET, name, probe) == 1 ||
+                 inet_pton(AF_INET6, name, probe) == 1;
+  hints.ai_flags = numeric ? AI_NUMERICHOST : AI_ADDRCONFIG;
+  char service[16];
+  snprintf(service, sizeof(service), "%d", port);
+  addrinfo *found = nullptr;
+  Resolve call{name, service, &hints, &found};
+  if (sword_offload(do_resolve, &call) != 0) return nullptr;
+  return found;
+}
+
+int open_dgram(int family) {
+  int fd = socket(family, SOCK_DGRAM, 0);
+  if (fd < 0) return -1;
+  sword_adopt_fd(fd);
+  unblock(fd);
+  forget_limits(fd);
+  return fd;
+}
+
+} // namespace
+
+extern "C" {
+
+// Loopback when `host` is empty and `local` is set; every interface, IPv4 and
+// IPv6 at once, when it is empty and `local` is not; otherwise the numeric
+// address given, of either family.
+int32_t sword_udp_listen(const char *host, int64_t host_len, int32_t port,
+                         int32_t local) {
+  sword_os_ignore_sigpipe();
+  char name[64];
+  if (!terminated(host, host_len, name, sizeof(name))) return -1;
+
+  sockaddr_storage at;
+  memset(&at, 0, sizeof(at));
+  socklen_t len = 0;
+  int family = AF_INET;
+  bool dual = false;
+  sockaddr_in *v4 = (sockaddr_in *)&at;
+  sockaddr_in6 *v6 = (sockaddr_in6 *)&at;
+  if (host_len == 0 && local) {
+    v4->sin_family = AF_INET;
+    v4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    len = sizeof(sockaddr_in);
+  } else if (host_len == 0) {
+    family = AF_INET6;
+    dual = true;
+    v6->sin6_family = AF_INET6;
+    v6->sin6_addr = in6addr_any;
+    len = sizeof(sockaddr_in6);
+  } else if (inet_pton(AF_INET, name, &v4->sin_addr) == 1) {
+    v4->sin_family = AF_INET;
+    len = sizeof(sockaddr_in);
+  } else if (inet_pton(AF_INET6, name, &v6->sin6_addr) == 1) {
+    family = AF_INET6;
+    v6->sin6_family = AF_INET6;
+    dual = IN6_IS_ADDR_UNSPECIFIED(&v6->sin6_addr);
+    len = sizeof(sockaddr_in6);
+  } else {
+    return -1;
+  }
+
+  int fd = open_dgram(family);
+  // A machine without IPv6 still has every IPv4 interface.
+  if (fd < 0 && dual) {
+    memset(&at, 0, sizeof(at));
+    v4->sin_family = AF_INET;
+    v4->sin_addr.s_addr = htonl(INADDR_ANY);
+    len = sizeof(sockaddr_in);
+    family = AF_INET;
+    dual = false;
+    fd = open_dgram(family);
+  }
+  if (fd < 0) return -1;
+  if (family == AF_INET) v4->sin_port = htons((uint16_t)port);
+  else v6->sin6_port = htons((uint16_t)port);
+
+  int on = 1;
+  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+  if (family == AF_INET6) {
+    int only = dual ? 0 : 1;
+    setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &only, sizeof(only));
+  }
+  if (bind(fd, (sockaddr *)&at, len) < 0) {
+    sword_net_close(fd);
+    return -1;
+  }
+  return fd;
+}
+
+// A socket that sends to one peer and hears only from it. Connecting a UDP
+// socket sends nothing; it is what lets a read report that nobody is listening
+// at the other end, which an unconnected one never learns.
+int32_t sword_udp_dial(const char *host, int64_t host_len, int32_t port) {
+  sword_os_ignore_sigpipe();
+  char name[256];
+  if (host_len <= 0 || !terminated(host, host_len, name, sizeof(name))) return -1;
+  addrinfo *found = resolve_dgram(name, port);
+  if (!found) return -1;
+  int fd = -1;
+  for (addrinfo *at = found; at; at = at->ai_next) {
+    fd = open_dgram(at->ai_family);
+    if (fd < 0) continue;
+    if (connect(fd, at->ai_addr, at->ai_addrlen) == 0) break;
+    sword_net_close(fd);
+    fd = -1;
+  }
+  freeaddrinfo(found);
+  return fd;
+}
+
+// The first address a name has, into `out`. Numeric addresses are not looked
+// up anywhere.
+int32_t sword_udp_resolve(const char *host, int64_t host_len, int32_t port,
+                          uint8_t *out) {
+  char name[256];
+  if (host_len <= 0 || !terminated(host, host_len, name, sizeof(name))) return -1;
+  addrinfo *found = resolve_dgram(name, port);
+  if (!found) return -1;
+  sockaddr_storage copy;
+  memset(&copy, 0, sizeof(copy));
+  memcpy(&copy, found->ai_addr, found->ai_addrlen);
+  put_addr(copy, out);
+  freeaddrinfo(found);
+  return 0;
+}
+
+// A numeric address, with no lookup: 0, or -1 when it is not one.
+int32_t sword_udp_parse(const char *host, int64_t host_len, int32_t port,
+                        uint8_t *out) {
+  char name[64];
+  if (host_len <= 0 || !terminated(host, host_len, name, sizeof(name))) return -1;
+  memset(out, 0, kAddrBytes);
+  uint16_t net_port = htons((uint16_t)port);
+  if (inet_pton(AF_INET, name, out + 1) == 1) {
+    out[0] = 4;
+  } else if (inet_pton(AF_INET6, name, out + 1) == 1) {
+    out[0] = 6;
+  } else {
+    return -1;
+  }
+  memcpy(out + 17, &net_port, 2);
+  return 0;
+}
+
+// The address as text, into `out`; its length, or -1.
+int32_t sword_udp_text(const uint8_t *addr, char *out, int64_t out_len) {
+  int family = addr[0] == 6 ? AF_INET6 : AF_INET;
+  if (!inet_ntop(family, addr + 1, out, (socklen_t)out_len)) return -1;
+  return (int32_t)strlen(out);
+}
+
+// One datagram into `buf`, its sender into `from`. What landed is returned, and
+// `from` says when that was not all of it.
+// -2 is the deadline, -3 nobody listening (a connected socket only), -1 the
+// rest.
+int64_t sword_udp_recv(int32_t fd, void *buf, int64_t len, uint8_t *from) {
+  while (true) {
+    sockaddr_storage peer;
+    iovec part;
+    part.iov_base = buf;
+    part.iov_len = (size_t)len;
+    msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_name = &peer;
+    msg.msg_namelen = sizeof(peer);
+    msg.msg_iov = &part;
+    msg.msg_iovlen = 1;
+    ssize_t n = recvmsg(fd, &msg, 0);
+    if (n >= 0) {
+      if (msg.msg_namelen > 0) put_addr(peer, from);
+      else memset(from, 0, kAddrBytes);
+      from[kTruncatedAt] = (msg.msg_flags & MSG_TRUNC) ? 1 : 0;
+      return n;
+    }
+    int why = sword_errno();
+    if (why == EINTR) continue;
+    if (why == ECONNREFUSED) return -3;
+    if (why != EAGAIN && why != EWOULDBLOCK) return -1;
+    int ready = await(fd, false);
+    if (ready == -2) return -2;
+    if (ready < 0) return -1;
+  }
+}
+
+// One datagram, to `to`, or to the connected peer when `to` is null. A
+// datagram goes whole or not at all. -3 when an earlier send turned out to
+// have nobody at the other end.
+int64_t sword_udp_send(int32_t fd, const void *buf, int64_t len,
+                       const uint8_t *to) {
+  sockaddr_storage where;
+  socklen_t where_len = 0;
+  if (to) {
+    where_len = get_addr(to, family_of(fd), where);
+    if (where_len == 0) return -1;
+  }
+  while (true) {
+    ssize_t n = to ? sendto(fd, buf, (size_t)len, 0, (sockaddr *)&where, where_len)
+                   : send(fd, buf, (size_t)len, 0);
+    if (n >= 0) return n;
+    int why = sword_errno();
+    if (why == EINTR) continue;
+    if (why == ECONNREFUSED) return -3;
+    if (why != EAGAIN && why != EWOULDBLOCK && why != ENOBUFS) return -1;
+    int ready = await(fd, true);
+    if (ready == -2) return -2;
+    if (ready < 0) return -1;
+  }
+}
+
+int32_t sword_udp_broadcast(int32_t fd, int32_t on) {
+  int value = on ? 1 : 0;
+  return setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &value, sizeof(value));
+}
+
+// The address this socket is bound to: which port port 0 turned into.
+int32_t sword_udp_local(int32_t fd, uint8_t *out) {
+  sockaddr_storage self;
+  socklen_t len = sizeof(self);
+  if (getsockname(fd, (sockaddr *)&self, &len) < 0) return -1;
+  put_addr(self, out);
+  return 0;
+}
+}

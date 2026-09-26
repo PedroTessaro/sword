@@ -112,7 +112,7 @@ the same property (`std/par`), printing
 and formatting (`std/io`, `std/fmt`), JSON (`std/json`), hashing
 (`std/crypto`), arguments and environment (`std/os`), files, directories and
 standard input (`std/fs`), running another program (`std/process`), clocks and
-durations (`std/time`), scheduler counters (`std/runtime`), TCP (`std/net`),
+durations (`std/time`), scheduler counters (`std/runtime`), TCP and UDP over IPv4 and IPv6 (`std/net`),
 TLS (`std/tls`), HTTP/1.1 with keep-alive, routing, timeouts, static files and
 HTTPS, server and client (`std/http`), and tests (`std/testing`, run by
 `shield test`).

@@ -74,7 +74,7 @@ func TestKeepKeepsTheOrder(mut t *testing.T) !void {
 
     mut small := [3]i64{}
     Keep[i64](&sys, xs, small[..], even) catch |e| {
-        try t.Equal(e, error.NoRoom)
+        try t.Equal(e, error.ShortOutput)
         return
     }
     try t.Failf("kept more than there was room for")

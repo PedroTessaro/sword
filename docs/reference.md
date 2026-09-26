@@ -1228,7 +1228,8 @@ func (s Stats) Running() i64      // Started - Finished
 
 ### `std/net`
 
-TCP over the loopback interface. Port 0 asks the operating system to choose.
+TCP and UDP. `Listen` and `ListenUDP` bind loopback only; the `On` forms take
+the address to bind. Port 0 asks the operating system to choose.
 
 ```sword
 func Listen(port i32) !Listener                        // loopback only
@@ -1269,6 +1270,89 @@ interface Stream {
 }
 
 func (c *Conn) Fd() i32                      // for a layer that wraps the socket
+```
+
+UDP sends datagrams: each arrives whole or not at all, in no promised order,
+with no connection set up first. A socket made with `ListenUDP` talks to anyone
+through `ReadFrom` and `WriteTo`; one made with `DialUDP` talks to one peer
+through `Read` and `Write`, hears only from that peer, and can be told that
+nobody is listening there. Both families work, IPv4 and IPv6.
+
+```sword
+func ListenUDP(port i32) !UDPConn                  // loopback only
+func ListenUDPOn(host string, port i32) !UDPConn   // "" is every interface, v4 and v6
+func DialUDP(host string, port i32) !UDPConn
+func (c *UDPConn) ReadFrom(mut into []u8) !Datagram  // { Len, From, Truncated }
+func (c *UDPConn) WriteTo(to Addr, from []u8) !void
+func (c *UDPConn) Read(mut into []u8) !u64           // dialled: the peer's next datagram
+func (c *UDPConn) Write(from []u8) !void
+func (c *UDPConn) WriteString(s string) !void
+func (c *UDPConn) SetTimeout(limit time.Duration) !void
+func (c *UDPConn) SetDeadline(at time.Instant) !void
+func (c *UDPConn) SetBroadcast(on bool) !void
+func (c *UDPConn) Port() i32
+func (c *UDPConn) Local() !Addr
+func (c *UDPConn) Close()
+
+func ParseAddr(ip string, port i32) !Addr    // numeric, "10.0.0.1" or "::1"
+func Resolve(host string, port i32) !Addr    // a name, looked up without holding a thread
+func Broadcast(port i32) Addr                // 255.255.255.255
+func (a *Addr) Port() i32
+func (a *Addr) IsV6() bool
+func (a *Addr) Text(mut into []u8) !string   // 46 bytes holds any address
+func (a *Addr) Equal(b Addr) bool
+```
+
+An `Addr` is a value of twenty bytes, so a server keeps the sender of every
+datagram without allocating. A datagram longer than the buffer is cut: `Len` is
+what fit, `Truncated` says so, and the rest is gone — `Read` makes that
+`error.TooLong`. A dialled socket whose datagram found no one learns it on a
+later read or write as `error.Refused`. The kernel refuses to send to a
+broadcast address until `SetBroadcast(true)`, so no program floods a network by
+accident.
+
+A server that answers each datagram in capitals, and a client that asks it
+twice:
+
+```sword
+import "std/io"
+import "std/net"
+import "std/time"
+
+func serve(s *net.UDPConn, count u64) !void {
+    mut buf := [512]u8{}
+    for i in 0..count {
+        got := try s.ReadFrom(buf[..])
+        for j in 0..got.Len {
+            if buf[j] >= 97 && buf[j] <= 122 {
+                buf[j] -= 32
+            }
+        }
+        try s.WriteTo(got.From, buf[0..got.Len])
+    }
+}
+
+func ask(port i32) !void {
+    mut c := try net.DialUDP("127.0.0.1", port)
+    try c.SetTimeout(time.Seconds(2))   // an answer that is lost is not waited for forever
+    mut buf := [512]u8{}
+    for word in [2]string{"hello", "again"} {
+        try c.WriteString(word)
+        n := try c.Read(buf[..])
+        try io.Printf("{} -> {}\n", word, string(buf[0..n]))
+    }
+    c.Close()
+}
+
+func main() !int {
+    mut s := try net.ListenUDP(0)
+    scope {
+        spawn serve(&s, 2)
+        spawn ask(s.Port())
+    }
+    s.Close()
+    return 0
+}
 ```
 
 ### `std/tls`
