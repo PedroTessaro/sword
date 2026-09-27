@@ -89,15 +89,15 @@ void ensure_library(void) {
 //
 // Returns 1 to try the call again, 0 for a clean end, -1 for failure, -2 for out
 // of time.
-int settle(Conn *c, int result) {
+int settle(Conn *c, int result, uint64_t generation) {
   int reason = SSL_get_error(c->ssl, result);
   switch (reason) {
   case SSL_ERROR_WANT_READ: {
-    int ready = sword_net_await(c->fd, 0);
+    int ready = sword_net_await(c->fd, 0, generation);
     return ready == 0 ? 1 : (ready == -2 ? -2 : -1);
   }
   case SSL_ERROR_WANT_WRITE: {
-    int ready = sword_net_await(c->fd, 1);
+    int ready = sword_net_await(c->fd, 1, generation);
     return ready == 0 ? 1 : (ready == -2 ? -2 : -1);
   }
   case SSL_ERROR_ZERO_RETURN:
@@ -117,9 +117,10 @@ int settle(Conn *c, int result) {
 bool handshake(Conn *c, bool as_client) {
   while (true) {
     ERR_clear_error();
+    uint64_t generation = sword_fd_generation(c->fd);
     int result = as_client ? SSL_connect(c->ssl) : SSL_accept(c->ssl);
     if (result == 1) return true;
-    if (settle(c, result) != 1) return false;
+    if (settle(c, result, generation) != 1) return false;
   }
 }
 
@@ -276,9 +277,10 @@ int64_t sword_tls_read(void *conn, void *buf, int64_t len) {
   if (!c || len <= 0) return -1;
   while (true) {
     ERR_clear_error();
+    uint64_t generation = sword_fd_generation(c->fd);
     int got = SSL_read(c->ssl, buf, (int)(len > INT32_MAX ? INT32_MAX : len));
     if (got > 0) return got;
-    int next = settle(c, got);
+    int next = settle(c, got, generation);
     if (next != 1) return next;
   }
 }
@@ -292,13 +294,14 @@ int64_t sword_tls_write(void *conn, const void *buf, int64_t len) {
   while (sent < len) {
     int64_t left = len - sent;
     ERR_clear_error();
+    uint64_t generation = sword_fd_generation(c->fd);
     int put = SSL_write(c->ssl, (const char *)buf + sent,
                         (int)(left > INT32_MAX ? INT32_MAX : left));
     if (put > 0) {
       sent += put;
       continue;
     }
-    int next = settle(c, put);
+    int next = settle(c, put, generation);
     if (next != 1) return next == 0 ? sent : next;
   }
   return sent;

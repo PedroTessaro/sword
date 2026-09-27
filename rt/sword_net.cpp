@@ -87,10 +87,13 @@ int64_t due_at(int fd) {
 }
 
 // Waits for one direction of a descriptor. -2 is the deadline, -1 a failure.
-int await(int fd, bool writable) {
+// `generation` is the descriptor's, read before the call that answered "not
+// yet": a close in between fails the wait rather than leaving it on a number
+// that may name something else by now.
+int await(int fd, bool writable, uint64_t generation) {
   int64_t deadline = due_at(fd);
   if (sword_in_task()) {
-    int got = sword_park_fd(fd, writable ? 1 : 0, deadline);
+    int got = sword_park_fd(fd, writable ? 1 : 0, deadline, generation);
     // -1 only comes back when there was no task to put down, which cannot
     // happen here; anything else is the poller's answer.
     return got;
@@ -130,7 +133,6 @@ int32_t sword_net_listen_on(const char *host, int64_t host_len, int32_t port,
   sword_os_ignore_sigpipe();
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) return -1;
-  sword_adopt_fd(fd);
 
   int on = 1;
   setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
@@ -193,9 +195,9 @@ int32_t sword_net_port(int32_t fd) {
 
 int32_t sword_net_accept(int32_t fd) {
   while (true) {
+    uint64_t generation = sword_fd_generation(fd);
     int client = accept(fd, nullptr, nullptr);
     if (client >= 0) {
-      sword_adopt_fd(client);
       int on = 1;
       setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
       unblock(client);
@@ -206,7 +208,7 @@ int32_t sword_net_accept(int32_t fd) {
     if (why == EINTR) continue; // a signal, not a failure
     if (why != EAGAIN && why != EWOULDBLOCK) return -1;
     // Nothing waiting. Put the task down rather than the thread.
-    int ready = await(fd, false);
+    int ready = await(fd, false, generation);
     if (ready == -2) return -2;
     if (ready < 0) return -1;
   }
@@ -228,11 +230,12 @@ static int connect_within(int fd, const sockaddr *addr, socklen_t len,
     limits_for(fd).timeout = millis * 1000000;
   }
 
+  uint64_t generation = sword_fd_generation(fd);
   int result = connect(fd, addr, len);
   if (result == 0) return 0;
   if (sword_errno() != EINPROGRESS) return -1;
 
-  int ready = await(fd, true);
+  int ready = await(fd, true, generation);
   if (ready == -2) return -2;
   if (ready < 0) return -1;
 
@@ -274,7 +277,6 @@ int32_t sword_net_dial_timeout(const char *host, int64_t host_len, int32_t port,
   for (addrinfo *at = found; at; at = at->ai_next) {
     fd = socket(at->ai_family, at->ai_socktype, at->ai_protocol);
     if (fd < 0) continue;
-    sword_adopt_fd(fd);
     int connected = connect_within(fd, at->ai_addr, at->ai_addrlen, millis);
     if (connected == 0) break;
     timed_out = connected == -2;
@@ -311,12 +313,13 @@ int32_t sword_net_deadline(int32_t fd, int64_t at_ns) {
 // time" from "this connection is broken".
 int64_t sword_net_read(int32_t fd, void *buf, int64_t len) {
   while (true) {
+    uint64_t generation = sword_fd_generation(fd);
     ssize_t n = read(fd, buf, (size_t)len);
     if (n >= 0) return n;
     int why = sword_errno();
     if (why == EINTR) continue;
     if (why != EAGAIN && why != EWOULDBLOCK) return -1;
-    int ready = await(fd, false);
+    int ready = await(fd, false, generation);
     if (ready == -2) return -2;
     if (ready < 0) return -1;
   }
@@ -326,12 +329,13 @@ int64_t sword_net_write(int32_t fd, const void *buf, int64_t len) {
   // Short writes are normal on a socket; the caller wants all or nothing.
   int64_t sent = 0;
   while (sent < len) {
+    uint64_t generation = sword_fd_generation(fd);
     ssize_t n = write(fd, (const char *)buf + sent, (size_t)(len - sent));
     if (n < 0) {
       int why = sword_errno();
       if (why == EINTR) continue;
       if (why != EAGAIN && why != EWOULDBLOCK) return -1;
-      int ready = await(fd, true);
+      int ready = await(fd, true, generation);
       if (ready == -2) return -2;
       if (ready < 0) return -1;
       continue;
@@ -342,23 +346,21 @@ int64_t sword_net_write(int32_t fd, const void *buf, int64_t len) {
   return sent;
 }
 
-int32_t sword_net_await(int32_t fd, int32_t writable) {
-  return (int32_t)await((int)fd, writable != 0);
+int32_t sword_net_await(int32_t fd, int32_t writable, uint64_t generation) {
+  return (int32_t)await((int)fd, writable != 0, generation);
 }
 
 int32_t sword_net_close(int32_t fd) {
-  sword_forget_fd(fd);
   forget_limits(fd);
-  return close(fd);
+  return sword_close_fd(fd);
 }
 
 // A plain close does not wake a thread sitting in accept() on the same
 // descriptor; shutting the socket down first does.
 int32_t sword_net_stop(int32_t fd) {
   shutdown(fd, SHUT_RDWR);
-  sword_forget_fd(fd);
   forget_limits(fd);
-  return close(fd);
+  return sword_close_fd(fd);
 }
 }
 
@@ -461,7 +463,6 @@ addrinfo *resolve_dgram(const char *name, int32_t port) {
 int open_dgram(int family) {
   int fd = socket(family, SOCK_DGRAM, 0);
   if (fd < 0) return -1;
-  sword_adopt_fd(fd);
   unblock(fd);
   forget_limits(fd);
   return fd;
@@ -615,6 +616,7 @@ int64_t sword_udp_recv(int32_t fd, void *buf, int64_t len, uint8_t *from) {
     msg.msg_namelen = sizeof(peer);
     msg.msg_iov = &part;
     msg.msg_iovlen = 1;
+    uint64_t generation = sword_fd_generation(fd);
     ssize_t n = recvmsg(fd, &msg, 0);
     if (n >= 0) {
       if (msg.msg_namelen > 0) put_addr(peer, from);
@@ -626,7 +628,7 @@ int64_t sword_udp_recv(int32_t fd, void *buf, int64_t len, uint8_t *from) {
     if (why == EINTR) continue;
     if (why == ECONNREFUSED) return -3;
     if (why != EAGAIN && why != EWOULDBLOCK) return -1;
-    int ready = await(fd, false);
+    int ready = await(fd, false, generation);
     if (ready == -2) return -2;
     if (ready < 0) return -1;
   }
@@ -644,6 +646,7 @@ int64_t sword_udp_send(int32_t fd, const void *buf, int64_t len,
     if (where_len == 0) return -1;
   }
   while (true) {
+    uint64_t generation = sword_fd_generation(fd);
     ssize_t n = to ? sendto(fd, buf, (size_t)len, 0, (sockaddr *)&where, where_len)
                    : send(fd, buf, (size_t)len, 0);
     if (n >= 0) return n;
@@ -651,7 +654,7 @@ int64_t sword_udp_send(int32_t fd, const void *buf, int64_t len,
     if (why == EINTR) continue;
     if (why == ECONNREFUSED) return -3;
     if (why != EAGAIN && why != EWOULDBLOCK && why != ENOBUFS) return -1;
-    int ready = await(fd, true);
+    int ready = await(fd, true, generation);
     if (ready == -2) return -2;
     if (ready < 0) return -1;
   }
