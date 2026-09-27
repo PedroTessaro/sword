@@ -48,6 +48,10 @@ make
 make install
 ```
 
+That builds the latest release, 0.1.0 "Tamahagane", from `main`; `develop` has
+what is coming next. What each release changed is in
+[CHANGELOG.md](CHANGELOG.md).
+
 ```sword
 import "std/io"
 
