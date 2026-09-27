@@ -1,0 +1,33 @@
+name: Language change
+description: Syntax, semantics, or what the checker accepts.
+labels: [language]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        A change to the language is agreed on here before anyone writes it. Some
+        things are settled, because they are why Sword exists: nothing allocates
+        implicitly, a task's lifetime is a lexical scope, a binding is immutable
+        unless it says `mut`, and the compiler refuses a program in which two
+        tasks can touch the same memory at once.
+  - type: textarea
+    id: today
+    attributes:
+      label: What you have to write today
+      render: sword
+    validations:
+      required: true
+  - type: textarea
+    id: instead
+    attributes:
+      label: What you would write instead
+      render: sword
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it is worth it
+      description: What it costs, too — in the compiler, in the rules a reader has to know, in what it rules out.
+    validations:
+      required: true
