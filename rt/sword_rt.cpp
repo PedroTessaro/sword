@@ -534,7 +534,13 @@ void retire_fiber(Fiber *f);
 // Switching in. Nothing after the switch may assume it is still on the thread
 // it started on, which is why the sanitizer bookkeeping brackets it here and
 // nothing is cached across it.
+//
+// A task waiting on a scope runs other tasks from inside its own drain, so the
+// thread may already be running a task when it enters another. That one is put
+// back on the way out, or the task that was draining would carry on believing it
+// was not a task at all — and a wait it made next would find nothing to park.
 void enter(Fiber *f) {
+  Fiber *outer = tl_fiber;
   tl_fiber = f;
 #ifdef SWORD_TSAN
   if (!f->tsan) f->tsan = __tsan_create_fiber(0);
@@ -554,7 +560,7 @@ void enter(Fiber *f) {
 #ifdef SWORD_TSAN
   __tsan_switch_to_fiber(back, 0);
 #endif
-  tl_fiber = nullptr;
+  tl_fiber = outer;
 }
 
 // Called on the task's own stack, right after arriving on it. Records where it
@@ -859,13 +865,86 @@ uint64_t thread_tag() {
   return mine;
 }
 
-bool take_guard(Guard *g, uint64_t me) {
+// Who holds a guard: the task, not the thread. A task may wait inside a `lock`
+// — sleep, read a socket — and come back on another thread, and another task can
+// be running on the thread it left; telling holders apart by thread would call
+// that second task a double lock. Outside any task the thread is all there is.
+// Task addresses are aligned and thread tags are small, so the two never meet.
+uint64_t holder_tag() {
+  if (Fiber *f = tl_fiber) return (uint64_t)(uintptr_t)f;
+  return thread_tag();
+}
+
+// `held` is 0 when free, 1 when held, and 2 when held and somebody may be
+// parked behind it — Drepper's mutex, so an unlock only goes looking for a
+// waiter when there can be one. A task that was parked takes it back as 2: it
+// cannot know whether others are still queued, and saying so costs one look.
+bool take_guard(Guard *g, uint64_t me, int32_t as = 1) {
   int32_t idle = 0;
-  if (!__atomic_compare_exchange_n(&g->held, &idle, 1, false, __ATOMIC_ACQUIRE,
+  if (!__atomic_compare_exchange_n(&g->held, &idle, as, false, __ATOMIC_ACQUIRE,
                                    __ATOMIC_RELAXED))
     return false;
   __atomic_store_n(&g->owner, me, __ATOMIC_RELEASE);
   return true;
+}
+
+// Tasks parked behind a held guard. A guard is 32 bytes the compiler lays out,
+// with no room for a queue, so the queues live here, in buckets chosen by the
+// guard's address, the way WebKit's and Rust's parking lots do it. A node lives
+// on the parked task's own stack, which stays put while it is down.
+struct LockWaiter {
+  Guard *g;
+  Fiber *f;
+  LockWaiter *next;
+};
+
+struct LockBucket {
+  std::mutex lock;
+  LockWaiter *head = nullptr;
+};
+
+LockBucket g_lock_buckets[256];
+
+LockBucket &bucket_of(Guard *g) {
+  return g_lock_buckets[((uintptr_t)g >> 4) % 256];
+}
+
+// Parks the running task until an unlock of `g` picks it, unless the guard
+// came free on the way here. Queued in arrival order.
+void park_behind(Guard *g, Fiber *f) {
+  LockBucket &b = bucket_of(g);
+  LockWaiter node{g, f, nullptr};
+  {
+    std::lock_guard<std::mutex> held(b.lock);
+    int32_t seen = __atomic_load_n(&g->held, __ATOMIC_ACQUIRE);
+    if (seen == 0) return;
+    if (seen == 1 && !__atomic_compare_exchange_n(&g->held, &seen, 2, false,
+                                                  __ATOMIC_ACQ_REL,
+                                                  __ATOMIC_ACQUIRE))
+      return;
+    LockWaiter **end = &b.head;
+    while (*end) end = &(*end)->next;
+    *end = &node;
+    f->state.store(FIBER_PARKING, std::memory_order_release);
+  }
+  leave(f, false);
+}
+
+void unpark_one(Guard *g) {
+  LockBucket &b = bucket_of(g);
+  Fiber *f = nullptr;
+  {
+    std::lock_guard<std::mutex> held(b.lock);
+    for (LockWaiter **at = &b.head; *at; at = &(*at)->next) {
+      if ((*at)->g != g) continue;
+      f = (*at)->f;
+      *at = (*at)->next;
+      break;
+    }
+  }
+  if (f && f->state.exchange(FIBER_READY, std::memory_order_acq_rel) ==
+               FIBER_PARKED)
+    make_runnable(f);
 }
 
 } // namespace
@@ -888,9 +967,9 @@ void sword_fiber_entry(void) {
 
 void sword_mutex_lock(void *blob) {
   Guard *g = (Guard *)blob;
-  uint64_t me = thread_tag();
+  uint64_t me = holder_tag();
 
-  if (__atomic_load_n(&g->held, __ATOMIC_ACQUIRE) == 1 &&
+  if (__atomic_load_n(&g->held, __ATOMIC_ACQUIRE) != 0 &&
       __atomic_load_n(&g->owner, __ATOMIC_ACQUIRE) == me) {
     // The checker catches the case it can see. This is the one it cannot: two
     // `lock` blocks on the same value with a call in between.
@@ -901,12 +980,24 @@ void sword_mutex_lock(void *blob) {
 
   if (take_guard(g, me)) return;
 
-  // Contended. Spin briefly for the usual short critical section, then start
-  // sleeping — and tell the scheduler, so the thread this task is using goes
-  // to other work instead of waiting here.
+  // Contended. Most critical sections are over in nanoseconds, so a moment of
+  // spinning usually wins; after that a task parks behind the guard and its
+  // thread goes to other work. Spinning or sleeping the thread instead — which
+  // is all code outside a task can do — hung a program on one thread: the
+  // holder was waiting for a timer inside its `lock`, and the only thread that
+  // could run it was the one spinning.
+  if (Fiber *f = tl_fiber) {
+    for (int spins = 0; spins < 64; spins++) {
+      std::this_thread::yield();
+      if (take_guard(g, me)) return;
+    }
+    while (!take_guard(g, me, 2)) park_behind(g, f);
+    return;
+  }
+
   sword_blocking_enter();
   int64_t nap = 1000; // nanoseconds, doubling to a millisecond
-  for (int spins = 0; !take_guard(g, me); spins++) {
+  for (int spins = 0; !take_guard(g, me, 2); spins++) {
     if (spins < 64) {
       std::this_thread::yield();
       continue;
@@ -923,7 +1014,7 @@ void sword_mutex_lock(void *blob) {
 void sword_mutex_unlock(void *blob) {
   Guard *g = (Guard *)blob;
   __atomic_store_n(&g->owner, (uint64_t)0, __ATOMIC_RELEASE);
-  __atomic_store_n(&g->held, 0, __ATOMIC_RELEASE);
+  if (__atomic_exchange_n(&g->held, 0, __ATOMIC_RELEASE) == 2) unpark_one(g);
 }
 
 // Waits for somebody else to change the value. The guard is released while the
