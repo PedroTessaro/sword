@@ -1,0 +1,169 @@
+// expect: 42
+// expect-output: udp works
+// Datagrams both ways: a server that answers whoever wrote, a client dialled to
+// it, IPv6, a socket that hears both families, and the four ways a datagram can
+// fail to be what was hoped — too long, too late, nobody there, and a broadcast
+// that has to be allowed first.
+
+import "std/io"
+import "std/net"
+import "std/time"
+
+// Answers `count` datagrams, each with its own bytes turned upper case, to
+// whoever sent it.
+func echo(s *net.UDPConn, count u64, mut answered *atomic[u64]) !void {
+    // A lost datagram is a failure, not a hang.
+    try s.SetTimeout(time.Seconds(5))
+    mut buf := [256]u8{}
+    for i in 0..count {
+        got := try s.ReadFrom(buf[..])
+        for j in 0..got.Len {
+            if buf[j] >= 97 && buf[j] <= 122 {
+                buf[j] -= 32
+            }
+        }
+        try s.WriteTo(got.From, buf[0..got.Len])
+        answered.Add(1)
+    }
+}
+
+func client(host string, port i32, count u64, mut right *atomic[u64]) !void {
+    mut c := try net.DialUDP(host, port)
+    try c.SetTimeout(time.Seconds(5))
+    mut buf := [256]u8{}
+    for i in 0..count {
+        try c.WriteString("hello udp")
+        n := try c.Read(buf[..])
+        if string(buf[0..n]) == "HELLO UDP" {
+            right.Add(1)
+        }
+    }
+    c.Close()
+}
+
+// A server and a client on `host`, `rounds` times. False when the address
+// family is not there to listen on.
+func roundTrip(listen string, dial string, rounds u64) !bool {
+    mut s := net.ListenUDPOn(listen, 0) catch {
+        return false
+    }
+    port := s.Port()
+    mut answered := atomic[u64](0)
+    mut right := atomic[u64](0)
+    scope {
+        spawn echo(&s, rounds, &answered)
+        spawn client(dial, port, rounds, &right)
+    }
+    s.Close()
+    if answered.Load() != rounds || right.Load() != rounds {
+        try io.Printf("{} -> {}: answered {} right {}\n", dial, listen,
+                      answered.Load(), right.Load())
+        return error.ReadFailed
+    }
+    return true
+}
+
+func main() !int {
+    mut room := [46]u8{}
+
+    // Loopback, both ends.
+    if !(try roundTrip("127.0.0.1", "127.0.0.1", 20)) {
+        return 1
+    }
+
+    // IPv6, where the machine has it.
+    six := try roundTrip("::1", "::1", 5)
+
+    // One socket for every interface and both families hears an IPv4 client,
+    // and reports it as IPv4 rather than as ::ffff:127.0.0.1.
+    mut both := try net.ListenUDPOn("", 0)
+    mut probe := try net.DialUDP("127.0.0.1", both.Port())
+    try probe.WriteString("either")
+    mut buf := [64]u8{}
+    got := try both.ReadFrom(buf[..])
+    mut from := got.From
+    if (try from.Text(room[..])) != "127.0.0.1" || from.IsV6() {
+        try io.Printf("dual stack saw {}\n", try from.Text(room[..]))
+        return 2
+    }
+    probe.Close()
+    both.Close()
+
+    // Too long: what fits arrives, and the rest is gone, and says so.
+    mut quiet := try net.ListenUDP(0)
+    mut loud := try net.DialUDP("127.0.0.1", quiet.Port())
+    mut big := [100]u8{}
+    try loud.Write(big[..])
+    mut small := [10]u8{}
+    cut := try quiet.ReadFrom(small[..])
+    if !cut.Truncated || cut.Len != 10 {
+        return 3
+    }
+    try loud.Write(big[..])
+    quiet.Read(small[..]) catch |e| {
+        if e != error.TooLong {
+            return 4
+        }
+    }
+
+    // Too late: nothing comes, and the wait gives up.
+    try quiet.SetTimeout(time.Millis(50))
+    quiet.ReadFrom(buf[..]) catch |e| {
+        if e != error.Timeout {
+            return 5
+        }
+    }
+    loud.Close()
+    quiet.Close()
+
+    // Nobody there: a dialled socket hears the refusal on its next read.
+    mut gone := try net.ListenUDP(0)
+    nobody := gone.Port()
+    gone.Close()
+    mut lonely := try net.DialUDP("127.0.0.1", nobody)
+    try lonely.SetTimeout(time.Seconds(2))
+    try lonely.WriteString("anyone?")
+    lonely.Read(buf[..]) catch |e| {
+        if e != error.Refused {
+            try io.Printf("expected a refusal, got {}\n", nameof(e))
+            return 6
+        }
+    }
+    lonely.Close()
+
+    // A broadcast address has to be allowed before it can be written to.
+    mut shout := try net.ListenUDP(0)
+    try shout.SetBroadcast(true)
+    mut everyone := net.Broadcast(9)
+    if (try everyone.Text(room[..])) != "255.255.255.255" || everyone.Port() != 9 {
+        return 7
+    }
+    shout.Close()
+
+    // Addresses: parsed, printed, compared, looked up.
+    mut v6 := try net.ParseAddr("::1", 53)
+    if !v6.IsV6() || (try v6.Text(room[..])) != "::1" || v6.Port() != 53 {
+        return 8
+    }
+    net.ParseAddr("not an address", 1) catch |e| {
+        if e != error.BadAddress {
+            return 9
+        }
+    }
+    mut local := try net.Resolve("localhost", 7)
+    if local.Port() != 7 {
+        return 10
+    }
+    a := try net.ParseAddr("10.0.0.1", 80)
+    mut b := try net.ParseAddr("10.0.0.1", 80)
+    if !b.Equal(a) {
+        return 11
+    }
+
+    if six {
+        try io.Print("udp works, over IPv4 and IPv6\n")
+    } else {
+        try io.Print("udp works, over IPv4 (no IPv6 here)\n")
+    }
+    return 42
+}

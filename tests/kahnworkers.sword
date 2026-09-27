@@ -1,0 +1,30 @@
+// expect-error: lets more than one task at a time receive from channel 'jobs'
+// A pool of workers on one channel is the ordinary way to spread work, and it
+// is not det: which worker takes which value is up to the scheduler. A spawn in
+// a loop is many tasks.
+
+import "std/mem"
+
+func work(jobs chan[i64]) {
+    for v := <-jobs {
+        if v < 0 {
+            return
+        }
+    }
+}
+
+det func pool(mut a mem.Allocator) !void {
+    jobs := try chan[i64](a, 8)
+    scope {
+        for w in 0..4 {
+            spawn work(jobs)
+        }
+    }
+}
+
+func main() int {
+    mut room := [4096]u8{}
+    mut arena := mem.NewArena(room[..])
+    pool(&arena) catch {}
+    return 0
+}

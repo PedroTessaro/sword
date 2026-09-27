@@ -1,5 +1,6 @@
 // expect: 42
 // expect-output: os and time work
+// output-varies: it reports how long a sleep took
 // Arguments, environment and both clocks. The test runner passes no arguments,
 // so argc is one: the program's own name.
 

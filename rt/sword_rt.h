@@ -73,13 +73,21 @@ void sword_mutex_notify_all(void *guard);
 // Waits for a descriptor without holding the thread. Only a task can be put
 // down, so this answers -1 when there is none and the caller waits the old way.
 // 0 means ready, -2 means the deadline passed.
-int sword_park_fd(int32_t fd, int32_t writable, int64_t deadline_ns);
+int sword_park_fd(int32_t fd, int32_t writable, int64_t deadline_ns,
+                  uint64_t generation);
 int32_t sword_in_task(void);
+// errno, read on the thread the caller is on now. Code that may have parked
+// reads it through this rather than directly — see sword_rt.cpp.
+int sword_errno(void);
 // The same for the clock: waits without holding the thread, and answers -1 when
 // there is no task to put down.
 int sword_park_timer(int64_t deadline_ns);
 // Drops anything waiting on a descriptor about to be closed.
 void sword_forget_fd(int32_t fd);
+// Read before a call that may answer "not yet", and handed to the wait.
+uint64_t sword_fd_generation(int32_t fd);
+// Forgets a socket and closes it; how the close happens is the poller's call.
+int32_t sword_close_fd(int32_t fd);
 
 // Runs one call on a thread kept for calls that cannot be put down — file I/O,
 // name resolution — and puts the calling task down meanwhile. Outside a task it

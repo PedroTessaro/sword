@@ -1,0 +1,121 @@
+package rand
+
+// Random numbers that do not depend on who asked first.
+//
+// An ordinary generator is a sequence: each number is the one after the last,
+// so two tasks drawing from one generator get numbers in whatever order they
+// happened to run, and a simulation answers differently on one thread and on
+// sixteen. Here the i-th number is a function of the seed and i and nothing
+// else. Iteration 5000 of a parallel loop draws the same numbers wherever it
+// runs.
+//
+// The function is Philox4x32-10, from Salmon et al., "Parallel random numbers:
+// as easy as 1, 2, 3" (2011): a 128-bit counter and a 64-bit key through ten
+// rounds of multiply and xor. It passes BigCrush, and it is what cuRAND, JAX and
+// NumPy use for the same reason. It is not for keys or tokens — std/crypto is.
+//
+//     parallel for i in 0..n reduce(+: inside) {
+//         mut r := rand.Stream(seed, u64(i))
+//         x := r.F64()
+//         y := r.F64()
+//         if x * x + y * y < 1.0 {
+//             inside += 1
+//         }
+//     }
+
+const mulA = 0xD2511F53
+const mulB = 0xCD9E8D57
+// The key moves by these between rounds: the golden ratio and the square
+// root of three, as fractions of 2^32.
+const bumpA = 0x9E3779B9
+const bumpB = 0xBB67AE85
+
+const low = 0xFFFFFFFF
+
+// The ten rounds. Each multiplies two of the four words, keeps both halves of
+// the products, and mixes the high halves into the other two words with the
+// key.
+func philox(counter [4]u32, key [2]u32) [4]u32 {
+    mut x := counter
+    mut k0 := key[0]
+    mut k1 := key[1]
+    for r in 0..10 {
+        if r > 0 {
+            k0 +%= u32(bumpA)
+            k1 +%= u32(bumpB)
+        }
+        a := u64(mulA) * u64(x[0])
+        b := u64(mulB) * u64(x[2])
+        x = [4]u32{
+            u32(b >> 32) ^ x[1] ^ k0,
+            u32(b & low),
+            u32(a >> 32) ^ x[3] ^ k1,
+            u32(a & low),
+        }
+    }
+    return x
+}
+
+func keyOf(seed u64) [2]u32 {
+    return [2]u32{u32(seed & low), u32(seed >> 32)}
+}
+
+// Block `n` of stream `i`: the stream in the high half of the counter, the
+// block within it in the low half.
+func block(key [2]u32, i u64, n u64) [4]u32 {
+    counter := [4]u32{u32(n & low), u32(n >> 32), u32(i & low), u32(i >> 32)}
+    return philox(counter, key)
+}
+
+// The i-th number for this seed. The same as the first number of Stream(seed, i).
+func At(seed u64, i u64) u64 {
+    w := block(keyOf(seed), i, 0)
+    return u64(w[0]) | u64(w[1]) << 32
+}
+
+// As many numbers as one iteration needs, all of them its own: stream i of one
+// seed shares nothing with stream j.
+struct Source {
+    key   [2]u32
+    i     u64
+    next  u64
+    words [4]u32
+    used  u64
+}
+
+func Stream(seed u64, i u64) Source {
+    return Source{key: keyOf(seed), i: i, next: 0, words: [4]u32{0, 0, 0, 0}, used: 4}
+}
+
+func (mut s *Source) U64() u64 {
+    if s.used == 4 {
+        s.words = block(s.key, s.i, s.next)
+        s.next += 1
+        s.used = 0
+    }
+    v := u64(s.words[s.used]) | u64(s.words[s.used + 1]) << 32
+    s.used += 2
+    return v
+}
+
+// Uniform in [0, n), without the bias that `U64() % n` has when n does not
+// divide 2^64: the few values at the top that would favour the low results are
+// drawn again. Zero when n is zero.
+func (mut s *Source) Below(n u64) u64 {
+    if n == 0 {
+        return 0
+    }
+    // 2^64 mod n, the size of the uneven tail.
+    tail := (0 -% n) % n
+    for {
+        v := s.U64()
+        if v >= tail {
+            return v % n
+        }
+    }
+}
+
+// Uniform in [0, 1), with the 53 bits a double holds.
+func (mut s *Source) F64() f64 {
+    return f64(s.U64() >> 11) * (1.0 / 9007199254740992.0)
+}

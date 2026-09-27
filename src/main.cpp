@@ -8,6 +8,7 @@
 #include "lexer.h"
 #include "lower.h"
 #include "parser.h"
+#include "version.h"
 #include "types.h"
 
 #include <cstdio>
@@ -38,7 +39,8 @@ void usage() {
         "  --emit-tokens  stop after lexing\n"
         "  --emit-ast     stop after parsing and checking\n"
         "  --emit-ir      stop after lowering, print Sword IR\n"
-        "  --emit-llvm    stop after codegen, print LLVM IR\n",
+        "  --emit-llvm    stop after codegen, print LLVM IR\n"
+        "  --version      print the version and stop\n",
         stderr);
 }
 
@@ -136,8 +138,10 @@ bool assemble(const std::string &ll_path, const std::string &out_path,
                     quoted(ll_path);
   // -pthread because the scheduler runs threads, and on older Linux they are
   // not in libc; on Darwin it is accepted and does nothing.
-  if (!runtime.empty()) cmd += " -x none " + runtime + " -lc++ -pthread";
-  // Whatever the runtime was built against, from the file beside the archive.
+  if (!runtime.empty()) cmd += " -x none " + runtime + " -pthread";
+  // Whatever the runtime was built against, from the file beside the archive:
+  // OpenSSL when it has TLS, and always the C++ library of the compiler that
+  // built it.
   if (!runtime.empty() && !extra.empty()) cmd += " " + extra;
   // After the program's own object, which is where a linker expects to be told
   // what resolves what is still missing.
@@ -202,6 +206,10 @@ int main(int argc, char **argv) {
       only.push_back(argv[++i]);
     else if (testing && !strcmp(arg, "-bench")) benching = true;
     else if (!strcmp(arg, "-h") || !strcmp(arg, "--help")) { usage(); return 0; }
+    else if (!strcmp(arg, "--version")) {
+      printf("shield %s (%s)\n", SWORD_VERSION, SWORD_RELEASE_NAME);
+      return 0;
+    }
     else if (arg[0] == '-') { usage(); return 1; }
     else input = arg;
   }

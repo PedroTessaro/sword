@@ -3,6 +3,9 @@
 #   // expect: <exit status>        must compile, run, and exit with that code
 #   // expect-output: <line>        stdout must contain that line
 #   // expect-error: <substring>    must fail to compile with that message
+#   // output-varies: <why>         prints something that depends on the clock
+#                                   or the pool, so tests/threads.sh compares
+#                                   only its exit status across thread counts
 #
 # Compiler output goes through printf rather than echo: /bin/sh here reads
 # backslash escapes in echo's argument, so a diagnostic that mentions '\x1b'
@@ -282,6 +285,19 @@ benched 0 "BenchmarkAdding" -bench
 benched 0 "ns/op" -bench
 benched 0 "ok    1 tests"                     # without it, the tests run
 benched 1 "no benchmark 'BenchmarkNope'" -bench -run BenchmarkNope
+
+# Both programs say the version the source says, and the same one.
+want_version=$(sed -n 's/^#define SWORD_VERSION "\(.*\)"/\1/p' "$root/src/version.h")
+for program in shield swordls; do
+    said=$("$root/$program" --version 2>&1)
+    case $said in
+    "$program $want_version ("*")") pass=$((pass + 1)) ;;
+    *)
+        echo "FAIL $program --version: '$said', want $want_version"
+        fail=$((fail + 1))
+        ;;
+    esac
+done
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

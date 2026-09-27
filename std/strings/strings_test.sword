@@ -1,5 +1,6 @@
 package strings
 
+import "std/mem"
 import "std/testing"
 
 // Inside the package, so the names are the ones the package declares rather
@@ -80,4 +81,35 @@ func TestTrimSpaceTable(mut t *testing.T) !void {
             try t.Failf("{}: got {} want {}", c.input, got, c.want)
         }
     }
+}
+
+func TestConcat(mut t *testing.T) !void {
+    mut room := [256]u8{}
+    mut arena := mem.NewArena(room[..])
+    name := "ada"
+    try t.Equal(try Concat(&arena, "hello, ", name, "!"), "hello, ada!")
+    try t.Equal(try Concat(&arena, name), "ada")
+    try t.Equal(try Concat(&arena), "")
+    try t.Equal(try Concat(&arena, "", ""), "")
+}
+
+func TestJoin(mut t *testing.T) !void {
+    mut room := [256]u8{}
+    mut arena := mem.NewArena(room[..])
+    fields := [3]string{"a", "bc", ""}
+    try t.Equal(try Join(&arena, fields[..], ","), "a,bc,")
+    try t.Equal(try Join(&arena, fields[0..1], ", "), "a")
+    try t.Equal(try Join(&arena, fields[0..0], ","), "")
+}
+
+// Measured once and allocated once: an arena with room for exactly the answer
+// is enough, and one byte less is refused rather than written past.
+func TestConcatExactSize(mut t *testing.T) !void {
+    mut room := [5]u8{}
+    mut arena := mem.NewArena(room[..])
+    try t.Equal(try Concat(&arena, "ab", "cde"), "abcde")
+    Concat(&arena, "x") catch {
+        return
+    }
+    try t.Failf("allocated past the arena")
 }

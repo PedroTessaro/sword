@@ -1,5 +1,6 @@
 // expect: 42
 // expect-output: accepted 3 served 3 failed 1 live 0
+// output-varies: it reports the scheduler's own counters
 // A server that can be looked inside while it runs: its own counters, and the
 // scheduler's, answered over HTTP like anything else.
 

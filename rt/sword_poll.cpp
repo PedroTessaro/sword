@@ -2,6 +2,7 @@
 #include "sword_os.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -36,6 +37,38 @@ struct Slot {
   std::vector<Waiter> waiting;
 };
 
+// Every forget moves a descriptor's generation on. A wait carries the
+// generation its caller read before the call that answered "not yet", and one
+// that no longer matches is for a descriptor closed since then — whatever the
+// number names now. A number is handed out again as soon as it is closed, often
+// to the next socket, sometimes to the poller's own pipe, and a wait that took it
+// for the old descriptor slept for good.
+//
+// Read on every socket wait, so without the lock: chunks of atomics that are
+// never moved or freed once made.
+const size_t kGenChunk = 4096;
+const size_t kGenChunks = 4096;
+std::atomic<std::atomic<uint64_t> *> gen_chunks[kGenChunks];
+
+std::atomic<uint64_t> *gen_slot(int fd, bool make) {
+  if (fd < 0 || (size_t)fd / kGenChunk >= kGenChunks) return nullptr;
+  std::atomic<std::atomic<uint64_t> *> &at = gen_chunks[(size_t)fd / kGenChunk];
+  std::atomic<uint64_t> *chunk = at.load(std::memory_order_acquire);
+  if (!chunk && make) {
+    std::atomic<uint64_t> *fresh = new std::atomic<uint64_t>[kGenChunk]();
+    if (at.compare_exchange_strong(chunk, fresh, std::memory_order_acq_rel))
+      chunk = fresh;
+    else
+      delete[] fresh;
+  }
+  return chunk ? &chunk[(size_t)fd % kGenChunk] : nullptr;
+}
+
+uint64_t generation_of(int fd) {
+  std::atomic<uint64_t> *g = gen_slot(fd, false);
+  return g ? g->load(std::memory_order_acquire) : 0;
+}
+
 struct Poller {
   int handle = -1;     // the kqueue or epoll descriptor
   int nudge[2] = {-1, -1}; // a pipe, to cut a wait short when a deadline moves
@@ -52,6 +85,13 @@ struct Poller {
   std::multimap<int64_t, std::pair<int, uint64_t>> timers;
   std::map<uint64_t, void *> sleepers;
   uint64_t next_seq = 1;
+  // Descriptors to close, for the poller thread to close. See sword_poll_close.
+  // Each asks with a ticket and waits until `closed_upto` reaches it, so a
+  // close has happened by the time the call that asked for it returns.
+  std::vector<int> closing;
+  uint64_t close_asked = 0;
+  uint64_t closed_upto = 0;
+  std::condition_variable closed;
 };
 
 Poller &poller();
@@ -107,27 +147,38 @@ void deliver_one(Poller &p, size_t slot, uint64_t seq, int result) {
   if (token) p.wake(token, result);
 }
 
-void arm(Poller &p, int fd, int writable) {
+// False when the descriptor has been forgotten since `generation` was read, or
+// the kernel refused it, which is what a closed one gets. Nothing will ever
+// report on it, so the caller has to. The poller's own pipe is armed without a
+// generation.
+//
+// Under the lock, and checked against the generation there, so a registration
+// and the close that follows a forget never overlap: one that started finishes
+// before the forget can move the generation on, and one that starts later sees
+// it moved. With kqueue the close itself also happens under this lock, on the
+// poller's thread — see close_pending.
+bool arm(Poller &p, int fd, int writable, uint64_t generation, bool checked) {
+  std::lock_guard<std::mutex> held(p.lock);
+  if (checked && generation_of(fd) != generation) return false;
 #ifdef SWORD_KQUEUE
   struct kevent change;
   EV_SET(&change, fd, writable ? EVFILT_WRITE : EVFILT_READ,
          EV_ADD | EV_ONESHOT, 0, 0, nullptr);
-  kevent(p.handle, &change, 1, nullptr, 0, nullptr);
+  return kevent(p.handle, &change, 1, nullptr, 0, nullptr) == 0;
 #else
   // epoll is per descriptor rather than per filter, so both directions share
   // one registration and the events are rebuilt from what is still waiting.
-  std::lock_guard<std::mutex> held(p.lock);
+  size_t base = slot_of(fd, 0);
   epoll_event ev;
   memset(&ev, 0, sizeof(ev));
   ev.data.fd = fd;
   ev.events = EPOLLONESHOT;
-  size_t base = slot_of(fd, 0);
   if (base < p.slots.size() && !p.slots[base].waiting.empty())
     ev.events |= EPOLLIN;
   if (base + 1 < p.slots.size() && !p.slots[base + 1].waiting.empty())
     ev.events |= EPOLLOUT;
-  if (epoll_ctl(p.handle, EPOLL_CTL_MOD, fd, &ev) != 0)
-    epoll_ctl(p.handle, EPOLL_CTL_ADD, fd, &ev);
+  return epoll_ctl(p.handle, EPOLL_CTL_MOD, fd, &ev) == 0 ||
+         epoll_ctl(p.handle, EPOLL_CTL_ADD, fd, &ev) == 0;
 #endif
 }
 
@@ -179,6 +230,57 @@ void expire(Poller &p) {
   }
 }
 
+// The poller's own thread closes a socket, between one kevent and the next and
+// under the lock every registration takes. On macOS a close that meets a kqueue
+// registration of the same socket — one being added, or a knote that fired as it
+// was attached, the socket already shut down — can wait in the kernel for good,
+// in a state not even SIGKILL ends. Reproduced in plain C; which interleaving
+// does it was not worth more stuck processes to pin down, since doing the close
+// here rules every one of them out.
+//
+// Between the forget and this close the descriptor is still open, so a task
+// that read its generation after the forget can still find it "not ready" and
+// register. The generation moves on again here, and whoever registered in
+// between is told, or the close would drop the registration without a word.
+// The close itself, under the lock: the generation moves on once more, anyone
+// registered is taken off to be told, and the registration goes before the
+// descriptor does. Between the forget and here the descriptor was still open, and
+// a task that read the forgotten generation could still find it "not ready" and
+// register — the forget had already told everyone, and this is the only other
+// word it gets. The lock is what keeps a registration from landing between the
+// telling and the close.
+//
+// The generation moves on *after* the close. A task reads it without the lock
+// and then makes its call, so one that read the new generation must find the
+// descriptor already gone; moving it first let a task read the new one, find the
+// descriptor still open and "not ready", and register with a generation nothing
+// would ever move again — on the poller's own kqueue, once, which took the
+// number the moment it was free.
+void close_locked(Poller &p, int fd, std::vector<Waiter> &woken) {
+  for (int writable = 0; writable < 2; writable++) {
+    size_t slot = slot_of(fd, writable);
+    if (slot >= p.slots.size()) continue;
+    for (const Waiter &w : p.slots[slot].waiting) woken.push_back(w);
+    p.slots[slot].waiting.clear();
+  }
+  if (p.handle >= 0) disarm(p, fd);
+  close(fd);
+  if (std::atomic<uint64_t> *g = gen_slot(fd, true))
+    g->fetch_add(1, std::memory_order_acq_rel);
+}
+
+void close_pending(Poller &p) {
+  std::vector<Waiter> woken;
+  {
+    std::lock_guard<std::mutex> held(p.lock);
+    for (int fd : p.closing) close_locked(p, fd, woken);
+    p.closing.clear();
+    p.closed_upto = p.close_asked;
+  }
+  p.closed.notify_all();
+  for (const Waiter &w : woken) p.wake(w.token, SWORD_POLL_FAILED);
+}
+
 void drain_nudge(Poller &p) {
   char buffer[64];
   while (read(p.nudge[0], buffer, sizeof(buffer)) > 0) {
@@ -217,7 +319,7 @@ void loop() {
       bool writable = events[i].filter == EVFILT_WRITE;
       if (fd == p.nudge[0]) {
         drain_nudge(p);
-        arm(p, p.nudge[0], 0);
+        arm(p, p.nudge[0], 0, 0, false);
         continue;
       }
       deliver(p, slot_of(fd, writable), SWORD_POLL_READY);
@@ -225,7 +327,7 @@ void loop() {
       int fd = events[i].data.fd;
       if (fd == p.nudge[0]) {
         drain_nudge(p);
-        arm(p, p.nudge[0], 0);
+        arm(p, p.nudge[0], 0, 0, false);
         continue;
       }
       uint32_t got = events[i].events;
@@ -237,7 +339,9 @@ void loop() {
 #endif
     }
     expire(p);
+    close_pending(p);
   }
+  close_pending(p);
 }
 
 Poller &poller() {
@@ -254,12 +358,17 @@ extern "C" {
 void sword_poll_start(sword_wake_fn wake) {
   Poller &p = poller();
   std::call_once(started, [&p, wake] {
-    p.wake = wake;
 #ifdef SWORD_KQUEUE
-    p.handle = kqueue();
+    int handle = kqueue();
 #else
-    p.handle = epoll_create1(0);
+    int handle = epoll_create1(0);
 #endif
+    {
+      // A close decides under this lock whether the poller is running.
+      std::lock_guard<std::mutex> held(p.lock);
+      p.wake = wake;
+      p.handle = handle;
+    }
     if (p.handle < 0) {
       fputs("sword: cannot create the poller\n", stderr);
       abort();
@@ -273,32 +382,45 @@ void sword_poll_start(sword_wake_fn wake) {
       int flags = fcntl(p.nudge[end], F_GETFL, 0);
       fcntl(p.nudge[end], F_SETFL, flags | O_NONBLOCK);
     }
-    arm(p, p.nudge[0], 0);
+    arm(p, p.nudge[0], 0, 0, false);
     p.thread = std::thread(loop);
   });
 }
 
-void sword_poll_wait(int fd, int writable, void *token, int64_t deadline_ns) {
+void sword_poll_wait(int fd, int writable, void *token, int64_t deadline_ns,
+                     uint64_t generation) {
   Poller &p = poller();
   size_t slot = slot_of(fd, writable);
   uint64_t seq;
+  bool gone;
   {
     std::lock_guard<std::mutex> held(p.lock);
     make_room(p, slot);
-    seq = p.next_seq++;
-    p.slots[slot].waiting.push_back(Waiter{token, seq});
-    if (deadline_ns > 0)
-      p.timers.insert({deadline_ns, {(int)slot, seq}});
+    gone = generation_of(fd) != generation;
+    if (!gone) {
+      seq = p.next_seq++;
+      p.slots[slot].waiting.push_back(Waiter{token, seq});
+      if (deadline_ns > 0)
+        p.timers.insert({deadline_ns, {(int)slot, seq}});
+    }
   }
-  arm(p, fd, writable);
+  // A descriptor can be forgotten between the call that answered EAGAIN and
+  // this registration — a listener closed by another task while its acceptor
+  // was on the way here. The forget already told everyone registered, which was
+  // nobody yet; the generation is the only word this waiter will get.
+  if (gone) {
+    p.wake(token, SWORD_POLL_FAILED);
+    return;
+  }
+  if (!arm(p, fd, writable, generation, true)) {
+    deliver(p, slot, SWORD_POLL_FAILED);
+    return;
+  }
   // A deadline nearer than the one the poller is already waiting on has to cut
   // that wait short, or it would be noticed late.
   if (deadline_ns > 0) nudge(p);
 }
 
-// Whoever is waiting has to be told, not dropped: a descriptor is forgotten
-// when it is about to be closed, and a task still parked on it would never be
-// woken by anything else.
 void sword_poll_sleep(void *token, int64_t deadline_ns) {
   Poller &p = poller();
   {
@@ -310,18 +432,65 @@ void sword_poll_sleep(void *token, int64_t deadline_ns) {
   nudge(p);
 }
 
+// Whoever is waiting has to be told, not dropped: a descriptor is forgotten
+// when it is about to be closed, and a task still parked on it would never be
+// woken by anything else. The generation moves first, and before the poller need
+// be running, so that nobody can slip in between the telling and the close.
 void sword_poll_forget(int fd) {
   Poller &p = poller();
+  {
+    // Under the lock, so a registration already under way finishes first.
+    std::lock_guard<std::mutex> held(p.lock);
+    if (std::atomic<uint64_t> *g = gen_slot(fd, true))
+      g->fetch_add(1, std::memory_order_acq_rel);
+  }
   if (p.handle < 0) return;
   disarm(p, fd);
   deliver(p, slot_of(fd, 0), SWORD_POLL_FAILED);
   deliver(p, slot_of(fd, 1), SWORD_POLL_FAILED);
 }
 
+uint64_t sword_poll_generation(int fd) { return generation_of(fd); }
+
+// The caller waits for the poller to have done it: a socket that is still open
+// after Close returned would take a datagram meant for nobody, or keep its port
+// from being listened on again. The wait is short — the nudge ends the poller's
+// kevent at once — and it holds the thread rather than parking the task, since
+// parking goes through this same poller.
+//
+// Everywhere else — epoll, or a poller that is not running — the close happens
+// here, under the lock all the same. Whether the poller is running is decided
+// under it too: a task can start the poller and register between a look at it
+// and the close.
+void sword_poll_close(int fd) {
+  Poller &p = poller();
+  std::unique_lock<std::mutex> held(p.lock);
+#ifdef SWORD_KQUEUE
+  if (p.handle >= 0 && !p.stopping.load(std::memory_order_acquire)) {
+    p.closing.push_back(fd);
+    uint64_t ticket = ++p.close_asked;
+    held.unlock();
+    nudge(p);
+    held.lock();
+    p.closed.wait(held, [&p, ticket] { return p.closed_upto >= ticket; });
+    return;
+  }
+#endif
+  std::vector<Waiter> woken;
+  close_locked(p, fd, woken);
+  held.unlock();
+  for (const Waiter &w : woken) p.wake(w.token, SWORD_POLL_FAILED);
+}
+
 void sword_poll_stop(void) {
   Poller &p = poller();
   if (p.handle < 0) return;
-  p.stopping.store(true, std::memory_order_release);
+  {
+    // Under the lock, so a close either is queued before the poller's last
+    // pass or sees it is stopping and closes in place.
+    std::lock_guard<std::mutex> held(p.lock);
+    p.stopping.store(true, std::memory_order_release);
+  }
   nudge(p);
   if (p.thread.joinable()) p.thread.join();
 }

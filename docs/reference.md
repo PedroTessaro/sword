@@ -62,7 +62,8 @@ const Name = expr      // package level; folded at compile time
 
 A constant's initialiser has to be literals, operators and other constants.
 Declaration order does not matter, and a cycle is an error. A constant that is
-an integer may be used as an array length.
+an integer may be used as an array length. Two constant strings join with `+`,
+at compile time; at run time joining allocates, and that is `strings.Concat`.
 
 ```sword
 func name(a T, mut b U) R { ... }
@@ -71,6 +72,7 @@ func name(a T, rest ...U) R { ... } // the last one gathers what is left
 func name[T, U: Constraint](a T) R { ... }
 func (r *T) Method() R { ... }
 func (mut r *T) Method() R { ... }
+det func name(a T) R { ... }        // checked: the answer is a function of a
 extern func c_name(a T) R          // C ABI, name unchanged
 extern func c_name(a T, ...) R     // C's own variadic: ioctl, fcntl, printf
 
@@ -93,6 +95,41 @@ mutable binding can be passed to one.
 A name is exported from its package when it starts with a capital letter. That
 covers a struct's fields as well: a type can be public and its insides private,
 which is why `time.Duration` has methods rather than a reachable `ns`.
+
+### `det`
+
+`det` on a function is a claim the compiler checks: what it answers depends on
+its arguments and on nothing else — not on how many threads ran it, not on the
+order they ran in, not on the clock, and not on where anything landed in
+memory. It changes no generated code.
+
+What takes it away, and each of these is a way for something other than the
+arguments to reach the answer:
+
+| | |
+|---|---|
+| an `atomic`, a `shared` | which task got there first decides |
+| a channel shared by two senders or two receivers at once | the same |
+| `select`, `TrySend`, `TryRecv`, `Len`, `Cap`, `Closed` | the timing decides |
+| a channel copied, stored or returned | the compiler can no longer follow it |
+| an `extern` call | the clock, the operating system, malloc's addresses |
+| an address turned into a number | the layout decides |
+| a call through an interface or a function value | unless every target is det |
+| a call to anything that is not det | |
+
+What is *not* on that list is the point: `scope`, `spawn` and `parallel for`
+are all fine, and so is a channel with one sender and one receiver in each
+scope that only ever waits for the next value — Kahn's condition, under which a
+network of tasks computes a function of its inputs. Two tasks cannot touch the same memory — the race checker says
+so — and a reduction combines its pieces in the order they were cut, so the
+answer does not depend on the pool.
+
+Every function is analysed, whether or not it says `det`; writing it asks to be
+told when the property is lost, and the message walks the chain from what was
+claimed to the call that lost it. A pointer is opaque to whoever is handed one,
+so an arena doing arithmetic on addresses to align what it hands out does not
+make its callers depend on the layout — only reading an address as a number
+here does.
 
 ## Statements
 
@@ -130,7 +167,7 @@ By precedence, tightest first:
 | | |
 |---|---|
 | `*` `/` `%` `<<` `>>` `&` | |
-| `+` `-` `\|` `^` | |
+| `+` `-` `\|` `^` | `+` on strings only between constants |
 | `==` `!=` `<` `<=` `>` `>=` | `==` on strings compares content |
 | `&&` | short-circuits |
 | `\|\|` | short-circuits |
@@ -586,7 +623,10 @@ than a clamp — `at` may be the length, which appends, and nothing past it.
 ### `std/strings`
 
 Byte-oriented, which is what a protocol parser wants. `IndexByte` and `Index`
-return the length of the haystack when there is no match.
+return the length of the haystack when there is no match. `Concat` and `Join`
+are the only two that allocate, so they are the only two that take an
+allocator; the answer is measured first and allocated once, at its exact
+length.
 
 ```sword
 func Equal(a string, b string) bool
@@ -600,6 +640,9 @@ func Contains(s string, needle string) bool
 func TrimSpace(s string) string
 func ToLower(c u8) u8
 func ParseU64(s string) !u64
+
+func Concat(mut a mem.Allocator, parts ...string) !string
+func Join(mut a mem.Allocator, parts []string, sep string) !string
 ```
 
 ### `std/unicode`
@@ -815,6 +858,86 @@ ones added to 1e16 come to 1e16 by plain addition, and to 1e16 + 1000000 here.
 
 `Merge` is what `parallel for ... reduce(num.Merge: total)` calls, and the zero
 value is the identity, so it is also the shape any reduction of your own takes.
+
+An exact sum goes further: it holds the total in a fixed-point number wide
+enough for every double (Kulisch's long accumulator, 68 words), so no term is
+rounded and `Value` rounds once, to the double nearest the true sum. The order
+of the terms cannot show, and a parallel sum is the same double as a sequential
+one.
+
+```sword
+func NewExact() Exact
+func (mut s *Exact) Add(v f64)
+func MergeExact(a Exact, b Exact) Exact  // for reduce(num.MergeExact: total)
+func (s Exact) Value() f64               // correctly rounded
+```
+
+The elementary functions give the same bits on every machine: they use only
+IEEE `+ - * /`, which every processor rounds alike, and the compiler never fuses
+a multiply into an add. Each is within one unit in the last place of the true
+value, and `Sqrt` is correctly rounded. They are det, which the C library's are
+not — a det function cannot call out of the language.
+
+```sword
+func Sqrt(x f64) f64
+func Exp(x f64) f64
+func Log(x f64) f64
+func Sin(x f64) f64       // any finite x: the reduction is exact
+func Cos(x f64) f64
+func Inf() f64
+func NaN() f64
+func IsNaN(v f64) bool
+```
+
+### `std/par`
+
+Operations over a slice that use every core and answer the same thing at any
+thread count. The cut depends on the length alone — at most 64 pieces, none
+under 1024 elements — and the pieces are put together in the order they were
+cut. Each is det when the function it is given is.
+
+```sword
+func Scan[T](xs []T, mut out []T, op func(T, T) T) !void   // out[i] = xs[0] op .. op xs[i]
+func Keep[T](mut a mem.Allocator, xs []T, mut out []T,
+             keep func(T) bool) !u64                       // in order; how many
+func MinIndex[T](xs []T, less func(T, T) bool) ?u64        // the first, on a tie
+func Sort[T](mut xs []T, less func(T, T) bool)             // stable, in place
+```
+
+`Scan` equals the sequential answer when `op` is associative; for floating-point
+addition it is a fixed answer rather than the left-to-right one. `Keep` tests on
+every core and gathers the survivors in one pass, and its allocator holds a
+byte per element for the marks. `Sort` is stable, which is what makes it
+deterministic with equal keys: there is exactly one right order. It merges in
+place, the way Go's `sort.Stable` does, so it needs no memory of its own.
+
+### `std/rand`
+
+Random numbers where the i-th one depends on the seed and i and nothing else, so
+a parallel loop draws the same numbers however many threads run it. Philox4x32-10,
+the generator cuRAND and JAX use for that reason. Not for keys or tokens.
+
+```sword
+func At(seed u64, i u64) u64          // the i-th number; the first of Stream(seed, i)
+func Stream(seed u64, i u64) Source   // as many as iteration i needs, its own
+func (mut s *Source) U64() u64
+func (mut s *Source) Below(n u64) u64 // uniform in [0, n), unbiased
+func (mut s *Source) F64() f64        // uniform in [0, 1), 53 bits
+```
+
+Give each iteration its own stream, indexed by the iteration, and a det function
+can use randomness:
+
+```sword
+parallel for i in 0..n reduce(+: inside) {
+    mut r := rand.Stream(seed, u64(i))
+    x := r.F64()
+    y := r.F64()
+    if x * x + y * y < 1.0 {
+        inside += 1
+    }
+}
+```
 
 ### `std/os`
 
@@ -1105,7 +1228,8 @@ func (s Stats) Running() i64      // Started - Finished
 
 ### `std/net`
 
-TCP over the loopback interface. Port 0 asks the operating system to choose.
+TCP and UDP. `Listen` and `ListenUDP` bind loopback only; the `On` forms take
+the address to bind. Port 0 asks the operating system to choose.
 
 ```sword
 func Listen(port i32) !Listener                        // loopback only
@@ -1146,6 +1270,89 @@ interface Stream {
 }
 
 func (c *Conn) Fd() i32                      // for a layer that wraps the socket
+```
+
+UDP sends datagrams: each arrives whole or not at all, in no promised order,
+with no connection set up first. A socket made with `ListenUDP` talks to anyone
+through `ReadFrom` and `WriteTo`; one made with `DialUDP` talks to one peer
+through `Read` and `Write`, hears only from that peer, and can be told that
+nobody is listening there. Both families work, IPv4 and IPv6.
+
+```sword
+func ListenUDP(port i32) !UDPConn                  // loopback only
+func ListenUDPOn(host string, port i32) !UDPConn   // "" is every interface, v4 and v6
+func DialUDP(host string, port i32) !UDPConn
+func (c *UDPConn) ReadFrom(mut into []u8) !Datagram  // { Len, From, Truncated }
+func (c *UDPConn) WriteTo(to Addr, from []u8) !void
+func (c *UDPConn) Read(mut into []u8) !u64           // dialled: the peer's next datagram
+func (c *UDPConn) Write(from []u8) !void
+func (c *UDPConn) WriteString(s string) !void
+func (c *UDPConn) SetTimeout(limit time.Duration) !void
+func (c *UDPConn) SetDeadline(at time.Instant) !void
+func (c *UDPConn) SetBroadcast(on bool) !void
+func (c *UDPConn) Port() i32
+func (c *UDPConn) Local() !Addr
+func (c *UDPConn) Close()
+
+func ParseAddr(ip string, port i32) !Addr    // numeric, "10.0.0.1" or "::1"
+func Resolve(host string, port i32) !Addr    // a name, looked up without holding a thread
+func Broadcast(port i32) Addr                // 255.255.255.255
+func (a *Addr) Port() i32
+func (a *Addr) IsV6() bool
+func (a *Addr) Text(mut into []u8) !string   // 46 bytes holds any address
+func (a *Addr) Equal(b Addr) bool
+```
+
+An `Addr` is a value of twenty bytes, so a server keeps the sender of every
+datagram without allocating. A datagram longer than the buffer is cut: `Len` is
+what fit, `Truncated` says so, and the rest is gone — `Read` makes that
+`error.TooLong`. A dialled socket whose datagram found no one learns it on a
+later read or write as `error.Refused`. The kernel refuses to send to a
+broadcast address until `SetBroadcast(true)`, so no program floods a network by
+accident.
+
+A server that answers each datagram in capitals, and a client that asks it
+twice:
+
+```sword
+import "std/io"
+import "std/net"
+import "std/time"
+
+func serve(s *net.UDPConn, count u64) !void {
+    mut buf := [512]u8{}
+    for i in 0..count {
+        got := try s.ReadFrom(buf[..])
+        for j in 0..got.Len {
+            if buf[j] >= 97 && buf[j] <= 122 {
+                buf[j] -= 32
+            }
+        }
+        try s.WriteTo(got.From, buf[0..got.Len])
+    }
+}
+
+func ask(port i32) !void {
+    mut c := try net.DialUDP("127.0.0.1", port)
+    try c.SetTimeout(time.Seconds(2))   // an answer that is lost is not waited for forever
+    mut buf := [512]u8{}
+    for word in [2]string{"hello", "again"} {
+        try c.WriteString(word)
+        n := try c.Read(buf[..])
+        try io.Printf("{} -> {}\n", word, string(buf[0..n]))
+    }
+    c.Close()
+}
+
+func main() !int {
+    mut s := try net.ListenUDP(0)
+    scope {
+        spawn serve(&s, 2)
+        spawn ask(s.Port())
+    }
+    s.Close()
+    return 0
+}
 ```
 
 ### `std/tls`

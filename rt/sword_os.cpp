@@ -132,14 +132,16 @@ int32_t sword_os_wait_signal(void) {
   while (true) {
     if (stopped.load(std::memory_order_acquire)) return -1;
     unsigned char which = 0;
+    uint64_t generation = sword_fd_generation(signal_pipe[0]);
     ssize_t n = read(signal_pipe[0], &which, 1);
     if (n == 1) return (int32_t)which;
     if (n == 0) return -1;
-    if (errno == EINTR) continue;
-    if (errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+    int why = sword_errno();
+    if (why == EINTR) continue;
+    if (why != EAGAIN && why != EWOULDBLOCK) return -1;
 
     if (sword_in_task()) {
-      if (sword_park_fd(signal_pipe[0], 0, 0) < 0) return -1;
+      if (sword_park_fd(signal_pipe[0], 0, 0, generation) < 0) return -1;
       continue;
     }
     // Outside a task there is nothing to put down, so the thread waits.

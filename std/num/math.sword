@@ -1,0 +1,574 @@
+package num
+
+// Elementary functions that give the same bits on every machine.
+//
+// The C library's sin on Linux and its sin on macOS are different programs. They
+// seldom disagree — a few times in a hundred thousand arguments — but seldom is
+// enough: a long simulation meets one of those arguments, and from there it
+// answers one thing on a laptop and another on a server. They can also change
+// from one release of the library to the next. And a det function cannot call
+// them at all, since they are outside the language.
+//
+// These are written with nothing but IEEE addition, subtraction, multiplication
+// and division, which every machine rounds the same way, and the compiler never
+// fuses a multiply into an add behind them. So the bits are the same everywhere,
+// and each function is within one unit in the last place of the true value.
+//
+// The polynomial kernels and the structure of Exp and Log are fdlibm's. The
+// reduction of large arguments for Sin and Cos is exact integer arithmetic on the
+// bits of 2/pi, written here. Sqrt is correctly rounded.
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+
+// --- bits --------------------------------------------------------------------
+
+func bitsOf(v f64) u64 {
+    mut x := v
+    p := [*]u64(&x)
+    return p[0]
+}
+
+func fromBits(b u64) f64 {
+    mut x := b
+    p := [*]f64(&x)
+    return p[0]
+}
+
+func highOf(v f64) u32 {
+    return u32(bitsOf(v) >> 32)
+}
+
+func lowOf(v f64) u32 {
+    return u32(bitsOf(v) & 0xFFFFFFFF)
+}
+
+func withHigh(v f64, high u32) f64 {
+    return fromBits(u64(high) << 32 | (bitsOf(v) & 0xFFFFFFFF))
+}
+
+// 2^k, for k a normal exponent.
+func pow2(k i64) f64 {
+    return fromBits(u64(k + 1023) << 52)
+}
+
+func Inf() f64 {
+    return fromBits(0x7FF0000000000000)
+}
+
+func NaN() f64 {
+    return fromBits(0x7FF8000000000000)
+}
+
+func IsNaN(v f64) bool {
+    return v != v
+}
+
+// --- sqrt --------------------------------------------------------------------
+
+// fdlibm's bit-by-bit square root, which is exact before rounding and rounds
+// once, to nearest: the answer is the double closest to the true root.
+det func Sqrt(x f64) f64 {
+    mut ix0 := highOf(x)
+    mut ix1 := lowOf(x)
+    if ix0 & 0x7ff00000 == 0x7ff00000 {
+        return x * x + x
+    }
+    if (ix0 & 0x7fffffff) | ix1 == 0 {
+        return x
+    }
+    if ix0 >> 31 == 1 {
+        return NaN()
+    }
+    mut m := i64(ix0 >> 20)
+    if m == 0 {
+        for ix0 == 0 {
+            m -= 21
+            ix0 |= ix1 >> 11
+            ix1 = (ix1 & 0x7FF) << 21
+        }
+        mut i u32 = 0
+        for ix0 & 0x00100000 == 0 {
+            ix0 <<= 1
+            i += 1
+        }
+        m -= i64(i) - 1
+        if i > 0 {
+            ix0 |= ix1 >> (32 - i)
+            ix1 = (ix1 & ((u32(1) << (32 - i)) - 1)) << i
+        }
+    }
+    m -= 1023
+    ix0 = (ix0 & 0x000fffff) | 0x00100000
+    if m & 1 == 1 {
+        ix0 = ix0 + ix0 + (ix1 >> 31)
+        ix1 = ix1 +% ix1
+    }
+    m = (m - (m & 1)) / 2
+
+    ix0 = ix0 + ix0 + (ix1 >> 31)
+    ix1 = ix1 +% ix1
+    mut q u32 = 0
+    mut q1 u32 = 0
+    mut s0 u32 = 0
+    mut s1 u32 = 0
+    mut r u32 = 0x00200000
+    for r != 0 {
+        t := s0 + r
+        if t <= ix0 {
+            s0 = t + r
+            ix0 -= t
+            q += r
+        }
+        ix0 = ix0 + ix0 + (ix1 >> 31)
+        ix1 = ix1 +% ix1
+        r >>= 1
+    }
+    r = 0x80000000
+    for r != 0 {
+        t1 := s1 +% r
+        t := s0
+        if t < ix0 || (t == ix0 && t1 <= ix1) {
+            s1 = t1 +% r
+            if t1 & 0x80000000 != 0 && s1 & 0x80000000 == 0 {
+                s0 += 1
+            }
+            ix0 -= t
+            if ix1 < t1 {
+                ix0 -= 1
+            }
+            ix1 = ix1 -% t1
+            q1 +%= r
+        }
+        ix0 = ix0 +% ix0 +% (ix1 >> 31)
+        ix1 = ix1 +% ix1
+        r >>= 1
+    }
+    // Something left over: round to nearest, ties to even.
+    if ix0 | ix1 != 0 {
+        if q1 == 0xffffffff {
+            q1 = 0
+            q += 1
+        } else {
+            q1 += q1 & 1
+        }
+    }
+    high := i64((q >> 1) + 0x3fe00000) + m * 1048576
+    mut low := q1 >> 1
+    if q & 1 == 1 {
+        low |= 0x80000000
+    }
+    return fromBits(u64(high) << 32 | u64(low))
+}
+
+// --- exp ---------------------------------------------------------------------
+
+const ln2Hi = 6.93147180369123816490e-01
+const ln2Lo = 1.90821492927058770002e-10
+const invLn2 = 1.44269504088896338700e+00
+const expP1 = 1.66666666666666019037e-01
+const expP2 = -2.77777777770155933842e-03
+const expP3 = 6.61375632143793436117e-05
+const expP4 = -1.65339022054652515390e-06
+const expP5 = 4.13813679705723846039e-08
+const expOver = 7.09782712893383973096e+02
+const expUnder = -7.45133219101941108420e+02
+
+// e^x. The argument is cut to k·ln2 + r with |r| ≤ ln2/2, ln2 carried in two
+// pieces so the cut loses nothing; e^r comes from a rational approximation, and
+// 2^k goes into the exponent.
+det func Exp(x f64) f64 {
+    hx := highOf(x)
+    negative := hx >> 31 == 1
+    ax := hx & 0x7fffffff
+    if ax >= 0x40862E42 {
+        if ax >= 0x7ff00000 {
+            if (ax & 0xfffff) | lowOf(x) != 0 {
+                return x + x
+            }
+            if negative {
+                return 0.0
+            }
+            return x
+        }
+        if x > expOver {
+            return Inf()
+        }
+        if x < expUnder {
+            return 0.0
+        }
+    }
+    mut hi := 0.0
+    mut lo := 0.0
+    mut k i64 = 0
+    mut r := x
+    if ax > 0x3fd62e42 {
+        if ax < 0x3FF0A2B2 {
+            if negative {
+                hi = x + ln2Hi
+                lo = -ln2Lo
+                k = -1
+            } else {
+                hi = x - ln2Hi
+                lo = ln2Lo
+                k = 1
+            }
+        } else {
+            mut half := 0.5
+            if negative {
+                half = -0.5
+            }
+            k = i64(invLn2 * x + half)
+            t := f64(k)
+            hi = x - t * ln2Hi
+            lo = t * ln2Lo
+        }
+        r = hi - lo
+    } else if ax < 0x3e300000 {
+        return 1.0 + x
+    }
+    t := r * r
+    c := r - t * (expP1 + t * (expP2 + t * (expP3 + t * (expP4 + t * expP5))))
+    if k == 0 {
+        return 1.0 - ((r * c) / (c - 2.0) - r)
+    }
+    y := 1.0 - ((lo - (r * c) / (2.0 - c)) - hi)
+    if k >= -1021 {
+        if k == 1024 {
+            return y * 2.0 * pow2(1023)
+        }
+        return y * pow2(k)
+    }
+    // Headed for a subnormal: scale into the normal range first, so the one
+    // rounding happens on the last multiplication.
+    return y * pow2(k + 1000) * pow2(-1000)
+}
+
+// --- log ---------------------------------------------------------------------
+
+const two54 = 1.80143985094819840000e+16
+const lg1 = 6.666666666666735130e-01
+const lg2 = 3.999999999940941908e-01
+const lg3 = 2.857142874366239149e-01
+const lg4 = 2.222219843214978396e-01
+const lg5 = 1.818357216161805012e-01
+const lg6 = 1.531383769920937332e-01
+const lg7 = 1.479819860511658591e-01
+
+// The natural logarithm. x is written as 2^k·(1+f) with 1+f in [sqrt(2)/2,
+// sqrt(2)), and log(1+f) comes from a series in s = f/(2+f).
+det func Log(v f64) f64 {
+    mut x := v
+    lx := lowOf(x)
+    mut h := highOf(x)
+    mut k i64 = 0
+    if h >> 31 == 1 {
+        if (h & 0x7fffffff) | lx == 0 {
+            return -Inf()
+        }
+        return NaN()
+    }
+    if h < 0x00100000 {
+        if h | lx == 0 {
+            return -Inf()
+        }
+        k -= 54
+        x *= two54
+        h = highOf(x)
+    }
+    if h >= 0x7ff00000 {
+        return x + x
+    }
+    k += i64(h >> 20) - 1023
+    hm := h & 0x000fffff
+    i := (hm + 0x95f64) & 0x100000
+    x = withHigh(x, hm | (i ^ 0x3ff00000))
+    k += i64(i >> 20)
+    f := x - 1.0
+    dk := f64(k)
+    if (0x000fffff & (2 + hm)) < 3 {
+        if f == 0.0 {
+            if k == 0 {
+                return 0.0
+            }
+            return dk * ln2Hi + dk * ln2Lo
+        }
+        rr := f * f * (0.5 - 0.33333333333333333 * f)
+        if k == 0 {
+            return f - rr
+        }
+        return dk * ln2Hi - ((rr - dk * ln2Lo) - f)
+    }
+    s := f / (2.0 + f)
+    z := s * s
+    w := z * z
+    t1 := w * (lg2 + w * (lg4 + w * lg6))
+    t2 := z * (lg1 + w * (lg3 + w * (lg5 + w * lg7)))
+    rr := t2 + t1
+    near := (i64(hm) - 0x6147a) | (0x6b851 - i64(hm))
+    if near > 0 {
+        hfsq := 0.5 * f * f
+        if k == 0 {
+            return f - (hfsq - s * (hfsq + rr))
+        }
+        return dk * ln2Hi - ((hfsq - (s * (hfsq + rr) + dk * ln2Lo)) - f)
+    }
+    if k == 0 {
+        return f - s * (f - rr)
+    }
+    return dk * ln2Hi - ((s * (f - rr) - dk * ln2Lo) - f)
+}
+
+// --- sin and cos -------------------------------------------------------------
+
+const s1 = -1.66666666666666324348e-01
+const s2 = 8.33333333332248946124e-03
+const s3 = -1.98412698298579493134e-04
+const s4 = 2.75573137070700676789e-06
+const s5 = -2.50507602534068634195e-08
+const s6 = 1.58969099521155010221e-10
+
+const c1 = 4.16666666666666019037e-02
+const c2 = -1.38888888888741095749e-03
+const c3 = 2.48015872894767294178e-05
+const c4 = -2.75573143513906633035e-07
+const c5 = 2.08757232129817482790e-09
+const c6 = -1.13596475577881948265e-11
+
+// sin(x + y) for |x| ≤ pi/4, y being the part of the argument that did not fit
+// in x. `tail` says whether there is one.
+func sinKernel(x f64, y f64, tail bool) f64 {
+    ix := highOf(x) & 0x7fffffff
+    if ix < 0x3e400000 {
+        return x
+    }
+    z := x * x
+    v := z * x
+    r := s2 + z * (s3 + z * (s4 + z * (s5 + z * s6)))
+    if !tail {
+        return x + v * (s1 + z * r)
+    }
+    return x - ((z * (0.5 * y - v * r) - y) - v * s1)
+}
+
+func cosKernel(x f64, y f64) f64 {
+    ix := highOf(x) & 0x7fffffff
+    if ix < 0x3e400000 {
+        return 1.0
+    }
+    z := x * x
+    r := z * (c1 + z * (c2 + z * (c3 + z * (c4 + z * (c5 + z * c6)))))
+    if ix < 0x3FD33333 {
+        return 1.0 - (0.5 * z - (z * r - x * y))
+    }
+    mut qx := 0.28125
+    if ix <= 0x3fe90000 {
+        qx = fromBits(u64(ix - 0x00200000) << 32)
+    }
+    hz := 0.5 * z - qx
+    a := 1.0 - qx
+    return a - (hz - (z * r - x * y))
+}
+
+// The binary expansion of 2/pi: bit 1 is the first after the point.
+func twoOverPi() [48]u32 {
+    return [48]u32{
+        0xA2F9836E, 0x4E441529, 0xFC2757D1, 0xF534DDC0, 0xDB629599, 0x3C439041,
+        0xFE5163AB, 0xDEBBC561, 0xB7246E3A, 0x424DD2E0, 0x06492EEA, 0x09D1921C,
+        0xFE1DEB1C, 0xB129A73E, 0xE88235F5, 0x2EBB4484, 0xE99C7026, 0xB45F7E41,
+        0x3991D639, 0x835339F4, 0x9C845F8B, 0xBDF9283B, 0x1FF897FF, 0xDE05980F,
+        0xEF2F118B, 0x5A0A6D1F, 0x6D367ECF, 0x27CB09B7, 0x4F463F66, 0x9E5FEA2D,
+        0x7527BAC7, 0xEBE5F17B, 0x3D0739F7, 0x8A5292EA, 0x6BFB5FB1, 0x1F8D5D08,
+        0x56033046, 0xFC7B6BAB, 0xF0CFBC20, 0x9AF4361D, 0xA9E39161, 0x5EE61B08,
+        0x6599855F, 0x14A06840, 0x8DFFD880, 0x4D732731, 0x06061556, 0xCA73A8C9,
+    }
+}
+
+// Thirty-two bits of 2/pi starting at bit j.
+func bitsAt(table [48]u32, j u64) u64 {
+    w := (j - 1) / 32
+    sh := (j - 1) % 32
+    both := u64(table[w]) << 32 | u64(table[w + 1])
+    return (both >> (32 - sh)) & 0xFFFFFFFF
+}
+
+// `count` bits of a little-endian run of 32-bit limbs, starting at bit `pos`.
+func bitsOfLimbs(limbs []u64, pos u64, count u64) u64 {
+    mut v u64 = 0
+    for i in 0..count {
+        at := pos + count - 1 - i
+        v = v << 1 | ((limbs[at / 32] >> (at % 32)) & 1)
+    }
+    return v
+}
+
+func leadingBit(v u64) u64 {
+    mut at u64 = 63
+    for (v >> at) & 1 == 0 {
+        at -= 1
+    }
+    return at
+}
+
+const pio2Hi = 1.5707963267948966
+const pio2Lo = 6.123233995736766e-17
+
+// a·b = product + the returned error, exactly (Dekker, with Veltkamp's split),
+// with no fused multiply-add to lean on.
+func productError(a f64, b f64, product f64) f64 {
+    ca := 134217729.0 * a
+    ah := ca - (ca - a)
+    al := a - ah
+    cb := 134217729.0 * b
+    bh := cb - (cb - b)
+    bl := b - bh
+    return ((ah * bh - product) + ah * bl + al * bh) + al * bl
+}
+
+struct Reduced {
+    n  u64
+    y0 f64
+    y1 f64
+}
+
+// x = n·pi/2 + (y0 + y1), with |y0 + y1| ≤ pi/4, for any finite x.
+//
+// Write |x| = m·2^q with m a 53-bit integer. Then x·2/pi is m times the bits of
+// 2/pi shifted by q, and the bits more than two places before the point only
+// add multiples of four — they change neither the quadrant nor the fraction. So
+// a window of 256 bits of 2/pi, chosen by q, times m, exactly, gives the
+// quadrant in its two integer bits and 192 bits of fraction after them. The
+// nearest a double comes to a multiple of pi/2 is about 2^-61 of itself, which
+// leaves the fraction more than sixty exact bits even then.
+func quadrant(x f64) Reduced {
+    b := bitsOf(x) & 0x7FFFFFFFFFFFFFFF
+    e := i64(b >> 52) - 1023
+    m := (b & 0xFFFFFFFFFFFFF) | 0x10000000000000
+    q := e - 52
+    mut j0 := q - 1
+    if j0 < 1 {
+        j0 = 1
+    }
+    table := twoOverPi()
+    mut window := [8]u64{}
+    for t in 0..8 {
+        window[7 - t] = bitsAt(table, u64(j0) + 32 * u64(t))
+    }
+    mut p := [10]u64{}
+    halves := [2]u64{m & 0xFFFFFFFF, m >> 32}
+    for i in 0..2 {
+        mut carry u64 = 0
+        for j in 0..8 {
+            cur := p[i + j] + halves[i] * window[j] + carry
+            p[i + j] = cur & 0xFFFFFFFF
+            carry = cur >> 32
+        }
+        p[i + 8] += carry
+    }
+    point := u64(j0 + 255 - q)
+    mut n := bitsOfLimbs(p[..], point, 2)
+    mut fr := [3]u64{
+        bitsOfLimbs(p[..], point - 192, 64),
+        bitsOfLimbs(p[..], point - 128, 64),
+        bitsOfLimbs(p[..], point - 64, 64),
+    }
+    // Past one half, the nearer multiple is the next one up, and the remainder
+    // is negative.
+    mut flip := false
+    if fr[2] >> 63 == 1 {
+        n = (n + 1) & 3
+        flip = true
+        mut carry u64 = 1
+        for i in 0..3 {
+            v := (fr[i] ^ 0xFFFFFFFFFFFFFFFF) +% carry
+            if carry == 1 && v != 0 {
+                carry = 0
+            }
+            fr[i] = v
+        }
+    }
+    mut lead u64 = 0
+    mut found := false
+    for w in 0..3 {
+        at := 2 - w
+        if !found && fr[at] != 0 {
+            lead = u64(at) * 64 + leadingBit(fr[at])
+            found = true
+        }
+    }
+    if !found {
+        return Reduced{n: n, y0: 0.0, y1: 0.0}
+    }
+    mut limbs := [6]u64{
+        fr[0] & 0xFFFFFFFF, fr[0] >> 32,
+        fr[1] & 0xFFFFFFFF, fr[1] >> 32,
+        fr[2] & 0xFFFFFFFF, fr[2] >> 32,
+    }
+    hiBits := bitsOfLimbs(limbs[..], lead - 52, 53)
+    loBits := bitsOfLimbs(limbs[..], lead - 105, 53)
+    hi := f64(hiBits) * pow2(i64(lead) - 52 - 192)
+    lo := f64(loBits) * pow2(i64(lead) - 105 - 192)
+
+    product := hi * pio2Hi
+    t := productError(hi, pio2Hi, product) + (hi * pio2Lo + lo * pio2Hi)
+    mut y0 := product + t
+    mut y1 := t - (y0 - product)
+    if flip {
+        y0 = -y0
+        y1 = -y1
+    }
+    if x < 0.0 {
+        n = (4 - n) & 3
+        y0 = -y0
+        y1 = -y1
+    }
+    return Reduced{n: n, y0: y0, y1: y1}
+}
+
+det func Sin(x f64) f64 {
+    ix := highOf(x) & 0x7fffffff
+    if ix <= 0x3fe921fb {
+        return sinKernel(x, 0.0, false)
+    }
+    if ix >= 0x7ff00000 {
+        return x - x
+    }
+    r := quadrant(x)
+    switch r.n {
+    case 0:
+        return sinKernel(r.y0, r.y1, true)
+    case 1:
+        return cosKernel(r.y0, r.y1)
+    case 2:
+        return -sinKernel(r.y0, r.y1, true)
+    default:
+        return -cosKernel(r.y0, r.y1)
+    }
+}
+
+det func Cos(x f64) f64 {
+    ix := highOf(x) & 0x7fffffff
+    if ix <= 0x3fe921fb {
+        return cosKernel(x, 0.0)
+    }
+    if ix >= 0x7ff00000 {
+        return x - x
+    }
+    r := quadrant(x)
+    switch r.n {
+    case 0:
+        return cosKernel(r.y0, r.y1)
+    case 1:
+        return -sinKernel(r.y0, r.y1, true)
+    case 2:
+        return -cosKernel(r.y0, r.y1)
+    default:
+        return sinKernel(r.y0, r.y1, true)
+    }
+}
