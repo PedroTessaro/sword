@@ -30,6 +30,7 @@ void usage() {
         "  -p <n>         test only: how many tests may run at once\n"
         "  -run <name>    test only: run just this one; repeat for more\n"
         "  -bench         test only: run the Benchmark... functions instead\n"
+        "  --sim          also switch tasks at atomics when SWORD_SIM_SEED runs it\n"
         "  -I <dir>       add a directory to the package search path\n"
         "  --link <arg>   an object, a library or a linker option to link\n"
         "                 against; one argument each, repeat for more\n"
@@ -176,6 +177,7 @@ int main(int argc, char **argv) {
   std::string forwarded; // options the test binary reads for itself
   std::vector<std::string> only; // `-run`: the tests to keep
   bool benching = false;         // `-bench`: run the benchmarks instead
+  bool sim = false;              // `--sim`: built for the simulator
   if (testing) output = "";
 
   for (int i = first; i < argc; i++) {
@@ -205,6 +207,7 @@ int main(int argc, char **argv) {
     else if (testing && !strcmp(arg, "-run") && i + 1 < argc)
       only.push_back(argv[++i]);
     else if (testing && !strcmp(arg, "-bench")) benching = true;
+    else if (!testing && !strcmp(arg, "--sim")) sim = true;
     else if (!strcmp(arg, "-h") || !strcmp(arg, "--help")) { usage(); return 0; }
     else if (!strcmp(arg, "--version")) {
       printf("shield %s (%s)\n", SWORD_VERSION, SWORD_RELEASE_NAME);
@@ -265,6 +268,7 @@ int main(int argc, char **argv) {
   }
 
   IrModule mod;
+  mod.sim_points = sim;
   lower(prog, types, mode, mod);
 
   if (stage == STAGE_IR) {

@@ -87,6 +87,10 @@ struct IrModule {
   std::vector<std::string> strings;
   std::vector<Type *> structs; // every struct type the backend must name
   std::vector<std::vector<std::string>> vtables;
+  // Built for the simulator: every atomic operation is also a point where the
+  // simulated scheduler may switch tasks, which is where two tasks' order over
+  // an atomic can be explored. Off, the code is exactly what it always was.
+  bool sim_points = false;
 
   int intern(const std::string &text) {
     for (size_t i = 0; i < strings.size(); i++)

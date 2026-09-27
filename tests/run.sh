@@ -319,6 +319,17 @@ else
     fail=$((fail + 1))
 fi
 
+# `--sim` puts a switch point before every atomic operation; without it the
+# code is what it always was.
+with_points=$("$shield" "$root/tests/atomics.sword" --sim --emit-llvm 2>&1 | grep -c "call void @sword_sim_point")
+without=$("$shield" "$root/tests/atomics.sword" --emit-llvm 2>&1 | grep -c "sword_sim_point")
+if [ "$with_points" -gt 0 ] && [ "$without" = 0 ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL --sim: $with_points switch points with it, $without without"
+    fail=$((fail + 1))
+fi
+
 # Both programs say the version the source says, and the same one.
 want_version=$(sed -n 's/^#define SWORD_VERSION "\(.*\)"/\1/p' "$root/src/version.h")
 for program in shield swordls; do
