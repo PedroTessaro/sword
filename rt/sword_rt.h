@@ -92,6 +92,8 @@ int sword_errno(void);
 int sword_park_timer(int64_t deadline_ns);
 // Drops anything waiting on a descriptor about to be closed.
 void sword_forget_fd(int32_t fd);
+// For a socket just made or accepted, before its generation is first read.
+void sword_fresh_fd(int32_t fd);
 // Read before a call that may answer "not yet", and handed to the wait.
 uint64_t sword_fd_generation(int32_t fd);
 // Forgets a socket and closes it; how the close happens is the poller's call.

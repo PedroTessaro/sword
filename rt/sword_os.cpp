@@ -43,6 +43,8 @@ bool open_signal_pipe() {
     int flags = fcntl(signal_pipe[end], F_GETFL, 0);
     fcntl(signal_pipe[end], F_SETFL, flags | O_NONBLOCK);
   }
+  // Waited on like a socket, so it may be under a number a socket had.
+  sword_fresh_fd(signal_pipe[0]);
   return true;
 }
 

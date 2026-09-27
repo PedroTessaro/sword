@@ -34,6 +34,11 @@ uint64_t sword_poll_generation(int fd);
 // and moves its generation on.
 void sword_poll_forget(int fd);
 
+// For a descriptor the kernel has just handed out, before its generation is
+// first read. The number may be one a close released a moment ago, and that
+// close moves the generation on only after it has closed.
+void sword_poll_fresh(int fd);
+
 // Closes a forgotten descriptor. With kqueue the poller's own thread does it,
 // between two waits; elsewhere it happens here. Either way the number is not
 // handed out again before the close, since the descriptor stays open until then.
