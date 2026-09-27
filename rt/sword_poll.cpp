@@ -2,6 +2,7 @@
 #include "sword_os.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -85,7 +86,12 @@ struct Poller {
   std::map<uint64_t, void *> sleepers;
   uint64_t next_seq = 1;
   // Descriptors to close, for the poller thread to close. See sword_poll_close.
+  // Each asks with a ticket and waits until `closed_upto` reaches it, so a
+  // close has happened by the time the call that asked for it returns.
   std::vector<int> closing;
+  uint64_t close_asked = 0;
+  uint64_t closed_upto = 0;
+  std::condition_variable closed;
 };
 
 Poller &poller();
@@ -253,7 +259,9 @@ void close_pending(Poller &p) {
       close(fd);
     }
     p.closing.clear();
+    p.closed_upto = p.close_asked;
   }
+  p.closed.notify_all();
   for (const Waiter &w : woken) p.wake(w.token, SWORD_POLL_FAILED);
 }
 
@@ -423,17 +431,25 @@ void sword_poll_forget(int fd) {
 
 uint64_t sword_poll_generation(int fd) { return generation_of(fd); }
 
+// The caller waits for the poller to have done it: a socket that is still open
+// after Close returned would take a datagram meant for nobody, or keep its port
+// from being listened on again. The wait is short — the nudge ends the poller's
+// kevent at once — and it holds the thread rather than parking the task, since
+// parking goes through this same poller.
 void sword_poll_close(int fd) {
 #ifdef SWORD_KQUEUE
   Poller &p = poller();
+  std::unique_lock<std::mutex> held(p.lock);
   if (p.handle >= 0 && !p.stopping.load(std::memory_order_acquire)) {
-    {
-      std::lock_guard<std::mutex> held(p.lock);
-      p.closing.push_back(fd);
-    }
+    p.closing.push_back(fd);
+    uint64_t ticket = ++p.close_asked;
+    held.unlock();
     nudge(p);
+    held.lock();
+    p.closed.wait(held, [&p, ticket] { return p.closed_upto >= ticket; });
     return;
   }
+  held.unlock();
 #endif
   close(fd);
 }
@@ -441,7 +457,12 @@ void sword_poll_close(int fd) {
 void sword_poll_stop(void) {
   Poller &p = poller();
   if (p.handle < 0) return;
-  p.stopping.store(true, std::memory_order_release);
+  {
+    // Under the lock, so a close either is queued before the poller's last
+    // pass or sees it is stopping and closes in place.
+    std::lock_guard<std::mutex> held(p.lock);
+    p.stopping.store(true, std::memory_order_release);
+  }
   nudge(p);
   if (p.thread.joinable()) p.thread.join();
 }
