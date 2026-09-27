@@ -1,0 +1,22 @@
+// Run under SWORD_SIM_SEED by tests/run.sh: an hour of sleep takes no time,
+// the monotonic clock says an hour passed, and the wall clock starts at
+// 2000-01-01 00:00:00 UTC and moves with it.
+
+import "std/io"
+import "std/time"
+
+func main() !int {
+    if time.Unix() != 946684800 {
+        return 1
+    }
+    start := time.Now()
+    time.Sleep(time.Seconds(3600))
+    if time.Since(start).AsSeconds() != 3600.0 {
+        return 2
+    }
+    if time.Unix() != 946684800 + 3600 {
+        return 3
+    }
+    try io.Print("an hour went by\n")
+    return 42
+}

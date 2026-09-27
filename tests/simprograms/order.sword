@@ -1,0 +1,27 @@
+// Run under SWORD_SIM_SEED by tests/run.sh: five tasks take turns through one
+// channel, and the order they arrive in is the scheduler's choice. The same
+// seed gives the same order every time; different seeds give different ones.
+
+import "std/io"
+import "std/mem"
+
+func arrive(id u64, out chan[u64]) !void {
+    try out <- id
+}
+
+func main() !int {
+    mut room := [4096]u8{}
+    mut arena := mem.NewArena(room[..])
+    order := try chan[u64](&arena, 8)
+    scope {
+        for id in 0..5 {
+            spawn arrive(u64(id), order)
+        }
+    }
+    close(order)
+    for id := <-order {
+        try io.Printf("{}", id)
+    }
+    try io.Print("\n")
+    return 42
+}

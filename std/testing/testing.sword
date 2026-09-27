@@ -286,9 +286,45 @@ func parallelism() u64 {
     return DefaultParallel
 }
 
+// `-only NAME` keeps just that test, chosen when the binary runs rather than
+// when it is built: `shield test -sim` runs each test on its own under many
+// seeds, and building once is what makes that affordable. Empty when not given.
+func onlyName() string {
+    mut room := [16]string{}
+    args := os.Args(room[..])
+    for i in 0..args.len {
+        if args[i] == "-only" && i + 1 < args.len {
+            return args[i+1]
+        }
+    }
+    return ""
+}
+
+func listing() bool {
+    mut room := [16]string{}
+    args := os.Args(room[..])
+    for i in 0..args.len {
+        if args[i] == "-list" {
+            return true
+        }
+    }
+    return false
+}
+
 // Runs every case and reports. The exit status is what `shield test` hands back
 // to the shell: zero only when nothing failed.
 func Run(cases []Case) !int {
+    // `-list` names the tests, one a line, and runs none.
+    if listing() {
+        mut w := io.NewWriter(io.Stdout)
+        for c in cases {
+            try w.WriteString(c.Name)
+            try w.WriteString("\n")
+        }
+        try w.Flush()
+        return 0
+    }
+    only := onlyName()
     mut tally := Tally{failed: atomic[u64](0), skipped: atomic[u64](0)}
     mut gate := shared[u64](0)
     at_once := parallelism()
@@ -304,7 +340,9 @@ func Run(cases []Case) !int {
         }
         scope {
             for i in from..upto {
-                spawn runOne(cases, i, &tally, &gate)
+                if only.len == 0 || cases[i].Name == only {
+                    spawn runOne(cases, i, &tally, &gate)
+                }
             }
         }
         from = upto
@@ -313,6 +351,14 @@ func Run(cases []Case) !int {
     took := time.Since(start)
     failed := tally.failed.Load()
     skipped := tally.skipped.Load()
+    // `-only` is how the simulator runs one test a seed, and it writes its own
+    // summary; a tally of one here would sit in the middle of its report.
+    if only.len > 0 {
+        if failed > 0 {
+            return 1
+        }
+        return 0
+    }
 
     mut w := io.NewWriter(io.Stdout)
     if failed == 0 {

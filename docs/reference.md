@@ -1579,6 +1579,10 @@ shield test <file.sword | directory> [options]
   -p <n>          test only: how many tests may run at once
   -run <name>     test only: run just this one; repeat for more
   -bench          test only: run the Benchmark... functions instead
+  -sim            test only: every test under simulated scheduling, once a seed
+  -seeds <n>      test only, with -sim: how many seeds, default 100
+  -seed <n>       test only, with -sim: just this seed
+  --sim           switch tasks at atomics too, under SWORD_SIM_SEED
   --emit-tokens   stop after lexing
   --emit-ast      stop after parsing and checking
   --emit-ir       stop after lowering, print Sword IR
@@ -1600,6 +1604,11 @@ shield sheath.sword -o sheath --link shim.o --link -L/opt/homebrew/lib \
 `shield test` builds the package together with its `*_test.sword` files behind a
 generated entry point, runs it, and hands back its exit status. Those files are
 left out of every other build. See [Testing](testing.md).
+
+`SWORD_SIM_SEED=<n>` runs any program on one thread with every scheduling
+choice drawn from the seed and a virtual clock; the same seed makes the same
+run. It exits with 3 on a deadlock and 4 when the program does something the
+simulator does not simulate yet. See [Simulation](testing.md#simulation).
 
 | Mode | Bounds and overflow checks | Optimisation |
 |---|---|---|

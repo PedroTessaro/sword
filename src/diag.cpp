@@ -96,4 +96,11 @@ void note(Pos pos, const char *fmt, ...) {
   va_end(ap);
 }
 
+void warning(Pos pos, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  report(pos, "warning", fmt, ap);
+  va_end(ap);
+}
+
 int error_count() { return errors; }
