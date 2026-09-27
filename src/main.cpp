@@ -8,6 +8,7 @@
 #include "lexer.h"
 #include "lower.h"
 #include "parser.h"
+#include "version.h"
 #include "types.h"
 
 #include <cstdio>
@@ -38,7 +39,8 @@ void usage() {
         "  --emit-tokens  stop after lexing\n"
         "  --emit-ast     stop after parsing and checking\n"
         "  --emit-ir      stop after lowering, print Sword IR\n"
-        "  --emit-llvm    stop after codegen, print LLVM IR\n",
+        "  --emit-llvm    stop after codegen, print LLVM IR\n"
+        "  --version      print the version and stop\n",
         stderr);
 }
 
@@ -204,6 +206,10 @@ int main(int argc, char **argv) {
       only.push_back(argv[++i]);
     else if (testing && !strcmp(arg, "-bench")) benching = true;
     else if (!strcmp(arg, "-h") || !strcmp(arg, "--help")) { usage(); return 0; }
+    else if (!strcmp(arg, "--version")) {
+      printf("shield %s (%s)\n", SWORD_VERSION, SWORD_RELEASE_NAME);
+      return 0;
+    }
     else if (arg[0] == '-') { usage(); return 1; }
     else input = arg;
   }

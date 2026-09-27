@@ -286,5 +286,18 @@ benched 0 "ns/op" -bench
 benched 0 "ok    1 tests"                     # without it, the tests run
 benched 1 "no benchmark 'BenchmarkNope'" -bench -run BenchmarkNope
 
+# Both programs say the version the source says, and the same one.
+want_version=$(sed -n 's/^#define SWORD_VERSION "\(.*\)"/\1/p' "$root/src/version.h")
+for program in shield swordls; do
+    said=$("$root/$program" --version 2>&1)
+    case $said in
+    "$program $want_version ("*")") pass=$((pass + 1)) ;;
+    *)
+        echo "FAIL $program --version: '$said', want $want_version"
+        fail=$((fail + 1))
+        ;;
+    esac
+done
+
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

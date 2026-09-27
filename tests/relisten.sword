@@ -1,0 +1,33 @@
+// expect: 42
+// expect-output: the port was free again
+// A socket is closed by the time Close returns. The poller may be the one that
+// closes it, and if the call came back first, listening on the same port again
+// failed as "in use" and a datagram could still reach a socket its owner had
+// let go of.
+
+import "std/io"
+import "std/net"
+import "std/time"
+
+func main() !int {
+    // A sleep parks the task, which starts the poller: before that, nothing
+    // goes through it and a close happens in place.
+    time.Sleep(time.Millis(1))
+    mut first := try net.Listen(0)
+    port := first.Port()
+    for i in 0..200 {
+        first.Close()
+        first = try net.ListenOn("127.0.0.1", port, false)
+    }
+    first.Close()
+
+    mut u := try net.ListenUDP(0)
+    uport := u.Port()
+    for i in 0..200 {
+        u.Close()
+        u = try net.ListenUDPOn("127.0.0.1", uport)
+    }
+    u.Close()
+    try io.Print("the port was free again\n")
+    return 42
+}

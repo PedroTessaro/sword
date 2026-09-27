@@ -3,6 +3,7 @@
 #include "../src/package.h"
 #include "../src/paths.h"
 #include "../src/types.h"
+#include "../src/version.h"
 #include "complete.h"
 #include "json.h"
 #include "semantic.h"
@@ -177,7 +178,7 @@ struct Server {
 
     Json info = Json::object();
     info.set("name", Json::of("swordls"));
-    info.set("version", Json::of("0.1"));
+    info.set("version", Json::of(SWORD_VERSION));
 
     Json result = Json::object();
     result.set("capabilities", caps);
@@ -375,7 +376,7 @@ bool read_message(std::string &body) {
 
 int main(int argc, char **argv) {
   if (argc > 1 && !strcmp(argv[1], "--version")) {
-    printf("swordls 0.1\n");
+    printf("swordls %s (%s)\n", SWORD_VERSION, SWORD_RELEASE_NAME);
     return 0;
   }
 
