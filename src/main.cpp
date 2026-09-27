@@ -14,9 +14,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <poll.h>
+#include <signal.h>
 #include <string>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
+#include <vector>
 
 namespace {
 
@@ -30,6 +34,10 @@ void usage() {
         "  -p <n>         test only: how many tests may run at once\n"
         "  -run <name>    test only: run just this one; repeat for more\n"
         "  -bench         test only: run the Benchmark... functions instead\n"
+        "  -sim           test only: run each test under simulated scheduling,\n"
+        "                 one thread and a virtual clock, once per seed\n"
+        "  -seeds <n>     test only, with -sim: how many seeds (default 100)\n"
+        "  -seed <n>      test only, with -sim: just this seed\n"
         "  --sim          also switch tasks at atomics when SWORD_SIM_SEED runs it\n"
         "  -I <dir>       add a directory to the package search path\n"
         "  --link <arg>   an object, a library or a linker option to link\n"
@@ -157,6 +165,169 @@ bool assemble(const std::string &ll_path, const std::string &out_path,
   return true;
 }
 
+// --- shield test -sim --------------------------------------------------------
+
+// A call out of the language does whatever it does, on the machine's time, and
+// the simulator can neither schedule around it nor play it back. The standard
+// library's own calls out are the runtime's, which the simulator knows; any
+// other package's are worth saying out loud, once each.
+void warn_calls_out(Node *n) {
+  if (!n) return;
+  if (n->kind == ND_CALL && n->sym && n->sym->decl && n->sym->decl->is_extern)
+    warning(n->pos,
+            "this calls out of the language (%s); the simulator cannot "
+            "replay what it does",
+            n->sym->name.c_str());
+  for (Node *kid : n->kids) warn_calls_out(kid);
+  warn_calls_out(n->lhs);
+  warn_calls_out(n->rhs);
+  warn_calls_out(n->cond);
+  warn_calls_out(n->body);
+  warn_calls_out(n->els);
+}
+
+void warn_unsimulated(Program &prog) {
+  for (Package *pkg : prog.order) {
+    if (pkg->import_path.compare(0, 4, "std/") == 0) continue;
+    for (Node *decl : pkg->unit->kids)
+      if (decl->kind == ND_FUNC) warn_calls_out(decl->body);
+  }
+}
+
+// A run of the test binary, and everything it said.
+struct Captured {
+  int status = -1;    // exit status, or -1 when it did not exit on its own
+  bool timed_out = false;
+  std::string out;
+};
+
+// Runs `binary args...` with SWORD_SIM_SEED set, collecting stdout and stderr
+// together, and gives up after `limit` seconds: a task that never waits cannot
+// be switched away from, and then only the clock outside says so.
+Captured run_captured(const std::string &binary,
+                      const std::vector<std::string> &args, const char *seed,
+                      int limit) {
+  Captured got;
+  int pipe_ends[2];
+  if (pipe(pipe_ends) != 0) return got;
+  pid_t child = fork();
+  if (child < 0) return got;
+  if (child == 0) {
+    if (seed) setenv("SWORD_SIM_SEED", seed, 1);
+    else unsetenv("SWORD_SIM_SEED");
+    dup2(pipe_ends[1], 1);
+    dup2(pipe_ends[1], 2);
+    close(pipe_ends[0]);
+    close(pipe_ends[1]);
+    std::vector<char *> argv{const_cast<char *>(binary.c_str())};
+    for (const std::string &a : args) argv.push_back(const_cast<char *>(a.c_str()));
+    argv.push_back(nullptr);
+    execv(binary.c_str(), argv.data());
+    _exit(127);
+  }
+  close(pipe_ends[1]);
+  time_t until = time(nullptr) + limit;
+  char buffer[4096];
+  while (true) {
+    pollfd watch{pipe_ends[0], POLLIN, 0};
+    int ready = poll(&watch, 1, 200);
+    if (ready > 0) {
+      ssize_t n = read(pipe_ends[0], buffer, sizeof(buffer));
+      if (n <= 0) break;
+      got.out.append(buffer, (size_t)n);
+      continue;
+    }
+    if (time(nullptr) >= until) {
+      kill(child, SIGKILL);
+      got.timed_out = true;
+      break;
+    }
+  }
+  close(pipe_ends[0]);
+  int status = 0;
+  waitpid(child, &status, 0);
+  if (!got.timed_out && WIFEXITED(status)) got.status = WEXITSTATUS(status);
+  return got;
+}
+
+void indented(const std::string &text) {
+  size_t at = 0;
+  while (at < text.size()) {
+    size_t end = text.find('\n', at);
+    if (end == std::string::npos) end = text.size();
+    printf("     %s\n", text.substr(at, end - at).c_str());
+    at = end + 1;
+  }
+}
+
+// Each test on its own, once per seed: a failure comes with the seed that
+// makes it happen again. The runtime's answers are read from its exit status —
+// 3 is a deadlock it found, 4 something it does not simulate yet.
+int simulate(const std::string &output, const char *input, uint64_t first,
+             uint64_t count, bool one_seed) {
+  std::string binary = output;
+  if (binary.find('/') == std::string::npos) binary = "./" + binary;
+  Captured names = run_captured(binary, {"-list"}, nullptr, 60);
+  if (names.status != 0) {
+    fputs(names.out.c_str(), stdout);
+    return 1;
+  }
+  std::vector<std::string> tests;
+  size_t at = 0;
+  while (at < names.out.size()) {
+    size_t end = names.out.find('\n', at);
+    if (end == std::string::npos) end = names.out.size();
+    if (end > at) tests.push_back(names.out.substr(at, end - at));
+    at = end + 1;
+  }
+
+  int failed = 0, skipped = 0;
+  for (const std::string &test : tests) {
+    bool bad = false;
+    for (uint64_t i = 0; i < count && !bad; i++) {
+      uint64_t s = one_seed ? first : i + 1;
+      std::string seed_text = std::to_string(s);
+      Captured run = run_captured(binary, {"-only", test}, seed_text.c_str(), 60);
+      if (run.status == 0) {
+        if (one_seed) fputs(run.out.c_str(), stdout);
+        continue;
+      }
+      if (run.status == 4) {
+        printf("SKIP  %s: %s", test.c_str(),
+               run.out.find("network") != std::string::npos
+                   ? "uses the network, which -sim does not simulate yet\n"
+                   : "waits on a descriptor, which -sim does not simulate yet\n");
+        skipped++;
+        bad = true;
+        break;
+      }
+      failed++;
+      bad = true;
+      if (run.timed_out)
+        printf("FAIL  %s under seed %llu: did not finish in 60 s — a task that "
+               "never waits cannot be switched away from\n",
+               test.c_str(), (unsigned long long)s);
+      else if (run.status == 3)
+        printf("FAIL  %s under seed %llu: deadlock\n", test.c_str(),
+               (unsigned long long)s);
+      else
+        printf("FAIL  %s under seed %llu\n", test.c_str(), (unsigned long long)s);
+      indented(run.out);
+      printf("      reproduce: shield test -sim -seed %llu -run %s %s\n",
+             (unsigned long long)s, test.c_str(), input);
+    }
+  }
+  size_t ran = tests.size() - (size_t)skipped;
+  printf("%s  %zu tests", failed ? "FAIL" : "ok  ", ran);
+  if (failed) printf(", %d failed", failed);
+  if (skipped) printf(", %d skipped", skipped);
+  if (one_seed)
+    printf(", seed %llu\n", (unsigned long long)first);
+  else
+    printf(", %llu seeds each\n", (unsigned long long)count);
+  return failed ? 1 : 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -177,7 +348,10 @@ int main(int argc, char **argv) {
   std::string forwarded; // options the test binary reads for itself
   std::vector<std::string> only; // `-run`: the tests to keep
   bool benching = false;         // `-bench`: run the benchmarks instead
-  bool sim = false;              // `--sim`: built for the simulator
+  bool sim = false;              // `-sim` / `--sim`: built for the simulator
+  uint64_t seeds = 100;          // `-seeds`: how many, from 1
+  bool one_seed = false;         // `-seed`: just this one
+  uint64_t seed = 0;
   if (testing) output = "";
 
   for (int i = first; i < argc; i++) {
@@ -207,7 +381,14 @@ int main(int argc, char **argv) {
     else if (testing && !strcmp(arg, "-run") && i + 1 < argc)
       only.push_back(argv[++i]);
     else if (testing && !strcmp(arg, "-bench")) benching = true;
+    else if (testing && !strcmp(arg, "-sim")) sim = true;
     else if (!testing && !strcmp(arg, "--sim")) sim = true;
+    else if (testing && !strcmp(arg, "-seeds") && i + 1 < argc)
+      seeds = strtoull(argv[++i], nullptr, 10);
+    else if (testing && !strcmp(arg, "-seed") && i + 1 < argc) {
+      one_seed = true;
+      seed = strtoull(argv[++i], nullptr, 10);
+    }
     else if (!strcmp(arg, "-h") || !strcmp(arg, "--help")) { usage(); return 0; }
     else if (!strcmp(arg, "--version")) {
       printf("shield %s (%s)\n", SWORD_VERSION, SWORD_RELEASE_NAME);
@@ -267,6 +448,8 @@ int main(int argc, char **argv) {
     return 0;
   }
 
+  if (sim) warn_unsimulated(prog);
+
   IrModule mod;
   mod.sim_points = sim;
   lower(prog, types, mode, mod);
@@ -295,6 +478,13 @@ int main(int argc, char **argv) {
   unlink(ll_path.c_str());
   if (!ok) return 1;
   if (!testing) return 0;
+
+  if (sim) {
+    int status = simulate(output, input, one_seed ? seed : 0,
+                          one_seed ? 1 : seeds, one_seed);
+    if (!named) unlink(output.c_str());
+    return status;
+  }
 
   // Run it, hand back what it says, and leave nothing behind.
   std::string command = output;

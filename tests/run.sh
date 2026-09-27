@@ -286,6 +286,44 @@ benched 0 "ns/op" -bench
 benched 0 "ok    1 tests"                     # without it, the tests run
 benched 1 "no benchmark 'BenchmarkNope'" -bench -run BenchmarkNope
 
+# The simulator finds what it is for. Each planted bug is reported with a seed,
+# that seed makes it happen again, a deadlock is called one, the correct tests
+# pass under every seed, and the network test is skipped rather than run.
+sim_out=$(perl -e 'alarm 120; exec @ARGV' "$shield" test "$root/tests/simulated" -sim -seeds 50 2>&1)
+sim_check() { # description, pattern
+    if printf '%s\n' "$sim_out" | grep -qE "$2"; then
+        pass=$((pass + 1))
+    else
+        echo "FAIL shield test -sim: $1"
+        printf '%s\n' "$sim_out" | sed 's/^/     /'
+        fail=$((fail + 1))
+    fi
+}
+sim_check "finds the lost update" "^FAIL  TestLostUpdate under seed [0-9]+$"
+sim_check "calls the deadlock one" "^FAIL  TestOppositeLocks under seed [0-9]+: deadlock$"
+sim_check "skips the network" "^SKIP  TestNetwork: uses the network"
+sim_check "reports the run" "^FAIL  4 tests, 2 failed, 1 skipped, 50 seeds each$"
+if printf '%s\n' "$sim_out" | grep -qE "^FAIL  (TestAtomicAdd|TestHourLongSleep)"; then
+    echo "FAIL shield test -sim: a correct test failed"
+    printf '%s\n' "$sim_out" | sed 's/^/     /'
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
+lost_seed=$(printf '%s\n' "$sim_out" | sed -n 's/^FAIL  TestLostUpdate under seed \([0-9]*\)$/\1/p')
+again=0
+for i in 1 2 3; do
+    "$shield" test "$root/tests/simulated" -sim -seed "$lost_seed" \
+        -run TestLostUpdate > "$tmp/sim.again" 2>&1 && continue
+    grep -q "got 1, want 2" "$tmp/sim.again" && again=$((again + 1))
+done
+if [ "$again" = 3 ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL shield test -sim: seed $lost_seed reproduced $again times of 3"
+    fail=$((fail + 1))
+fi
+
 # Any program runs simulated under SWORD_SIM_SEED: the clock is virtual, the
 # same seed gives the same run, and different seeds explore different orders.
 "$shield" "$root/tests/simprograms/clock.sword" -o "$tmp/simclock" \
@@ -327,6 +365,17 @@ if [ "$with_points" -gt 0 ] && [ "$without" = 0 ]; then
     pass=$((pass + 1))
 else
     echo "FAIL --sim: $with_points switch points with it, $without without"
+    fail=$((fail + 1))
+fi
+
+# A call out of the language is said out loud under the simulator, which
+# cannot replay it, and nowhere else.
+warned=$("$shield" "$root/tests/defer.sword" --sim -o "$tmp/simwarn" 2>&1 | grep -c "warning: this calls out of the language (write)")
+quiet=$("$shield" "$root/tests/defer.sword" -o "$tmp/simwarn" 2>&1 | grep -c "warning")
+if [ "$warned" -gt 0 ] && [ "$quiet" = 0 ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL --sim: $warned warnings about calling out with it, $quiet without"
     fail=$((fail + 1))
 fi
 
