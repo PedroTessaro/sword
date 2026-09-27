@@ -74,10 +74,17 @@ const int64_t kDefaultCeiling = 512;
 // the pair is replaced whole.
 const uint64_t kNoFailure = ~(uint64_t)0;
 
+struct Fiber;
+
+// A task waiting for its scope's tasks sets this in `outstanding` and parks;
+// the task that brings the count to zero with it set is the one to wake it.
+const int64_t kJoining = (int64_t)1 << 62;
+
 struct Scope {
   std::atomic<int64_t> outstanding;
   std::atomic<uint64_t> failed; // spawn index << 16 | code, or kNoFailure
   int64_t spawned;              // only the scope's own task spawns into it
+  Fiber *joiner;                // the task parked at the closing brace
 };
 
 static_assert(sizeof(Scope) <= SWORD_SCOPE_SIZE, "scope blob too small");
@@ -514,6 +521,8 @@ void recycle(Task *task) {
   else delete task;
 }
 
+void make_runnable(Fiber *f);
+
 void finish_task(Task *task, uint16_t code) {
   Scope *scope = task->scope;
   if (code != 0) {
@@ -525,7 +534,17 @@ void finish_task(Task *task, uint16_t code) {
     }
   }
   recycle(task);
-  scope->outstanding.fetch_sub(1, std::memory_order_release);
+  // The scope lives on the joiner's stack. When nobody is parked on it, this
+  // decrement is the last time the scope is touched, and the joiner may be gone
+  // the moment it lands; when somebody is, the joiner cannot leave until woken,
+  // so reading it afterwards is safe.
+  if (scope->outstanding.fetch_sub(1, std::memory_order_acq_rel) ==
+      (kJoining | 1)) {
+    Fiber *j = scope->joiner;
+    if (j->state.exchange(FIBER_READY, std::memory_order_acq_rel) ==
+        FIBER_PARKED)
+      make_runnable(j);
+  }
 }
 
 Fiber *fresh_fiber(Task *task);
@@ -1153,8 +1172,32 @@ void sword_mutex_unwatch(void **blobs, int64_t n, void *nodes) {
 
 namespace {
 
-// Instead of idling, a thread waiting on a scope runs whatever work it can
-// find. That is what makes nested scopes safe from deadlock.
+// A task at the closing brace of its scope parks until the last of the scope's
+// tasks finishes, and its thread goes back to running whatever there is. It used
+// to run the scope's tasks itself, on its own stack — and whatever else was
+// ready, which could be a task waiting on a scope that this task's own frame,
+// buried underneath, was holding open: the one below could not continue until
+// the one on top returned, and the one on top was waiting for the one below.
+bool join_parked(Scope *scope) {
+  Fiber *f = tl_fiber;
+  if (!f) return false;
+  scope->joiner = f;
+  f->state.store(FIBER_PARKING, std::memory_order_release);
+  int64_t before =
+      scope->outstanding.fetch_or(kJoining, std::memory_order_acq_rel);
+  if (before == 0) {
+    // Everything had finished already: nothing will wake us, so do not park.
+    scope->outstanding.fetch_and(~kJoining, std::memory_order_relaxed);
+    f->state.store(FIBER_RUNNING, std::memory_order_release);
+    return true;
+  }
+  leave(f, false);
+  scope->outstanding.fetch_and(~kJoining, std::memory_order_relaxed);
+  return true;
+}
+
+// Instead of idling, a thread waiting on a scope from its own stack runs
+// whatever work it can find.
 //
 // When there is nothing to run it yields for a while and then starts sleeping. A
 // join that waits on something slow — a task on a two-second timer, a server
@@ -1162,6 +1205,9 @@ namespace {
 // nobody was using for anything. The cap is a millisecond, so the join answers
 // promptly once work appears.
 void drain_until(Scope *scope) {
+  // Only the thread's own stack drains — the one `main` started from, or code
+  // outside any task. Everywhere else the task parks.
+  if (join_parked(scope)) return;
   Pool &p = pool();
   int idle = 0;
   int64_t nap = 50000; // nanoseconds, doubling to a millisecond
@@ -1316,6 +1362,7 @@ void sword_scope_begin(void *blob) {
   scope->outstanding.store(0, std::memory_order_relaxed);
   scope->failed.store(kNoFailure, std::memory_order_relaxed);
   scope->spawned = 0;
+  scope->joiner = nullptr;
   pool();
 }
 
