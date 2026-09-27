@@ -34,10 +34,39 @@ struct Waiter {
 
 struct Slot {
   std::vector<Waiter> waiting;
-  // Forgotten, and not yet handed out again by the kernel. A registration that
-  // arrives in between is for a descriptor on its way to being closed.
-  bool gone = false;
 };
+
+// Every forget moves a descriptor's generation on. A wait carries the
+// generation its caller read before the call that answered "not yet", and one
+// that no longer matches is for a descriptor closed since then — whatever the
+// number names now. A number is handed out again as soon as it is closed, often
+// to the next socket, sometimes to the poller's own pipe, and a wait that took it
+// for the old descriptor slept for good.
+//
+// Read on every socket wait, so without the lock: chunks of atomics that are
+// never moved or freed once made.
+const size_t kGenChunk = 4096;
+const size_t kGenChunks = 4096;
+std::atomic<std::atomic<uint64_t> *> gen_chunks[kGenChunks];
+
+std::atomic<uint64_t> *gen_slot(int fd, bool make) {
+  if (fd < 0 || (size_t)fd / kGenChunk >= kGenChunks) return nullptr;
+  std::atomic<std::atomic<uint64_t> *> &at = gen_chunks[(size_t)fd / kGenChunk];
+  std::atomic<uint64_t> *chunk = at.load(std::memory_order_acquire);
+  if (!chunk && make) {
+    std::atomic<uint64_t> *fresh = new std::atomic<uint64_t>[kGenChunk]();
+    if (at.compare_exchange_strong(chunk, fresh, std::memory_order_acq_rel))
+      chunk = fresh;
+    else
+      delete[] fresh;
+  }
+  return chunk ? &chunk[(size_t)fd % kGenChunk] : nullptr;
+}
+
+uint64_t generation_of(int fd) {
+  std::atomic<uint64_t> *g = gen_slot(fd, false);
+  return g ? g->load(std::memory_order_acquire) : 0;
+}
 
 struct Poller {
   int handle = -1;     // the kqueue or epoll descriptor
@@ -55,6 +84,8 @@ struct Poller {
   std::multimap<int64_t, std::pair<int, uint64_t>> timers;
   std::map<uint64_t, void *> sleepers;
   uint64_t next_seq = 1;
+  // Descriptors to close, for the poller thread to close. See sword_poll_close.
+  std::vector<int> closing;
 };
 
 Poller &poller();
@@ -110,20 +141,19 @@ void deliver_one(Poller &p, size_t slot, uint64_t seq, int result) {
   if (token) p.wake(token, result);
 }
 
-// False when the descriptor has been forgotten or the kernel refused it, which
-// is what a closed one gets. Nothing will ever report on it, so the caller has
-// to.
+// False when the descriptor has been forgotten since `generation` was read, or
+// the kernel refused it, which is what a closed one gets. Nothing will ever
+// report on it, so the caller has to. The poller's own pipe is armed without a
+// generation.
 //
-// Under the lock, and checked against the mark there, so a registration and
-// the close that follows a forget never overlap: one that started finishes
-// before the forget can mark anything, and one that starts later sees the mark.
-// On macOS that is not tidiness. A close racing an EV_ADD on the same socket
-// can wait in the kernel for good, in a state not even SIGKILL ends — reproduced
-// in twenty lines of C with nothing of ours in them.
-bool arm(Poller &p, int fd, int writable) {
+// Under the lock, and checked against the generation there, so a registration
+// and the close that follows a forget never overlap: one that started finishes
+// before the forget can move the generation on, and one that starts later sees
+// it moved. With kqueue the close itself also happens under this lock, on the
+// poller's thread — see close_pending.
+bool arm(Poller &p, int fd, int writable, uint64_t generation, bool checked) {
   std::lock_guard<std::mutex> held(p.lock);
-  size_t base = slot_of(fd, 0);
-  if (base + 1 < p.slots.size() && p.slots[base + writable].gone) return false;
+  if (checked && generation_of(fd) != generation) return false;
 #ifdef SWORD_KQUEUE
   struct kevent change;
   EV_SET(&change, fd, writable ? EVFILT_WRITE : EVFILT_READ,
@@ -132,6 +162,7 @@ bool arm(Poller &p, int fd, int writable) {
 #else
   // epoll is per descriptor rather than per filter, so both directions share
   // one registration and the events are rebuilt from what is still waiting.
+  size_t base = slot_of(fd, 0);
   epoll_event ev;
   memset(&ev, 0, sizeof(ev));
   ev.data.fd = fd;
@@ -193,6 +224,39 @@ void expire(Poller &p) {
   }
 }
 
+// The poller's own thread closes a socket, between one kevent and the next and
+// under the lock every registration takes. On macOS a close that meets a kqueue
+// registration of the same socket — one being added, or a knote that fired as it
+// was attached, the socket already shut down — can wait in the kernel for good,
+// in a state not even SIGKILL ends. Reproduced in plain C; which interleaving
+// does it was not worth more stuck processes to pin down, since doing the close
+// here rules every one of them out.
+//
+// Between the forget and this close the descriptor is still open, so a task
+// that read its generation after the forget can still find it "not ready" and
+// register. The generation moves on again here, and whoever registered in
+// between is told, or the close would drop the registration without a word.
+void close_pending(Poller &p) {
+  std::vector<Waiter> woken;
+  {
+    std::lock_guard<std::mutex> held(p.lock);
+    for (int fd : p.closing) {
+      if (std::atomic<uint64_t> *g = gen_slot(fd, true))
+        g->fetch_add(1, std::memory_order_acq_rel);
+      for (int writable = 0; writable < 2; writable++) {
+        size_t slot = slot_of(fd, writable);
+        if (slot >= p.slots.size()) continue;
+        for (const Waiter &w : p.slots[slot].waiting) woken.push_back(w);
+        p.slots[slot].waiting.clear();
+      }
+      disarm(p, fd);
+      close(fd);
+    }
+    p.closing.clear();
+  }
+  for (const Waiter &w : woken) p.wake(w.token, SWORD_POLL_FAILED);
+}
+
 void drain_nudge(Poller &p) {
   char buffer[64];
   while (read(p.nudge[0], buffer, sizeof(buffer)) > 0) {
@@ -231,7 +295,7 @@ void loop() {
       bool writable = events[i].filter == EVFILT_WRITE;
       if (fd == p.nudge[0]) {
         drain_nudge(p);
-        arm(p, p.nudge[0], 0);
+        arm(p, p.nudge[0], 0, 0, false);
         continue;
       }
       deliver(p, slot_of(fd, writable), SWORD_POLL_READY);
@@ -239,7 +303,7 @@ void loop() {
       int fd = events[i].data.fd;
       if (fd == p.nudge[0]) {
         drain_nudge(p);
-        arm(p, p.nudge[0], 0);
+        arm(p, p.nudge[0], 0, 0, false);
         continue;
       }
       uint32_t got = events[i].events;
@@ -251,7 +315,9 @@ void loop() {
 #endif
     }
     expire(p);
+    close_pending(p);
   }
+  close_pending(p);
 }
 
 Poller &poller() {
@@ -287,12 +353,13 @@ void sword_poll_start(sword_wake_fn wake) {
       int flags = fcntl(p.nudge[end], F_GETFL, 0);
       fcntl(p.nudge[end], F_SETFL, flags | O_NONBLOCK);
     }
-    arm(p, p.nudge[0], 0);
+    arm(p, p.nudge[0], 0, 0, false);
     p.thread = std::thread(loop);
   });
 }
 
-void sword_poll_wait(int fd, int writable, void *token, int64_t deadline_ns) {
+void sword_poll_wait(int fd, int writable, void *token, int64_t deadline_ns,
+                     uint64_t generation) {
   Poller &p = poller();
   size_t slot = slot_of(fd, writable);
   uint64_t seq;
@@ -300,7 +367,7 @@ void sword_poll_wait(int fd, int writable, void *token, int64_t deadline_ns) {
   {
     std::lock_guard<std::mutex> held(p.lock);
     make_room(p, slot);
-    gone = p.slots[slot].gone;
+    gone = generation_of(fd) != generation;
     if (!gone) {
       seq = p.next_seq++;
       p.slots[slot].waiting.push_back(Waiter{token, seq});
@@ -311,13 +378,12 @@ void sword_poll_wait(int fd, int writable, void *token, int64_t deadline_ns) {
   // A descriptor can be forgotten between the call that answered EAGAIN and
   // this registration — a listener closed by another task while its acceptor
   // was on the way here. The forget already told everyone registered, which was
-  // nobody yet. Before the close, the mark says so; after it, the kernel's
-  // refusal does. Either is the only word this waiter will get.
+  // nobody yet; the generation is the only word this waiter will get.
   if (gone) {
     p.wake(token, SWORD_POLL_FAILED);
     return;
   }
-  if (!arm(p, fd, writable)) {
+  if (!arm(p, fd, writable, generation, true)) {
     deliver(p, slot, SWORD_POLL_FAILED);
     return;
   }
@@ -339,15 +405,15 @@ void sword_poll_sleep(void *token, int64_t deadline_ns) {
 
 // Whoever is waiting has to be told, not dropped: a descriptor is forgotten
 // when it is about to be closed, and a task still parked on it would never be
-// woken by anything else. Marked first, and before the poller need be running,
-// so that nobody can slip in between the telling and the close.
+// woken by anything else. The generation moves first, and before the poller need
+// be running, so that nobody can slip in between the telling and the close.
 void sword_poll_forget(int fd) {
   Poller &p = poller();
   {
+    // Under the lock, so a registration already under way finishes first.
     std::lock_guard<std::mutex> held(p.lock);
-    make_room(p, slot_of(fd, 1));
-    p.slots[slot_of(fd, 0)].gone = true;
-    p.slots[slot_of(fd, 1)].gone = true;
+    if (std::atomic<uint64_t> *g = gen_slot(fd, true))
+      g->fetch_add(1, std::memory_order_acq_rel);
   }
   if (p.handle < 0) return;
   disarm(p, fd);
@@ -355,14 +421,21 @@ void sword_poll_forget(int fd) {
   deliver(p, slot_of(fd, 1), SWORD_POLL_FAILED);
 }
 
-// The kernel has handed this number out again, so it names a new descriptor
-// that nobody has forgotten.
-void sword_poll_adopt(int fd) {
+uint64_t sword_poll_generation(int fd) { return generation_of(fd); }
+
+void sword_poll_close(int fd) {
+#ifdef SWORD_KQUEUE
   Poller &p = poller();
-  std::lock_guard<std::mutex> held(p.lock);
-  if (slot_of(fd, 1) >= p.slots.size()) return;
-  p.slots[slot_of(fd, 0)].gone = false;
-  p.slots[slot_of(fd, 1)].gone = false;
+  if (p.handle >= 0 && !p.stopping.load(std::memory_order_acquire)) {
+    {
+      std::lock_guard<std::mutex> held(p.lock);
+      p.closing.push_back(fd);
+    }
+    nudge(p);
+    return;
+  }
+#endif
+  close(fd);
 }
 
 void sword_poll_stop(void) {

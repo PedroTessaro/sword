@@ -9,10 +9,9 @@
 // showed up as the static-files test hanging once in a few hundred runs on
 // Linux, with every socket already closed.
 //
-// On macOS the same race had a second way to hang: a close that overlaps a
-// kqueue registration on the same socket can wait in the kernel for good. The
-// poller now registers under its lock and checks the mark there, so the two
-// never overlap.
+// On macOS the same race had a second way to hang: a close that meets a kqueue
+// registration of the same socket can wait in the kernel for good. There the
+// poller's own thread does the close, between two waits, so nothing overlaps it.
 //
 // Two thousand races give the window plenty of chances. A hang here is the bug.
 

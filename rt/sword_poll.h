@@ -21,16 +21,23 @@ void sword_poll_start(sword_wake_fn wake);
 
 // Waits for `fd` to be readable (or writable), then calls the wake function
 // exactly once. `deadline_ns` is an absolute time on the monotonic clock, or
-// zero to wait as long as it takes.
-void sword_poll_wait(int fd, int writable, void *token, int64_t deadline_ns);
+// zero to wait as long as it takes. `generation` is what sword_poll_generation
+// said before the call that answered "not yet"; if the descriptor has been
+// forgotten since, the wait fails at once.
+void sword_poll_wait(int fd, int writable, void *token, int64_t deadline_ns,
+                     uint64_t generation);
 
-// Drops anything still waiting on `fd`, for a descriptor about to be closed.
-// Until the number is adopted again, a wait on it fails at once.
+// Moves on with every forget. Read before a call that may have to wait.
+uint64_t sword_poll_generation(int fd);
+
+// Drops anything still waiting on `fd`, for a descriptor about to be closed,
+// and moves its generation on.
 void sword_poll_forget(int fd);
 
-// For a descriptor the kernel has just handed out, whose number may be one
-// that was forgotten before.
-void sword_poll_adopt(int fd);
+// Closes a forgotten descriptor. With kqueue the poller's own thread does it,
+// between two waits; elsewhere it happens here. Either way the number is not
+// handed out again before the close, since the descriptor stays open until then.
+void sword_poll_close(int fd);
 
 // Waits for a time rather than for a descriptor. The wake function is called
 // once, with SWORD_POLL_TIMEOUT.

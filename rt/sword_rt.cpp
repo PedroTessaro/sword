@@ -1257,14 +1257,15 @@ uint16_t sword_run_main(sword_task_fn fn, const void *args, int64_t size) {
 // again when the kernel says so. Returns 0 when ready, -2 when the deadline
 // passed, and -1 when there is no task to put down — the caller then waits the
 // old way, on the thread.
-int sword_park_fd(int32_t fd, int32_t writable, int64_t deadline_ns) {
+int sword_park_fd(int32_t fd, int32_t writable, int64_t deadline_ns,
+                  uint64_t generation) {
   Fiber *f = tl_fiber;
   if (!f) return SWORD_POLL_FAILED;
 
   sword_poll_start(on_ready);
   f->wake_result = SWORD_POLL_READY;
   f->state.store(FIBER_PARKING, std::memory_order_release);
-  sword_poll_wait((int)fd, (int)writable, f, deadline_ns);
+  sword_poll_wait((int)fd, (int)writable, f, deadline_ns, generation);
   leave(f, false);
   // Resumed, possibly on another thread. Everything from here reads fresh.
   return f->wake_result;
@@ -1314,7 +1315,15 @@ void sword_runtime_stats(struct sword_stats *out) {
 
 void sword_forget_fd(int32_t fd) { sword_poll_forget((int)fd); }
 
-void sword_adopt_fd(int32_t fd) { sword_poll_adopt((int)fd); }
+uint64_t sword_fd_generation(int32_t fd) {
+  return sword_poll_generation((int)fd);
+}
+
+int32_t sword_close_fd(int32_t fd) {
+  sword_poll_forget((int)fd);
+  sword_poll_close((int)fd);
+  return 0;
+}
 
 // Hands one call to a thread set aside for calls that cannot be put down, and
 // puts the calling task down until it comes back. Outside a task there is
