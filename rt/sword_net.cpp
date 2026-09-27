@@ -130,6 +130,7 @@ extern "C" {
 // restart happens without dropping anything.
 int32_t sword_net_listen_on(const char *host, int64_t host_len, int32_t port,
                             int32_t backlog, int32_t reuse_port) {
+  if (sword_sim_on()) sword_sim_refuse("uses the network");
   sword_os_ignore_sigpipe();
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) return -1;
@@ -249,6 +250,7 @@ static int connect_within(int fd, const sockaddr *addr, socklen_t len,
 // "could not connect at all", the same way a read does.
 int32_t sword_net_dial_timeout(const char *host, int64_t host_len, int32_t port,
                                int64_t millis) {
+  if (sword_sim_on()) sword_sim_refuse("uses the network");
   char name[256];
   if (host_len <= 0 || host_len >= (int64_t)sizeof(name)) return -1;
   memcpy(name, host, (size_t)host_len);
@@ -477,6 +479,7 @@ extern "C" {
 // address given, of either family.
 int32_t sword_udp_listen(const char *host, int64_t host_len, int32_t port,
                          int32_t local) {
+  if (sword_sim_on()) sword_sim_refuse("uses the network");
   sword_os_ignore_sigpipe();
   char name[64];
   if (!terminated(host, host_len, name, sizeof(name))) return -1;
@@ -542,6 +545,7 @@ int32_t sword_udp_listen(const char *host, int64_t host_len, int32_t port,
 // socket sends nothing; it is what lets a read report that nobody is listening
 // at the other end, which an unconnected one never learns.
 int32_t sword_udp_dial(const char *host, int64_t host_len, int32_t port) {
+  if (sword_sim_on()) sword_sim_refuse("uses the network");
   sword_os_ignore_sigpipe();
   char name[256];
   if (host_len <= 0 || !terminated(host, host_len, name, sizeof(name))) return -1;

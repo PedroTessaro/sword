@@ -76,6 +76,14 @@ void sword_mutex_notify_all(void *guard);
 int sword_park_fd(int32_t fd, int32_t writable, int64_t deadline_ns,
                   uint64_t generation);
 int32_t sword_in_task(void);
+
+// The simulator (SWORD_SIM_SEED): whether it is on, its monotonic clock, a
+// point where it may switch tasks, and the end of a run that does something it
+// does not simulate yet.
+int32_t sword_sim_on(void);
+int64_t sword_sim_mono(void);
+void sword_sim_point(void);
+void sword_sim_refuse(const char *what);
 // errno, read on the thread the caller is on now. Code that may have parked
 // reads it through this rather than directly — see sword_rt.cpp.
 int sword_errno(void);

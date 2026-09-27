@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <signal.h>
 #include <sys/mman.h>
@@ -453,6 +454,36 @@ thread_local Fiber *tl_fiber = nullptr;
 // pool's tally negative.
 thread_local int tl_parked = 0;
 
+// --- the simulator -------------------------------------------------------
+//
+// SWORD_SIM_SEED runs the program on one thread, with every choice the
+// scheduler makes — which task runs next, at every point where one could switch
+// — drawn from that seed, and with a clock that moves only when every task is
+// waiting on it. The same seed makes the same run, every time; a failure found
+// under one is a failure you can have again. Everything below reads and writes
+// this state from that one thread, so none of it is guarded.
+bool g_sim = false;
+uint64_t g_sim_seed = 0;
+uint64_t g_sim_rng = 0;
+// Virtual monotonic time. It starts a second in, so that nothing that
+// subtracts an earlier reading from a later one ever sees zero.
+const int64_t kSimStart = 1000000000;
+int64_t g_sim_now = kSimStart;
+uint64_t g_sim_timer_seq = 0;
+// (deadline, arrival) -> the task asleep until then. The arrival order breaks
+// ties, so two tasks due at the same instant wake in the order they slept.
+std::map<std::pair<int64_t, uint64_t>, Fiber *> g_sim_timers;
+
+// splitmix64: small, fast, and the whole of its state is one word.
+uint64_t sim_next() {
+  uint64_t z = (g_sim_rng += 0x9E3779B97F4A7C15ull);
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+  return z ^ (z >> 31);
+}
+
+uint64_t sim_below(uint64_t n) { return n <= 1 ? 0 : sim_next() % n; }
+
 Task *take_task(Worker &w) {
   std::lock_guard<std::mutex> held(w.lock);
   if (w.queue.empty()) return nullptr;
@@ -704,6 +735,7 @@ void helper_loop() {
 // Capacity is every thread that is not parked in a syscall. When that falls
 // below the target and tasks are queued behind it, hire one more.
 void cover_for_parked(Pool &p) {
+  if (g_sim) return;
   // Both loads are relaxed on purpose: this is a heuristic, and the next
   // blocking call corrects an answer that was stale by a hair.
   if (p.parked.load(std::memory_order_relaxed) == 0) return;
@@ -740,7 +772,12 @@ void stop_pool();
 Pool &pool() {
   static Pool *instance = [] {
     Pool *p = new Pool();
-    int n = thread_count();
+    if (const char *seed = getenv("SWORD_SIM_SEED")) {
+      g_sim = true;
+      g_sim_seed = strtoull(seed, nullptr, 10);
+      g_sim_rng = g_sim_seed;
+    }
+    int n = g_sim ? 1 : thread_count();
     p->target = n;
     p->ceiling = env_count("SWORD_MAX_THREADS", kDefaultCeiling);
     if (p->ceiling < p->target) p->ceiling = p->target;
@@ -759,6 +796,7 @@ Pool &pool() {
 // process came with, and a thread per core for it would be a cost nobody asked
 // for.
 void start_workers(Pool &p) {
+  if (g_sim) return;
   if (p.workers_up.load(std::memory_order_acquire)) return;
   std::lock_guard<std::mutex> held(p.start_lock);
   if (p.workers_up.load(std::memory_order_relaxed)) return;
@@ -985,6 +1023,7 @@ void sword_fiber_entry(void) {
 }
 
 void sword_mutex_lock(void *blob) {
+  sword_sim_point();
   Guard *g = (Guard *)blob;
   uint64_t me = holder_tag();
 
@@ -1006,7 +1045,7 @@ void sword_mutex_lock(void *blob) {
   // holder was waiting for a timer inside its `lock`, and the only thread that
   // could run it was the one spinning.
   if (Fiber *f = tl_fiber) {
-    for (int spins = 0; spins < 64; spins++) {
+    for (int spins = 0; !g_sim && spins < 64; spins++) {
       std::this_thread::yield();
       if (take_guard(g, me)) return;
     }
@@ -1172,6 +1211,8 @@ void sword_mutex_unwatch(void **blobs, int64_t n, void *nodes) {
 
 namespace {
 
+void sim_drain(Scope *scope);
+
 // A task at the closing brace of its scope parks until the last of the scope's
 // tasks finishes, and its thread goes back to running whatever there is. It used
 // to run the scope's tasks itself, on its own stack — and whatever else was
@@ -1208,6 +1249,10 @@ void drain_until(Scope *scope) {
   // Only the thread's own stack drains — the one `main` started from, or code
   // outside any task. Everywhere else the task parks.
   if (join_parked(scope)) return;
+  if (g_sim) {
+    sim_drain(scope);
+    return;
+  }
   Pool &p = pool();
   int idle = 0;
   int64_t nap = 50000; // nanoseconds, doubling to a millisecond
@@ -1232,6 +1277,58 @@ void drain_until(Scope *scope) {
     // Something ran, so whatever this was waiting for may be closer now.
     idle = 0;
     nap = 50000;
+  }
+}
+
+// One scheduling decision: any task that could run — one woken, or one spawned
+// and not yet started — picked by the seed. False when there is none.
+bool sim_run_one() {
+  Pool &p = pool();
+  Worker &w = *p.workers[0];
+  size_t woken = w.ready.size(), fresh = w.queue.size();
+  if (woken + fresh == 0) return false;
+  size_t pick = (size_t)sim_below(woken + fresh);
+  p.pending.fetch_sub(1, std::memory_order_relaxed);
+  if (pick < woken) {
+    Fiber *f = w.ready[pick];
+    w.ready.erase(w.ready.begin() + (long)pick);
+    resume_fiber(f);
+  } else {
+    Task *task = w.queue[pick - woken];
+    w.queue.erase(w.queue.begin() + (long)(pick - woken));
+    run_task(task);
+  }
+  return true;
+}
+
+// Nothing can run: the clock jumps to the next deadline, and everything due
+// then wakes. False when no task is waiting on the clock either.
+bool sim_advance() {
+  if (g_sim_timers.empty()) return false;
+  int64_t due = g_sim_timers.begin()->first.first;
+  if (due > g_sim_now) g_sim_now = due;
+  while (!g_sim_timers.empty() && g_sim_timers.begin()->first.first <= g_sim_now) {
+    Fiber *f = g_sim_timers.begin()->second;
+    g_sim_timers.erase(g_sim_timers.begin());
+    if (f->state.exchange(FIBER_READY, std::memory_order_acq_rel) == FIBER_PARKED)
+      make_runnable(f);
+  }
+  return true;
+}
+
+void sim_drain(Scope *scope) {
+  while (scope->outstanding.load(std::memory_order_acquire) > 0) {
+    if (sim_run_one()) continue;
+    if (sim_advance()) continue;
+    // Every task is waiting on something only another task could give it —
+    // a lock, a channel, a notify — and no clock will change that. On real
+    // threads this is a program that hangs; here it is an answer.
+    fprintf(stderr,
+            "sword: deadlock: every task is waiting and nothing can wake one "
+            "(simulated, seed %llu)\n",
+            (unsigned long long)g_sim_seed);
+    fflush(stderr);
+    _exit(3);
   }
 }
 
@@ -1377,6 +1474,8 @@ void sword_scope_spawn(void *blob, sword_task_fn fn, const void *args,
   // rule: without this, a task spawned after everyone blocked would wait for
   // the next blocking call to notice it.
   cover_for_parked(p);
+  // The new task may run before the one that spawned it takes another step.
+  sword_sim_point();
 }
 
 // `main` is a task like anything else. Parking is a fiber's trick, so before
@@ -1399,6 +1498,7 @@ int sword_park_fd(int32_t fd, int32_t writable, int64_t deadline_ns,
                   uint64_t generation) {
   Fiber *f = tl_fiber;
   if (!f) return SWORD_POLL_FAILED;
+  if (g_sim) sword_sim_refuse("waits on a descriptor");
 
   sword_poll_start(on_ready);
   f->wake_result = SWORD_POLL_READY;
@@ -1414,6 +1514,13 @@ int sword_park_fd(int32_t fd, int32_t writable, int64_t deadline_ns,
 int sword_park_timer(int64_t deadline_ns) {
   Fiber *f = tl_fiber;
   if (!f) return -1;
+  if (g_sim) {
+    f->wake_result = SWORD_POLL_TIMEOUT;
+    f->state.store(FIBER_PARKING, std::memory_order_release);
+    g_sim_timers[{deadline_ns, g_sim_timer_seq++}] = f;
+    leave(f, false);
+    return 0;
+  }
   sword_poll_start(on_ready);
   f->wake_result = SWORD_POLL_TIMEOUT;
   f->state.store(FIBER_PARKING, std::memory_order_release);
@@ -1423,6 +1530,37 @@ int sword_park_timer(int64_t deadline_ns) {
 }
 
 int32_t sword_in_task(void) { return tl_fiber != nullptr; }
+
+// A point where the simulated scheduler may run another task first: every lock,
+// every spawn, and — in a build for the simulator — every atomic operation. The
+// running task goes back among the runnable ones and the seed picks again, maybe
+// the same. Only from a task that is plainly running: one halfway through
+// registering to wait has already said it is parking.
+void sword_sim_point(void) {
+  if (!g_sim) return;
+  Fiber *f = tl_fiber;
+  if (!f || f->state.load(std::memory_order_relaxed) != FIBER_RUNNING) return;
+  f->state.store(FIBER_READY, std::memory_order_release);
+  leave(f, false);
+}
+
+int32_t sword_sim_on(void) {
+  pool();
+  return g_sim ? 1 : 0;
+}
+
+int64_t sword_sim_mono(void) { return g_sim_now; }
+
+// What the simulator cannot do yet ends the run with a message that says so,
+// rather than letting a real socket make the run depend on the machine.
+void sword_sim_refuse(const char *what) {
+  fprintf(stderr,
+          "sword: this program %s, which the simulator does not simulate yet "
+          "(seed %llu)\n",
+          what, (unsigned long long)g_sim_seed);
+  fflush(stderr);
+  _exit(4);
+}
 
 // glibc declares __errno_location const, so within one function the compiler
 // may take errno's address once and keep it. A task that parks can resume on
@@ -1469,6 +1607,10 @@ int32_t sword_close_fd(int32_t fd) {
 // same as before this existed.
 int64_t sword_offload(int64_t (*fn)(void *), void *arg) {
   Fiber *f = tl_fiber;
+  // Simulated, a file read happens here and now: the same contents give the
+  // same answer, and there is no io thread to hand the task back at a moment of
+  // its own choosing.
+  if (g_sim) return fn(arg);
   if (!f) {
     sword_blocking_enter();
     int64_t result = fn(arg);

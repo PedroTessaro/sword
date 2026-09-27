@@ -286,6 +286,39 @@ benched 0 "ns/op" -bench
 benched 0 "ok    1 tests"                     # without it, the tests run
 benched 1 "no benchmark 'BenchmarkNope'" -bench -run BenchmarkNope
 
+# Any program runs simulated under SWORD_SIM_SEED: the clock is virtual, the
+# same seed gives the same run, and different seeds explore different orders.
+"$shield" "$root/tests/simprograms/clock.sword" -o "$tmp/simclock" \
+    > "$tmp/simclock.log" 2>&1
+SWORD_SIM_SEED=1 perl -e 'alarm 10; exec @ARGV' "$tmp/simclock" > /dev/null 2>&1
+got=$?
+if [ "$got" = 42 ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL simulated clock: exit $got, want 42"
+    fail=$((fail + 1))
+fi
+if "$shield" "$root/tests/simprograms/order.sword" -o "$tmp/simorder" \
+        > "$tmp/simorder.log" 2>&1; then
+    same=0
+    orders=$(for seed in $(seq 1 20); do
+        a=$(SWORD_SIM_SEED=$seed "$tmp/simorder")
+        b=$(SWORD_SIM_SEED=$seed "$tmp/simorder")
+        [ "$a" = "$b" ] && echo "$a"
+    done)
+    kept=$(printf '%s\n' "$orders" | grep -c .)
+    distinct=$(printf '%s\n' "$orders" | sort -u | grep -c .)
+    if [ "$kept" = 20 ] && [ "$distinct" -ge 3 ]; then
+        pass=$((pass + 1))
+    else
+        echo "FAIL simulated order: $kept of 20 seeds repeated, $distinct orders"
+        fail=$((fail + 1))
+    fi
+else
+    echo "FAIL simulated order: compilation failed"
+    fail=$((fail + 1))
+fi
+
 # Both programs say the version the source says, and the same one.
 want_version=$(sed -n 's/^#define SWORD_VERSION "\(.*\)"/\1/p' "$root/src/version.h")
 for program in shield swordls; do
