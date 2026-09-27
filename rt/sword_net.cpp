@@ -77,6 +77,15 @@ void forget_limits(int fd) {
   if (fd >= 0 && (size_t)fd < limits.size()) limits[fd] = Limits{};
 }
 
+// A socket the kernel has just handed out, under a number that may have been
+// another socket's a moment ago: nothing of that one's may carry over, neither
+// its limits nor its generation.
+void adopt(int fd) {
+  unblock(fd);
+  forget_limits(fd);
+  sword_fresh_fd(fd);
+}
+
 // Whichever runs out first.
 int64_t due_at(int fd) {
   Limits l = limits_of(fd);
@@ -166,7 +175,7 @@ int32_t sword_net_listen_on(const char *host, int64_t host_len, int32_t port,
     close(fd);
     return -1;
   }
-  unblock(fd);
+  adopt(fd);
   return fd;
 }
 
@@ -201,8 +210,7 @@ int32_t sword_net_accept(int32_t fd) {
     if (client >= 0) {
       int on = 1;
       setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
-      unblock(client);
-      forget_limits(client);
+      adopt(client);
       return client;
     }
     int why = sword_errno();
@@ -224,8 +232,7 @@ int32_t sword_net_accept(int32_t fd) {
 // errno on another thread by the time it asks.
 static int connect_within(int fd, const sockaddr *addr, socklen_t len,
                           int64_t millis) {
-  unblock(fd);
-  forget_limits(fd);
+  adopt(fd);
   if (millis > 0) {
     std::lock_guard<std::mutex> held(limits_lock);
     limits_for(fd).timeout = millis * 1000000;
@@ -465,8 +472,7 @@ addrinfo *resolve_dgram(const char *name, int32_t port) {
 int open_dgram(int family) {
   int fd = socket(family, SOCK_DGRAM, 0);
   if (fd < 0) return -1;
-  unblock(fd);
-  forget_limits(fd);
+  adopt(fd);
   return fd;
 }
 

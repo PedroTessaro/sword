@@ -1591,6 +1591,8 @@ void sword_runtime_stats(struct sword_stats *out) {
 
 void sword_forget_fd(int32_t fd) { sword_poll_forget((int)fd); }
 
+void sword_fresh_fd(int32_t fd) { sword_poll_fresh((int)fd); }
+
 uint64_t sword_fd_generation(int32_t fd) {
   return sword_poll_generation((int)fd);
 }

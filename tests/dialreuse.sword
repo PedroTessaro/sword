@@ -1,0 +1,66 @@
+// expect: 42
+// expect-output: every dial connected
+// Many tasks dialing and closing at once, so that the number one task's close
+// frees is the number the next task's socket is given. A close moves the
+// descriptor's generation on just after it closes, and a socket made in between
+// read the generation from before: its first wait was then taken for one on the
+// closed descriptor, and failed at once. Dial said it could not connect over a
+// connection that had in fact been made, and the server saw it die in the
+// handshake. It showed up as the TLS test losing one connection in a hundred
+// runs; here, on Linux, it lost some of the 240 dials in every run.
+
+import "std/io"
+import "std/net"
+
+// Until the listener is closed under it, which is how it learns the dialing is
+// over whatever the count came to. Each connection is closed by a task of its
+// own, so accepting never waits behind one: a queue that fills behind the
+// listener refuses dials for a reason of its own, and on macOS with a reset.
+func serve(l *net.Listener) {
+    scope {
+        for {
+            c := l.Accept() catch break
+            spawn finish(c)
+        }
+    }
+}
+
+func finish(conn net.Conn) {
+    mut c := conn
+    c.Close()
+}
+
+func dialer(port i32, rounds u64, mut failed *atomic[u64]) {
+    for i in 0..rounds {
+        mut c := net.Dial("127.0.0.1", port) catch {
+            failed.Add(1)
+            continue
+        }
+        c.Close()
+    }
+}
+
+func drive(l *net.Listener, tasks u64, rounds u64, mut failed *atomic[u64]) {
+    port := l.Port()
+    scope {
+        for i in 0..tasks {
+            spawn dialer(port, rounds, failed)
+        }
+    }
+    l.Close()
+}
+
+func main() !int {
+    l := try net.Listen(0)
+    mut failed := atomic[u64](0)
+    scope {
+        spawn serve(&l)
+        spawn drive(&l, 8, 30, &failed)
+    }
+    if failed.Load() != 0 {
+        try io.Printf("{} dials failed\n", failed.Load())
+        return 1
+    }
+    try io.Println("every dial connected")
+    return 42
+}
