@@ -1,0 +1,28 @@
+# Keeps the actions the workflows are pinned to, and the VS Code extension's
+# packages, current. Pull requests go to develop like everyone else's, grouped
+# so that one week's updates arrive as one pull request.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+      include: scope
+
+  - package-ecosystem: npm
+    directory: /editors/vscode
+    target-branch: develop
+    schedule:
+      interval: monthly
+    groups:
+      vscode:
+        patterns: ["*"]
+    commit-message:
+      prefix: chore
+      include: scope
