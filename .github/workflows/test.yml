@@ -10,6 +10,15 @@ on:
     branches: [main, develop]
   pull_request:
 
+permissions:
+  contents: read
+
+# A new push to a pull request makes the run for the previous one worthless.
+# Runs on main and develop are kept whole: each is the record for its commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     strategy:
@@ -19,10 +28,13 @@ jobs:
         tls: [with, without]
     name: ${{ matrix.os }}, ${{ matrix.tls }} TLS
     runs-on: ${{ matrix.os }}
+    # A normal run takes under ten minutes. A hang takes whatever it is
+    # allowed, and the default is six hours.
+    timeout-minutes: 30
     env:
       SWORD_NO_TLS: ${{ matrix.tls == 'without' && '1' || '' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # clang is needed to run the compiler, not only to build it. Emacs is here
       # so the indentation check has both of the editors that implement the rule.
