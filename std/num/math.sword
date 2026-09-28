@@ -391,7 +391,7 @@ func twoOverPi() [48]u32 {
 }
 
 // Thirty-two bits of 2/pi starting at bit j.
-func bitsAt(table [48]u32, j u64) u64 {
+func bitsAt(table []u32, j u64) u64 {
     w := (j - 1) / 32
     sh := (j - 1) % 32
     both := u64(table[w]) << 32 | u64(table[w + 1])
@@ -439,6 +439,54 @@ struct Reduced {
 
 // x = n·pi/2 + (y0 + y1), with |y0 + y1| ≤ pi/4, for any finite x.
 //
+// Up to 2^19·pi/2 that is fdlibm's medium case: n·pi/2 is taken off in pieces
+// of 33 bits, so that n times each piece is exact, and a second or third piece
+// only when the first left too little. Beyond that, the exact reduction below.
+func quadrant(x f64) Reduced {
+    if highOf(x) & 0x7fffffff <= 0x413921fb {
+        return nearQuadrant(x)
+    }
+    return farQuadrant(x)
+}
+
+func nearQuadrant(x f64) Reduced {
+    invPio2 := fromBits(0x3FE45F306DC9C883)
+    pio2A := fromBits(0x3FF921FB54400000)
+    pio2At := fromBits(0x3DD0B4611A626331)
+    pio2B := fromBits(0x3DD0B4611A600000)
+    pio2Bt := fromBits(0x3BA3198A2E037073)
+    pio2C := fromBits(0x3BA3198A2E000000)
+    pio2Ct := fromBits(0x397B839A252049C1)
+
+    t := Abs(x)
+    n := u64(t * invPio2 + 0.5)
+    fn := f64(n)
+    mut r := t - fn * pio2A
+    mut w := fn * pio2At
+    mut y0 := r - w
+    // How many bits cancelled: the exponent lost between |x| and what is left.
+    top := i64(highOf(x) & 0x7fffffff) >> 20
+    if top - i64((highOf(y0) >> 20) & 0x7ff) > 16 {
+        before := r
+        w = fn * pio2B
+        r = before - w
+        w = fn * pio2Bt - ((before - r) - w)
+        y0 = r - w
+        if top - i64((highOf(y0) >> 20) & 0x7ff) > 49 {
+            again := r
+            w = fn * pio2C
+            r = again - w
+            w = fn * pio2Ct - ((again - r) - w)
+            y0 = r - w
+        }
+    }
+    y1 := (r - y0) - w
+    if x < 0.0 {
+        return Reduced{n: (4 - (n & 3)) & 3, y0: -y0, y1: -y1}
+    }
+    return Reduced{n: n & 3, y0: y0, y1: y1}
+}
+
 // Write |x| = m·2^q with m a 53-bit integer. Then x·2/pi is m times the bits of
 // 2/pi shifted by q, and the bits more than two places before the point only
 // add multiples of four — they change neither the quadrant nor the fraction. So
@@ -446,7 +494,7 @@ struct Reduced {
 // quadrant in its two integer bits and 192 bits of fraction after them. The
 // nearest a double comes to a multiple of pi/2 is about 2^-61 of itself, which
 // leaves the fraction more than sixty exact bits even then.
-func quadrant(x f64) Reduced {
+func farQuadrant(x f64) Reduced {
     b := bitsOf(x) & 0x7FFFFFFFFFFFFFFF
     e := i64(b >> 52) - 1023
     m := (b & 0xFFFFFFFFFFFFF) | 0x10000000000000
@@ -458,7 +506,7 @@ func quadrant(x f64) Reduced {
     table := twoOverPi()
     mut window := [8]u64{}
     for t in 0..8 {
-        window[7 - t] = bitsAt(table, u64(j0) + 32 * u64(t))
+        window[7 - t] = bitsAt(table[..], u64(j0) + 32 * u64(t))
     }
     mut p := [10]u64{}
     halves := [2]u64{m & 0xFFFFFFFF, m >> 32}

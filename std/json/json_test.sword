@@ -108,3 +108,13 @@ func TestWriterRoundTrip(mut t *testing.T) !void {
     try t.Equal(doc.GetText(root, "name"), "grace")
     try t.Equal(doc.GetNumber(root, "age", 0.0), 45.0)
 }
+
+// The nearest double to what the document says, not a sum of digits that
+// lands one unit off.
+func TestNumbersAreNearest(mut t *testing.T) !void {
+    mut doc := try Parse([]u8("[0.3, 1e23, 0.30000000000000004]"), t.Mem)
+    root := doc.Root()
+    try t.Equal(doc.Number(doc.At(root, 0) orelse return t.Fatalf("no 0")), 0.3)
+    try t.Equal(doc.Number(doc.At(root, 1) orelse return t.Fatalf("no 1")), 1.0e23)
+    try t.Equal(doc.Number(doc.At(root, 2) orelse return t.Fatalf("no 2")), 0.30000000000000004)
+}
