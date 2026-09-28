@@ -452,6 +452,19 @@ void sword_poll_forget(int fd) {
 
 uint64_t sword_poll_generation(int fd) { return generation_of(fd); }
 
+// A close and the move of the generation that follows it happen together under
+// the lock, and the kernel can hand the number out again between the two. A
+// socket made in that moment read the generation from before the move, and its
+// first wait was taken for one on the closed descriptor: a dial said it could
+// not connect over a connection that had been made. Taking the lock once waits
+// out any such close, so what is read afterwards is the generation the new
+// descriptor keeps. Nothing changes; the lock is only there to be passed.
+void sword_poll_fresh(int fd) {
+  (void)fd;
+  Poller &p = poller();
+  std::lock_guard<std::mutex> held(p.lock);
+}
+
 // The caller waits for the poller to have done it: a socket that is still open
 // after Close returned would take a datagram meant for nobody, or keep its port
 // from being listened on again. The wait is short — the nudge ends the poller's

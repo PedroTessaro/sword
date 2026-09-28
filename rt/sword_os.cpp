@@ -43,6 +43,8 @@ bool open_signal_pipe() {
     int flags = fcntl(signal_pipe[end], F_GETFL, 0);
     fcntl(signal_pipe[end], F_SETFL, flags | O_NONBLOCK);
   }
+  // Waited on like a socket, so it may be under a number a socket had.
+  sword_fresh_fd(signal_pipe[0]);
   return true;
 }
 
@@ -202,12 +204,18 @@ int64_t sword_os_cpus(void) {
 // clock_gettime rather than gettimeofday: nanosecond resolution, and a
 // monotonic clock that a system time adjustment cannot drag backwards.
 int64_t sword_time_mono(void) {
+  if (sword_sim_on()) return sword_sim_mono();
   timespec now;
   clock_gettime(CLOCK_MONOTONIC, &now);
   return (int64_t)now.tv_sec * 1000000000 + now.tv_nsec;
 }
 
+// Simulated, the wall clock reads 2000-01-01 00:00:00 UTC when the run starts
+// and moves with the simulated clock, so a program that prints the date prints
+// the same one under every seed.
 int64_t sword_time_unix(void) {
+  if (sword_sim_on())
+    return 946684800LL * 1000000000 + (sword_sim_mono() - 1000000000);
   timespec now;
   clock_gettime(CLOCK_REALTIME, &now);
   return (int64_t)now.tv_sec * 1000000000 + now.tv_nsec;

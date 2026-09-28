@@ -4,6 +4,68 @@ Releases are numbered by [semantic versioning](https://semver.org): until 1.0,
 a minor version may change the language, and each one says how. Each release is
 also named for a step in making a blade, in the order they happen.
 
+## 0.2.0 — Fold
+
+*2026-09-28.* Folding the steel is how the flaws are worked out of it: this
+release makes concurrency bugs you can reproduce, and numbers you can see.
+
+### What changes for existing programs
+
+- **`{}` prints a float as the shortest text that reads back as the same
+  double.** It printed six places: `1e-9` came out as `0.0` and `1.0 / 3.0` as
+  `0.333333`. Now `0.1` is `0.1`, `0.1 + 0.2` is `0.30000000000000004`, `1e-9`
+  is `1e-9`, and whole numbers keep their `.0`. Plain from 1e-4 to 1e16, a
+  mantissa and a power of ten outside.
+- **`{.N}` is exact and always fixed point.** The digits are the double's own,
+  rounded once with ties to even, as C's `printf` does: `{.20}` of `0.1` is
+  `0.10000000000000000555`. A large number prints all its digits where it used
+  to switch to exponent form.
+- Negative zero prints with its sign.
+- `std/json` reads numbers as the nearest double; `0.3` used to come out one
+  unit high.
+
+### Simulation
+
+- **`shield test -sim`** runs each test on one thread with every scheduling
+  choice drawn from a seed, once per seed (100 by default, `-seeds N`), and a
+  failure comes with the seed and the command that makes it happen again
+  (`-seed S`). A deadlock is reported as one instead of hanging. Time is
+  virtual — it jumps to the next deadline when every task waits on it — and the
+  wall clock starts at 2000-01-01 00:00:00 UTC.
+- **`SWORD_SIM_SEED=n`** runs any program the same way. `--sim` also switches
+  tasks at every atomic operation; without it the generated code is unchanged.
+- Tests that open a socket are skipped under `-sim` until the network is
+  simulated. A call out of the language gets a compiler warning under the
+  simulator, which cannot replay it.
+
+### Numbers
+
+- **`strings.ParseF64`**: the double nearest the text, a tie going to the even
+  one. What `{}` prints reads back as the same double.
+- **`num.Sin` and `num.Cos` reduce ordinary arguments the way fdlibm does**:
+  the same bits as before for every argument checked, and a sine of an argument
+  in [-1000, 1000] went from about 174 ns to 11.7 ns on an Apple M4.
+
+### Fixes
+
+- A task can wait — for a timer, a socket, a `Wait` — inside a `lock`. On one
+  thread that used to be reported as a deadlock that was not one, and a
+  contended lock now puts the task down instead of spinning its thread.
+- A task at the end of a `scope` parks instead of running the scope's tasks on
+  its own stack, which could leave a task waiting for one buried beneath it.
+- A socket made or accepted just after another was closed could read the old
+  descriptor's generation and fail its first wait: `net.Dial` reported a failure
+  over a connection that had been made. The TLS test lost one connection in a
+  hundred runs on Linux this way.
+
+### How changes get in
+
+Every pull request now runs, on Linux and macOS: the whole suite with TLS and
+without and at 1 to 16 threads, AddressSanitizer and ThreadSanitizer
+(`tests/sanitize.sh`), every example program in the documentation
+(`tests/docs.sh`), a check of commit subjects, a review of new dependencies,
+and CodeQL. There are issue and pull request templates and a security policy.
+
 ## 0.1.0 — Tamahagane
 
 *2026-09-27.* The raw steel: the first release, and everything the language is

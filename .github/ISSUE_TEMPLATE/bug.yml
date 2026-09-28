@@ -1,0 +1,43 @@
+name: Bug
+description: The compiler, the runtime or the library did something wrong.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        A program the compiler accepted and should have refused is a bug as much
+        as a crash is, and for the race checker it is the more important kind.
+  - type: textarea
+    id: program
+    attributes:
+      label: The smallest program that shows it
+      render: sword
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: The compiler's message or the program's output, as it was printed.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`shield --version`, or `git rev-parse --short HEAD` for a build from source."
+    validations:
+      required: true
+  - type: input
+    id: machine
+    attributes:
+      label: Operating system and processor
+      placeholder: macOS 26 on arm64, Ubuntu 24.04 on x86-64, …
+    validations:
+      required: true

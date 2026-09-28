@@ -640,10 +640,17 @@ func Contains(s string, needle string) bool
 func TrimSpace(s string) string
 func ToLower(c u8) u8
 func ParseU64(s string) !u64
+func ParseF64(s string) !f64                 // the nearest double, exactly
 
 func Concat(mut a mem.Allocator, parts ...string) !string
 func Join(mut a mem.Allocator, parts []string, sep string) !string
 ```
+
+`ParseF64` takes an optional sign, digits with an optional point, and an
+optional exponent — `-12.5e3`, `.5`, `7.` — and answers the double nearest the
+exact value written, a tie going to the even one. So text printed with enough
+digits reads back as the same double, and the same text gives the same bits on
+every machine. `std/json` reads its numbers with it.
 
 ### `std/unicode`
 
@@ -749,14 +756,22 @@ func I64(mut out Sink, v i64) !void
 func Bool(mut out Sink, v bool) !void
 func Hex(mut out Sink, v u64, width u64) !void
 func F64(mut out Sink, v f64, decimals u64) !void
-func Float(mut out Sink, v f64) !void     // up to six places, zeros trimmed
+func Float(mut out Sink, v f64) !void     // the shortest text that reads back
 func Pad(mut out Sink, s string, width u64) !void
 func Quote(mut out Sink, s string) !void  // JSON string, escaped
 ```
-Fixed point, not shortest-round-trip. A number with more digits in front of the
-point than a `u64` holds comes out in exponent form — `1.000000e+16` — because
-the alternative is a wrong number, which is what it used to print. `nan`, `inf`
-and `-inf` are named.
+The digits are exact: every double is m·2^e, its decimal expansion ends, and
+`F64` prints that expansion to the places asked for, rounded once with a tie
+going to the even digit — `{.20}` of `0.1` is `0.10000000000000000555`, as in C.
+Two different doubles never print the same when enough places are asked for.
+`F64` is fixed point at any size, so `1e300` prints all 301 digits.
+
+`Float`, which is what `{}` uses, prints the shortest text that reads back as the
+same double: `0.1` is `0.1`, `1.0 / 3.0` is `0.3333333333333333`, and `0.1 + 0.2`
+is `0.30000000000000004`, because that is the double it is. It is plain from
+`1e-4` up to `1e16`, with `.0` on a whole number so that it still reads as a
+float, and a mantissa with a power of ten outside that: `1e+16`, `1.5e-7`.
+Negative zero prints with its sign. `nan`, `inf` and `-inf` are named.
 
 The format language is small on purpose:
 
@@ -1579,6 +1594,10 @@ shield test <file.sword | directory> [options]
   -p <n>          test only: how many tests may run at once
   -run <name>     test only: run just this one; repeat for more
   -bench          test only: run the Benchmark... functions instead
+  -sim            test only: every test under simulated scheduling, once a seed
+  -seeds <n>      test only, with -sim: how many seeds, default 100
+  -seed <n>       test only, with -sim: just this seed
+  --sim           switch tasks at atomics too, under SWORD_SIM_SEED
   --emit-tokens   stop after lexing
   --emit-ast      stop after parsing and checking
   --emit-ir       stop after lowering, print Sword IR
@@ -1600,6 +1619,11 @@ shield sheath.sword -o sheath --link shim.o --link -L/opt/homebrew/lib \
 `shield test` builds the package together with its `*_test.sword` files behind a
 generated entry point, runs it, and hands back its exit status. Those files are
 left out of every other build. See [Testing](testing.md).
+
+`SWORD_SIM_SEED=<n>` runs any program on one thread with every scheduling
+choice drawn from the seed and a virtual clock; the same seed makes the same
+run. It exits with 3 on a deadlock and 4 when the program does something the
+simulator does not simulate yet. See [Simulation](testing.md#simulation).
 
 | Mode | Bounds and overflow checks | Optimisation |
 |---|---|---|

@@ -286,6 +286,99 @@ benched 0 "ns/op" -bench
 benched 0 "ok    1 tests"                     # without it, the tests run
 benched 1 "no benchmark 'BenchmarkNope'" -bench -run BenchmarkNope
 
+# The simulator finds what it is for. Each planted bug is reported with a seed,
+# that seed makes it happen again, a deadlock is called one, the correct tests
+# pass under every seed, and the network test is skipped rather than run.
+sim_out=$(perl -e 'alarm 120; exec @ARGV' "$shield" test "$root/tests/simulated" -sim -seeds 50 2>&1)
+sim_check() { # description, pattern
+    if printf '%s\n' "$sim_out" | grep -qE "$2"; then
+        pass=$((pass + 1))
+    else
+        echo "FAIL shield test -sim: $1"
+        printf '%s\n' "$sim_out" | sed 's/^/     /'
+        fail=$((fail + 1))
+    fi
+}
+sim_check "finds the lost update" "^FAIL  TestLostUpdate under seed [0-9]+$"
+sim_check "calls the deadlock one" "^FAIL  TestOppositeLocks under seed [0-9]+: deadlock$"
+sim_check "skips the network" "^SKIP  TestNetwork: uses the network"
+sim_check "reports the run" "^FAIL  4 tests, 2 failed, 1 skipped, 50 seeds each$"
+if printf '%s\n' "$sim_out" | grep -qE "^FAIL  (TestAtomicAdd|TestHourLongSleep)"; then
+    echo "FAIL shield test -sim: a correct test failed"
+    printf '%s\n' "$sim_out" | sed 's/^/     /'
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
+lost_seed=$(printf '%s\n' "$sim_out" | sed -n 's/^FAIL  TestLostUpdate under seed \([0-9]*\)$/\1/p')
+again=0
+for i in 1 2 3; do
+    "$shield" test "$root/tests/simulated" -sim -seed "$lost_seed" \
+        -run TestLostUpdate > "$tmp/sim.again" 2>&1 && continue
+    grep -q "got 1, want 2" "$tmp/sim.again" && again=$((again + 1))
+done
+if [ "$again" = 3 ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL shield test -sim: seed $lost_seed reproduced $again times of 3"
+    fail=$((fail + 1))
+fi
+
+# Any program runs simulated under SWORD_SIM_SEED: the clock is virtual, the
+# same seed gives the same run, and different seeds explore different orders.
+"$shield" "$root/tests/simprograms/clock.sword" -o "$tmp/simclock" \
+    > "$tmp/simclock.log" 2>&1
+SWORD_SIM_SEED=1 perl -e 'alarm 10; exec @ARGV' "$tmp/simclock" > /dev/null 2>&1
+got=$?
+if [ "$got" = 42 ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL simulated clock: exit $got, want 42"
+    fail=$((fail + 1))
+fi
+if "$shield" "$root/tests/simprograms/order.sword" -o "$tmp/simorder" \
+        > "$tmp/simorder.log" 2>&1; then
+    same=0
+    orders=$(for seed in $(seq 1 20); do
+        a=$(SWORD_SIM_SEED=$seed "$tmp/simorder")
+        b=$(SWORD_SIM_SEED=$seed "$tmp/simorder")
+        [ "$a" = "$b" ] && echo "$a"
+    done)
+    kept=$(printf '%s\n' "$orders" | grep -c .)
+    distinct=$(printf '%s\n' "$orders" | sort -u | grep -c .)
+    if [ "$kept" = 20 ] && [ "$distinct" -ge 3 ]; then
+        pass=$((pass + 1))
+    else
+        echo "FAIL simulated order: $kept of 20 seeds repeated, $distinct orders"
+        fail=$((fail + 1))
+    fi
+else
+    echo "FAIL simulated order: compilation failed"
+    fail=$((fail + 1))
+fi
+
+# `--sim` puts a switch point before every atomic operation; without it the
+# code is what it always was.
+with_points=$("$shield" "$root/tests/atomics.sword" --sim --emit-llvm 2>&1 | grep -c "call void @sword_sim_point")
+without=$("$shield" "$root/tests/atomics.sword" --emit-llvm 2>&1 | grep -c "sword_sim_point")
+if [ "$with_points" -gt 0 ] && [ "$without" = 0 ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL --sim: $with_points switch points with it, $without without"
+    fail=$((fail + 1))
+fi
+
+# A call out of the language is said out loud under the simulator, which
+# cannot replay it, and nowhere else.
+warned=$("$shield" "$root/tests/defer.sword" --sim -o "$tmp/simwarn" 2>&1 | grep -c "warning: this calls out of the language (write)")
+quiet=$("$shield" "$root/tests/defer.sword" -o "$tmp/simwarn" 2>&1 | grep -c "warning")
+if [ "$warned" -gt 0 ] && [ "$quiet" = 0 ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL --sim: $warned warnings about calling out with it, $quiet without"
+    fail=$((fail + 1))
+fi
+
 # Both programs say the version the source says, and the same one.
 want_version=$(sed -n 's/^#define SWORD_VERSION "\(.*\)"/\1/p' "$root/src/version.h")
 for program in shield swordls; do

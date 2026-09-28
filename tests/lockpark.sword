@@ -1,0 +1,41 @@
+// expect: 42
+// expect-output: both held it in turn
+// A task may wait inside a `lock` — here it sleeps — and while it is down,
+// another task on the same thread asks for the same lock. Holders used to be
+// told apart by thread, so the second task looked like the first taking the
+// lock twice and the program stopped with a deadlock that was not there. On one
+// thread it happened every time.
+
+import "std/io"
+import "std/time"
+
+func slow(counter *shared[u64]) {
+    lock c := counter {
+        time.Sleep(time.Millis(20))
+        *c += 1
+    }
+}
+
+func quick(counter *shared[u64]) {
+    time.Sleep(time.Millis(5))
+    lock c := counter {
+        *c += 10
+    }
+}
+
+func main() !int {
+    mut counter := shared[u64](0)
+    scope {
+        spawn slow(&counter)
+        spawn quick(&counter)
+    }
+    mut total u64 = 0
+    lock c := counter {
+        total = *c
+    }
+    if total != 11 {
+        return 1
+    }
+    try io.Print("both held it in turn\n")
+    return 42
+}

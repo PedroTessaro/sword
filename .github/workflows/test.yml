@@ -3,12 +3,25 @@
 # half is the one that matters most: a program's answer is not supposed to
 # depend on how many threads ran it, and tests/threads.sh is where that is
 # checked rather than claimed.
+#
+# Then the runtime again under AddressSanitizer and ThreadSanitizer, since most
+# of what can go wrong in it passes an ordinary run, and every example program
+# in the documentation, which a reader will paste and expect to build.
 name: Tests
 
 on:
   push:
     branches: [main, develop]
   pull_request:
+
+permissions:
+  contents: read
+
+# A new push to a pull request makes the run for the previous one worthless.
+# Runs on main and develop are kept whole: each is the record for its commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -19,10 +32,13 @@ jobs:
         tls: [with, without]
     name: ${{ matrix.os }}, ${{ matrix.tls }} TLS
     runs-on: ${{ matrix.os }}
+    # A normal run takes under ten minutes. A hang takes whatever it is
+    # allowed, and the default is six hours.
+    timeout-minutes: 30
     env:
       SWORD_NO_TLS: ${{ matrix.tls == 'without' && '1' || '' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # clang is needed to run the compiler, not only to build it. Emacs is here
       # so the indentation check has both of the editors that implement the rule.
@@ -36,3 +52,43 @@ jobs:
       - run: make test
       - name: The suite at 1, 2, 3, 4, 8 and 16 threads
         run: ./tests/threads.sh
+
+  sanitizers:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        sanitizer: [address, thread]
+    name: ${{ matrix.os }}, ${{ matrix.sanitizer }} sanitizer
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libssl-dev
+
+      # ThreadSanitizer reserves fixed ranges of the address space, and the
+      # runners randomise mappings more widely than the version of it that
+      # clang ships can work around.
+      - name: Address space ThreadSanitizer can use
+        if: runner.os == 'Linux' && matrix.sanitizer == 'thread'
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
+      - run: make
+      - run: ./tests/sanitize.sh ${{ matrix.sanitizer }}
+
+  docs:
+    name: documentation examples
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libssl-dev
+      - run: make
+      - run: ./tests/docs.sh

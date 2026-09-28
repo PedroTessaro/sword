@@ -59,9 +59,11 @@ what error. A change to the standard library gets a test in the package's own
 `_test.sword` file; `shield test std/<package>` runs it.
 
 A change to the runtime, or to anything concurrent, needs more than one run.
-Build with sanitizers as in
-[the install guide](docs/install.md#building-the-compiler-with-sanitizers), and
-run the concurrency tests many times with `SWORD_THREADS` at 1, 2, 4, 8 and 16.
+`tests/sanitize.sh address` builds the runtime under AddressSanitizer and
+UndefinedBehaviorSanitizer and runs every test against it;
+`tests/sanitize.sh thread` does the same with ThreadSanitizer over the tests
+where tasks meet. Then run the concurrency tests many times with
+`SWORD_THREADS` at 1, 2, 4, 8 and 16.
 A test that fails one time in twenty is a bug until shown otherwise: the run
 that failed is usually the one telling the truth. Say in the pull request what
 you ran.
@@ -74,6 +76,24 @@ cd editors/vscode
 npm install
 npm test
 ```
+
+## What a pull request is checked for
+
+Every pull request runs, on Linux and macOS:
+
+- `make test`, with TLS and without, and `tests/threads.sh`, which runs the
+  whole suite at 1, 2, 3, 4, 8 and 16 threads and requires the same answers;
+- `tests/sanitize.sh` with both sanitizers;
+- `tests/docs.sh`, which builds every example program in the documentation;
+- that each commit's subject is in the form described under Commits below;
+- CodeQL over the compiler, the runtime and the workflows, and a review of any
+  dependency the change brings in;
+- the VS Code extension's test, when the extension or the language server
+  changed.
+
+A pull request from somebody's first contribution waits for the maintainer to
+start its checks. Each script runs the same way on your machine, and running it
+first is quicker than waiting for the checks to say the same.
 
 ## Writing the change
 
@@ -93,7 +113,7 @@ the language.
 
 Each commit is one coherent change, and each builds and passes the tests on its
 own. Messages follow the conventional form — `feat(scope):`, `fix(scope):`,
-`docs:`, `test:`, `perf:`, `refactor:`, `chore:` — with a body that says why the
+`docs:`, `test:`, `perf:`, `refactor:`, `ci:`, `build:`, `chore:` — with a body that says why the
 change was made and what it cost. A number in a commit message or in the
 documentation is one you measured; say how.
 
@@ -143,6 +163,11 @@ released separately, by a `vscode-vX.Y.Z` tag.
 | `tests/` | the compiler's tests, and the scripts that run every suite |
 | `editors/` | vim, Neovim, Emacs and VS Code |
 | `docs/` | the documentation |
+
+## Security
+
+A security problem is reported privately, not in an issue; [SECURITY.md](SECURITY.md)
+says how and what counts.
 
 ## License and conduct
 

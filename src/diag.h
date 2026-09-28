@@ -31,6 +31,8 @@ void reset_sources();
 
 void error(Pos pos, const char *fmt, ...);
 void note(Pos pos, const char *fmt, ...);
+// Said, and not counted: the build goes on.
+void warning(Pos pos, const char *fmt, ...);
 int error_count();
 void reset_errors();
 

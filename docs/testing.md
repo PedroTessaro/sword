@@ -207,6 +207,89 @@ the language server's, and then every `std/*/*_test.sword` package.
 Testing a program rather than a library works too: its `main` is set aside for
 the run, not called.
 
+## Simulation
+
+A test of concurrent code usually passes. The order its tasks ran in was one of
+many, the one this machine happened to pick, and the order that breaks it may
+come up once in ten thousand runs — on a server, at night. `-sim` runs each test
+under a different order on purpose, once per seed, and when one fails it says
+which seed. Take a counter that two tasks bump by reading it and writing it
+back:
+
+```sword
+func bump(counter *atomic[u64]) {
+    seen := counter.Load()
+    counter.Store(seen + 1)
+}
+
+func TestLostUpdate(mut t *testing.T) !void {
+    mut counter := atomic[u64](0)
+    scope {
+        spawn bump(&counter)
+        spawn bump(&counter)
+    }
+    try t.Equal(counter.Load(), u64(2))
+}
+```
+
+Each access is atomic and the race checker has nothing to say, but when both
+tasks read before either writes, one update is lost. On a real machine that
+takes a coincidence; under `-sim` it takes a few seeds. A package holding that
+test, one that takes two locks in opposite orders, and one that opens a socket:
+
+```sh
+shield test ./mypkg -sim               # every test, seeds 1 to 100
+shield test ./mypkg -sim -seeds 5000   # more
+```
+
+```
+FAIL  TestLostUpdate under seed 2
+     --- FAIL  TestLostUpdate
+           got 1, want 2
+      reproduce: shield test -sim -seed 2 -run TestLostUpdate ./mypkg
+FAIL  TestOppositeLocks under seed 2: deadlock
+     sword: deadlock: every task is waiting and nothing can wake one (simulated, seed 2)
+      reproduce: shield test -sim -seed 2 -run TestOppositeLocks ./mypkg
+SKIP  TestNetwork: uses the network, which -sim does not simulate yet
+FAIL  4 tests, 2 failed, 1 skipped, 100 seeds each
+```
+
+The line it prints is the whole of what it takes to have that failure again, as
+many times as it takes to understand it. That is the point: a concurrency bug
+you can reproduce is an ordinary bug.
+
+What happens under `-sim`:
+
+- **One thread, and the seed decides.** At every point where a task could give
+  way to another — a `lock`, a `spawn`, a channel, a wait, and every operation
+  on an `atomic` — the scheduler picks what runs next from among everything that
+  could, and the seed makes the pick. The same seed makes the same choices, so
+  the same run.
+- **A virtual clock.** Time moves only when every task is waiting on it, and
+  then straight to the next deadline: a test with a thirty-second timeout, or an
+  hour-long sleep, finishes at once. The wall clock reads 2000-01-01 00:00:00 UTC
+  when the run starts and moves with it.
+- **A deadlock is an answer.** When every task waits for something only another
+  task could give it and no clock will change that, the run stops and says so,
+  where a real program would simply hang.
+- **Files are read and written as usual**, on the spot, so the same contents
+  give the same run.
+
+Any program runs the same way with `SWORD_SIM_SEED`, without `shield test`:
+
+```sh
+SWORD_SIM_SEED=48213 ./server
+```
+
+A build with `--sim` also switches tasks at atomic operations, which is where
+two tasks' order over an atomic lives; `shield test -sim` always builds that
+way, and without the flag an ordinary build is exactly what it always was.
+
+The network is not simulated yet. A test that opens a socket is skipped under
+`-sim` with a line that says so — running it on a real socket would make a seed
+mean nothing. A call out of the language through `extern` is compiled with a
+warning, since the simulator can neither schedule around it nor play it back.
+
 ## Benchmarks
 
 A `Benchmark...` function taking one `*B` is found the same way a test is, and
@@ -259,6 +342,9 @@ Benchmarks run one at a time, in the order they are written. Two at once would
 be measuring each other.
 
 ## What is missing
+
+**A simulated network.** `-sim` skips a test that uses a real socket; sockets
+that deliver, delay, lose and reorder under the seed are still to come.
 
 **Line numbers.** A failure names the test and the subtest, not the file and
 line: there is no way to ask for the caller's position. Subtest labels are the

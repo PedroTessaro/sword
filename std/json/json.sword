@@ -4,6 +4,7 @@ import "std/bytes"
 import "std/collections"
 import "std/fmt"
 import "std/mem"
+import "std/strings"
 
 error BadJSON      = "the document is not valid JSON"
 error TrailingJSON = "something follows the end of the document"
@@ -272,62 +273,18 @@ func (mut p *parser) number() !f64 {
     return try parseNumber(string(p.input[start..p.at]))
 }
 
-// Enough of the grammar for what a JSON document actually carries: an optional
-// sign, digits, an optional fraction, an optional exponent.
+// JSON's own grammar in front — a minus at most, and a digit before anything
+// else — and then the double nearest what the text says, from the same parser
+// everything else uses. Adding the digits up in doubles got 0.3 one unit wrong.
 func parseNumber(s string) !f64 {
     mut i u64 = 0
-    mut sign f64 = 1.0
     if i < s.len && s[i] == 45 {
-        sign = -1.0
         i += 1
     }
-    mut whole f64 = 0.0
-    mut digits u64 = 0
-    for i < s.len && s[i] >= 48 && s[i] <= 57 {
-        whole = whole * 10.0 + f64(s[i] - 48)
-        i += 1
-        digits += 1
-    }
-    if digits == 0 {
+    if i >= s.len || s[i] < 48 || s[i] > 57 {
         return error.BadJSON
     }
-    if i < s.len && s[i] == 46 {
-        i += 1
-        mut place f64 = 0.1
-        for i < s.len && s[i] >= 48 && s[i] <= 57 {
-            whole += f64(s[i] - 48) * place
-            place *= 0.1
-            i += 1
-        }
-    }
-    if i < s.len && (s[i] == 101 || s[i] == 69) {
-        i += 1
-        mut negative := false
-        if i < s.len && (s[i] == 43 || s[i] == 45) {
-            negative = s[i] == 45
-            i += 1
-        }
-        mut power u64 = 0
-        // The exponent is the document's to choose. Counted in full, a long one
-        // overflows and a merely large one runs the loop below for as long as it
-        // says. From a thousand on, every mantissa a double can hold has already
-        // gone to infinity or to zero, so the rest of the digits are read and not
-        // counted.
-        for i < s.len && s[i] >= 48 && s[i] <= 57 {
-            if power < 1000 {
-                power = power * 10 + u64(s[i] - 48)
-            }
-            i += 1
-        }
-        for k in 0..power {
-            if negative {
-                whole *= 0.1
-            } else {
-                whole *= 10.0
-            }
-        }
-    }
-    return sign * whole
+    return strings.ParseF64(s) catch return error.BadJSON
 }
 
 func (mut p *parser) literal(word string, kind Kind, truth bool) !u64 {
