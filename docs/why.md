@@ -186,6 +186,39 @@ every program each time. What it does not cover is the edge of the program. A
 server's clients arrive in the order the world sends them, and `main` and the
 network are outside the claim on purpose.
 
+## The order that breaks it, on demand
+
+`det` covers what can be made independent of order. A server cannot be: its
+tasks lock, count with atomics and wait on each other, and which one gets there
+first is the whole point. The race checker still refuses the data races there.
+What it cannot refuse is a mistake in the order itself — two tasks that both read
+a counter before either writes it back, two locks taken in opposite orders.
+That is legal code which fails only in some interleavings, and on a real machine
+that means once in ten thousand runs, rarely while anybody is watching.
+
+`shield test -sim` runs each test on one thread with every scheduling choice
+drawn from a seed, once per seed, and when one fails it says which:
+
+```
+FAIL  TestLostUpdate under seed 2
+     --- FAIL  TestLostUpdate
+           got 1, want 2
+      reproduce: shield test -sim -seed 2 -run TestLostUpdate ./counter
+```
+
+The seed is the whole failure. Run that line and the same interleaving happens
+again, as many times as it takes to understand it — a concurrency bug you can
+reproduce is an ordinary bug. A deadlock is reported as one instead of hanging.
+Time is virtual: when every task is waiting on the clock it jumps to the next
+deadline, so a test with a thirty-second timeout, or one that sleeps for an hour,
+finishes at once. Any program runs the same way with `SWORD_SIM_SEED` set.
+
+It is the approach FoundationDB made famous for testing a database, here as a
+flag on the test runner. What it does not do yet is the network: a test that
+opens a socket is skipped under `-sim` until simulated sockets arrive in a later
+release.
+[Testing](testing.md#simulation) has the details.
+
 ## Smaller things that add up
 
 **A failure cannot be ignored.** `!T` cannot be discarded, and its value cannot be
@@ -224,10 +257,11 @@ a diagnostic in the editor is the diagnostic the compiler gives.
 ## Against each one in particular
 
 **Go.** The same task model, and Go does it with a decade of polish, a real
-ecosystem and the best tooling in the business. Sword differs in four ways that
+ecosystem and the best tooling in the business. Sword differs in five ways that
 matter: no garbage collector and no hidden allocation, races caught at compile time
-rather than sometimes at run time, tasks that cannot leak, and parallel code whose
-answer does not depend on the machine it ran on. If you want a
+rather than sometimes at run time, tasks that cannot leak, parallel code whose
+answer does not depend on the machine it ran on, and tests that replay the
+interleaving that failed. If you want a
 service written this afternoon with libraries for everything, write Go. If you want
 to know where every byte went and have the compiler refuse your races, that is what
 this is for.
@@ -277,7 +311,8 @@ Said plainly, because a page like this is worthless otherwise:
 - **Tens of thousands of tasks, not millions.** A stack each, and the kernel counts
   the mappings.
 - **Young everywhere it counts.** TLS is a thin layer over OpenSSL rather than
-  something audited. There is no Windows support. The HTTP client keeps one
+  something audited. The simulator does not simulate the network yet. There is
+  no Windows support. The HTTP client keeps one
   connection rather than a pool. No `io_uring`. No formal anything.
 - **It is one person's language.** Decisions were made once, by one person, and
   some of them will turn out wrong.
