@@ -147,6 +147,12 @@ make CXXFLAGS="-std=c++17 -g -O1 -fsanitize=address,undefined -Wall -Wextra"
 make test
 ```
 
+That checks the compiler. The runtime is linked into the programs it compiles,
+so it is checked through them: `tests/sanitize.sh address` builds a copy of the
+runtime under AddressSanitizer and UndefinedBehaviorSanitizer and runs every
+test program against it, and `tests/sanitize.sh thread` does the same under
+ThreadSanitizer for the programs where tasks meet. Both need clang.
+
 `make test` runs four suites: the language tests in `tests/*.sword`, each
 declaring its expected exit status or compile error in a comment; an LSP test
 that drives the real server over stdio; the standard library's own tests; and

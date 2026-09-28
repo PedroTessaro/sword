@@ -1,0 +1,55 @@
+# What a pull request is held to beyond the tests: commits that say what kind of
+# change each one is, and no dependency coming in with a known vulnerability.
+name: Pull request
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  commits:
+    name: commit messages
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # Each commit is kept as it is on merge, so each one's subject is read by
+      # everyone who looks at the history afterwards. Merge commits and the ones
+      # `git revert` writes are left as git wrote them.
+      - name: Every commit's subject is in the conventional form
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          bad=0
+          for c in $(git rev-list --no-merges "$BASE..$HEAD"); do
+            subject=$(git log -1 --format=%s "$c")
+            if ! printf '%s\n' "$subject" | grep -qE \
+                '^(feat|fix|docs|test|perf|refactor|chore|ci|build|revert)(\([a-z0-9/._-]+\))?!?: .+|^Revert "'; then
+              echo "::error::$(git log -1 --format=%h "$c"): \"$subject\" does not start with a type such as feat:, fix(scope): or docs:"
+              bad=1
+            fi
+          done
+          if [ "$bad" = 1 ]; then
+            echo "CONTRIBUTING.md, under Commits, describes the form."
+            exit 1
+          fi
+
+  dependencies:
+    name: dependency review
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
