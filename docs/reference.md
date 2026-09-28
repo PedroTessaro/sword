@@ -753,10 +753,14 @@ func Float(mut out Sink, v f64) !void     // up to six places, zeros trimmed
 func Pad(mut out Sink, s string, width u64) !void
 func Quote(mut out Sink, s string) !void  // JSON string, escaped
 ```
-Fixed point, not shortest-round-trip. A number with more digits in front of the
-point than a `u64` holds comes out in exponent form — `1.000000e+16` — because
-the alternative is a wrong number, which is what it used to print. `nan`, `inf`
-and `-inf` are named.
+The digits are exact: every double is m·2^e, its decimal expansion ends, and
+`F64` prints that expansion to the places asked for, rounded once with a tie
+going to the even digit — `{.20}` of `0.1` is `0.10000000000000000555`, as in C.
+Two different doubles never print the same when enough places are asked for.
+`F64` is fixed point at any size, so `1e300` prints all 301 digits; `Float`,
+which is what `{}` uses, gives up to six places and switches to exponent form
+from 1.8e13 up — `1.000000e+16`. Negative zero prints as `-0`. `nan`, `inf` and
+`-inf` are named.
 
 The format language is small on purpose:
 
