@@ -640,10 +640,17 @@ func Contains(s string, needle string) bool
 func TrimSpace(s string) string
 func ToLower(c u8) u8
 func ParseU64(s string) !u64
+func ParseF64(s string) !f64                 // the nearest double, exactly
 
 func Concat(mut a mem.Allocator, parts ...string) !string
 func Join(mut a mem.Allocator, parts []string, sep string) !string
 ```
+
+`ParseF64` takes an optional sign, digits with an optional point, and an
+optional exponent — `-12.5e3`, `.5`, `7.` — and answers the double nearest the
+exact value written, a tie going to the even one. So text printed with enough
+digits reads back as the same double, and the same text gives the same bits on
+every machine. `std/json` reads its numbers with it.
 
 ### `std/unicode`
 
