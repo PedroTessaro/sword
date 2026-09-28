@@ -20,23 +20,35 @@ func TestFloatOrdinary(mut t *testing.T) !void {
     try t.Equal(try shown(t, 3.25), "3.25")
     try t.Equal(try shown(t, -3.25), "-3.25")
     try t.Equal(try shown(t, 123456789.5), "123456789.5")
+    try t.Equal(try shown(t, 2.0), "2.0")
     try t.Equal(try fixed(t, 3.14159, 2), "3.14")
     try t.Equal(try fixed(t, 2.0, 0), "2")
 }
 
-// `{}` keeps fourteen digits in front of the point at most, and past that
-// gives a mantissa and a power of ten, with the mantissa's digits exact.
-func TestFloatLargeInExponentForm(mut t *testing.T) !void {
+// `{}` is the shortest text that reads back as the same double: every digit it
+// needs and none it does not.
+func TestFloatShortest(mut t *testing.T) !void {
+    a := 0.1
+    b := 0.2
+    try t.Equal(try shown(t, a), "0.1")
+    try t.Equal(try shown(t, a + b), "0.30000000000000004")
+    try t.Equal(try shown(t, 1.0 / 3.0), "0.3333333333333333")
+    try t.Equal(try shown(t, 2.0 / 3.0), "0.6666666666666666")
+    try t.Equal(try shown(t, 5.0e-324), "5e-324")
+    try t.Equal(try shown(t, 1.7976931348623157e308), "1.7976931348623157e+308")
+    try t.Equal(try shown(t, 9007199254740993.0), "9007199254740992.0")
+}
+
+// Plain from 1e-4 up to 1e16, and a mantissa with a power of ten outside.
+func TestFloatExponentForm(mut t *testing.T) !void {
     try t.Equal(try shown(t, 1.0e12), "1000000000000.0")
-    try t.Equal(try shown(t, 1.0e13), "10000000000000.0")
-    try t.Equal(try shown(t, 1.0e16), "1.000000e+16")
-    try t.Equal(try shown(t, 1.0e19), "1.000000e+19")
-    try t.Equal(try shown(t, 1.0e22), "1.000000e+22")
-    try t.Equal(try shown(t, -2.5e20), "-2.500000e+20")
-    // 1e23 is not a double; the nearest one is 99999999999999991611392.
-    try t.Equal(try shown(t, 1.0e23), "1.000000e+23")
-    try t.Equal(try shown(t, 9.9999995e20), "9.999999e+20")
-    try t.Equal(try shown(t, 9.99999951e20), "1.000000e+21")
+    try t.Equal(try shown(t, 1.0e15), "1000000000000000.0")
+    try t.Equal(try shown(t, 1.0e16), "1e+16")
+    try t.Equal(try shown(t, -2.5e20), "-2.5e+20")
+    try t.Equal(try shown(t, 1.0e23), "1e+23")
+    try t.Equal(try shown(t, 0.0001), "0.0001")
+    try t.Equal(try shown(t, 0.00001), "1e-5")
+    try t.Equal(try shown(t, 1.5e-7), "1.5e-7")
 }
 
 func big(mut t *testing.T, v f64, decimals u64) !string {

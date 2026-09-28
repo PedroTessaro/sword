@@ -756,7 +756,7 @@ func I64(mut out Sink, v i64) !void
 func Bool(mut out Sink, v bool) !void
 func Hex(mut out Sink, v u64, width u64) !void
 func F64(mut out Sink, v f64, decimals u64) !void
-func Float(mut out Sink, v f64) !void     // up to six places, zeros trimmed
+func Float(mut out Sink, v f64) !void     // the shortest text that reads back
 func Pad(mut out Sink, s string, width u64) !void
 func Quote(mut out Sink, s string) !void  // JSON string, escaped
 ```
@@ -764,10 +764,14 @@ The digits are exact: every double is m·2^e, its decimal expansion ends, and
 `F64` prints that expansion to the places asked for, rounded once with a tie
 going to the even digit — `{.20}` of `0.1` is `0.10000000000000000555`, as in C.
 Two different doubles never print the same when enough places are asked for.
-`F64` is fixed point at any size, so `1e300` prints all 301 digits; `Float`,
-which is what `{}` uses, gives up to six places and switches to exponent form
-from 1.8e13 up — `1.000000e+16`. Negative zero prints as `-0`. `nan`, `inf` and
-`-inf` are named.
+`F64` is fixed point at any size, so `1e300` prints all 301 digits.
+
+`Float`, which is what `{}` uses, prints the shortest text that reads back as the
+same double: `0.1` is `0.1`, `1.0 / 3.0` is `0.3333333333333333`, and `0.1 + 0.2`
+is `0.30000000000000004`, because that is the double it is. It is plain from
+`1e-4` up to `1e16`, with `.0` on a whole number so that it still reads as a
+float, and a mantissa with a power of ten outside that: `1e+16`, `1.5e-7`.
+Negative zero prints with its sign. `nan`, `inf` and `-inf` are named.
 
 The format language is small on purpose:
 

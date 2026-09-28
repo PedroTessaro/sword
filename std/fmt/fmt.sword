@@ -97,9 +97,6 @@ func Hex(mut out Sink, v u64, width u64) !void {
 // The largest f64 there is. Anything above it is an infinity, which is how one
 // is recognised without a bit pattern.
 const maxFloat = 1.7976931348623157e308
-// From here up, `{}` prints a float in exponent form: fourteen digits in front
-// of the point say less than a mantissa and a power of ten do.
-const exponentFrom = 1.8e13
 
 func bitsOf(v f64) u64 {
     mut x := v
@@ -136,6 +133,12 @@ func expand(v f64, after u64, mut x *Expansion) {
         m |= 0x10000000000000
         e = i64(field) - 1075
     }
+    expandParts(m, e, after, x)
+}
+
+// The same for m·2^e, with m below 2^62: a double, or a point halfway between
+// two of them.
+func expandParts(m u64, e i64, after u64, mut x *Expansion) {
     x.count = 0
     x.rest = false
 
@@ -271,10 +274,14 @@ func roundAt(mut x *Expansion, keep u64) {
     }
     x.count = keep
     x.rest = false
-    if !up {
-        return
+    if up {
+        bumpLast(x)
     }
-    mut i := keep
+}
+
+// One more in the last digit held, carrying.
+func bumpLast(mut x *Expansion) {
+    mut i := x.count
     for i > 0 {
         i -= 1
         if x.digits[i] < 9 {
@@ -350,50 +357,200 @@ func F64(mut out Sink, v f64, decimals u64) !void {
     }
 }
 
-// A mantissa with `places` places and a power of ten, for a number at least
-// exponentFrom, so that its first digit is in front of the point.
-func exponent(mut out Sink, v f64, places u64) !void {
-    mut x := newExpansion()
-    expand(v, 0, &x)
-    roundAt(&x, places + 1)
-    try out.WriteByte(digitAt(&x, 0))
-    try out.WriteByte(46)
-    for i in 0..places {
-        try out.WriteByte(digitAt(&x, 1 + i))
+// -1, 0 or 1 as a is below, equal to or above b, both exact decimals.
+func compareDecimal(a *Expansion, b *Expansion) i64 {
+    mut top := a.whole
+    if b.whole > top {
+        top = b.whole
     }
-    try out.WriteByte(101) // 'e'
-    try out.WriteByte(43)  // '+'
-    try U64(out, x.whole - 1)
+    // A number cut short before its point has fewer digits than places; the
+    // missing ones are zeros.
+    mut below u64 = 0
+    if a.count > a.whole {
+        below = a.count - a.whole
+    }
+    if b.count > b.whole && b.count - b.whole > below {
+        below = b.count - b.whole
+    }
+    // Place p counts down from the highest digit either has, through the
+    // point, to the lowest.
+    for k in 0..top + below {
+        da := placeOf(a, top, k)
+        db := placeOf(b, top, k)
+        if da != db {
+            if da < db {
+                return -1
+            }
+            return 1
+        }
+    }
+    if a.rest != b.rest {
+        if a.rest {
+            return 1
+        }
+        return -1
+    }
+    return 0
 }
 
-// The default for a float: up to six places, with trailing zeros dropped so
-// that 1.5 does not print as 1.500000, and exponent form from exponentFrom up.
+// The digit k places below the top of a number whose highest place is `top`
+// digits before the point.
+func placeOf(x *Expansion, top u64, k u64) u8 {
+    lead := top - x.whole
+    if k < lead {
+        return 0
+    }
+    i := k - lead
+    if i < x.count {
+        return x.digits[i]
+    }
+    return 0
+}
+
+// Whether a decimal reads back as the double whose rounding interval is
+// (low, high): open, or closed when the double's mantissa is even, since a
+// tie goes to the even one.
+func inside(c *Expansion, low *Expansion, high *Expansion, closed bool) bool {
+    a := compareDecimal(c, low)
+    b := compareDecimal(c, high)
+    if closed {
+        return a >= 0 && b <= 0
+    }
+    return a > 0 && b < 0
+}
+
+// The shortest decimal that reads back as `v`, finite and above zero. Every
+// number between the midpoints to its two neighbours rounds to it; the answer
+// is the one with fewest digits in there, and of two such, the nearer. The
+// midpoints are exact decimals like any double, so this decides, not guesses.
+func shortest(v f64, mut out *Expansion) {
+    b := bitsOf(v)
+    field := (b >> 52) & 0x7FF
+    mut m := b & 0xFFFFFFFFFFFFF
+    mut e i64 = -1074
+    if field != 0 {
+        m |= 0x10000000000000
+        e = i64(field) - 1075
+    }
+    // Digits wanted past the point: through the first significant one and
+    // eighteen more. 2^e is about 10^(0.30103·e).
+    mut after u64 = 20
+    mag := (e + 52) * 30103 / 100000
+    if mag < 0 {
+        after += u64(-mag)
+    }
+    mut x := newExpansion()
+    expand(v, after, &x)
+    mut low := newExpansion()
+    mut high := newExpansion()
+    // Below a power of two the gap to the neighbour underneath is half as wide.
+    if m == 0x10000000000000 && field > 1 {
+        expandParts(4 * m - 1, e - 2, after, &low)
+    } else {
+        expandParts(2 * m - 1, e - 1, after, &low)
+    }
+    expandParts(2 * m + 1, e - 1, after, &high)
+    closed := m % 2 == 0
+
+    mut first u64 = 0
+    for first < x.count && x.digits[first] == 0 {
+        first += 1
+    }
+    for p in 1..18 {
+        mut down := x
+        down.count = first + u64(p)
+        down.rest = false
+        mut up := down
+        bumpLast(&up)
+        downFits := inside(&down, &low, &high, closed)
+        upFits := inside(&up, &low, &high, closed)
+        if downFits && upFits {
+            // Both read back; the nearer is the one rounding to p digits gives.
+            mut near := x
+            roundAt(&near, first + u64(p))
+            *out = near
+            return
+        }
+        if downFits {
+            *out = down
+            return
+        }
+        if upFits {
+            *out = up
+            return
+        }
+    }
+    *out = x
+    roundAt(out, first + 17)
+}
+
+// The default for a float: the shortest text that reads back as the same
+// double — 0.1 is 0.1, and 0.1 + 0.2 is 0.30000000000000004, because that is
+// what it is. Plain from 1e-4 to 1e16, with ".0" on a whole number so that it
+// still reads as a float; a mantissa and a power of ten outside that.
 func Float(mut out Sink, v f64) !void {
     if try signOrName(out, v) {
         return
     }
     a := magnitude(v)
-    if a >= exponentFrom {
-        try exponent(out, a, 6)
+    if a == 0.0 {
+        try Str(out, "0.0")
         return
     }
     mut x := newExpansion()
-    expand(a, 7, &x)
-    roundAt(&x, x.whole + 6)
-    for i in 0..x.whole {
-        try out.WriteByte(digitAt(&x, i))
+    shortest(a, &x)
+    mut first u64 = 0
+    for first < x.count && x.digits[first] == 0 {
+        first += 1
     }
-    mut last := x.whole + 6
-    for last > x.whole && digitAt(&x, last - 1) == digitZero {
+    mut last := x.count
+    for last > first + 1 && x.digits[last - 1] == 0 {
         last -= 1
     }
-    if last == x.whole {
-        try Str(out, ".0")
+    // The power of ten of the first significant digit.
+    point := i64(x.whole) - 1 - i64(first)
+    if point >= -4 && point < 16 {
+        if point >= 0 {
+            for k in 0..u64(point) + 1 {
+                if first + k < last {
+                    try out.WriteByte(digitZero + x.digits[first + k])
+                } else {
+                    try out.WriteByte(digitZero)
+                }
+            }
+            try out.WriteByte(46)
+            if first + u64(point) + 1 >= last {
+                try out.WriteByte(digitZero)
+                return
+            }
+            for i in first + u64(point) + 1..last {
+                try out.WriteByte(digitZero + x.digits[i])
+            }
+            return
+        }
+        try Str(out, "0.")
+        for k in 0..u64(-point) - 1 {
+            try out.WriteByte(digitZero)
+        }
+        for i in first..last {
+            try out.WriteByte(digitZero + x.digits[i])
+        }
         return
     }
-    try out.WriteByte(46)
-    for i in x.whole..last {
-        try out.WriteByte(digitAt(&x, i))
+    try out.WriteByte(digitZero + x.digits[first])
+    if last > first + 1 {
+        try out.WriteByte(46)
+        for i in first + 1..last {
+            try out.WriteByte(digitZero + x.digits[i])
+        }
+    }
+    try out.WriteByte(101) // 'e'
+    if point < 0 {
+        try out.WriteByte(minus)
+        try U64(out, u64(-point))
+    } else {
+        try out.WriteByte(43) // '+'
+        try U64(out, u64(point))
     }
 }
 
