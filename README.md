@@ -39,6 +39,11 @@ Eight tasks write into eight pieces of the same array. That compiles because
 loop instead and the compiler stops you, because then it has no way to know the
 pieces are distinct.
 
+What the compiler cannot see is the order tasks run in, so the test runner
+varies it on purpose: `shield test -sim` runs each test under many
+interleavings, one thread and a seed each, and a failure comes with the seed
+that makes it happen again.
+
 ## Install
 
 ```sh
