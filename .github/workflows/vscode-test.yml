@@ -1,0 +1,41 @@
+# The extension inside a real VS Code, against this commit's shield and
+# swordls, whenever the extension or the server it talks to changes. It
+# downloads a whole VS Code, so it does not run for changes that cannot affect
+# it.
+name: VS Code extension tests
+
+on:
+  push:
+    branches: [main, develop]
+    paths: ["editors/vscode/**", "lsp/**", ".github/workflows/vscode-test.yml"]
+  pull_request:
+    paths: ["editors/vscode/**", "lsp/**", ".github/workflows/vscode-test.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: VS Code extension
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libssl-dev xvfb
+      - run: make
+      - run: npm ci
+        working-directory: editors/vscode
+      # VS Code needs a display, and the runner has none.
+      - run: xvfb-run -a npm test
+        working-directory: editors/vscode

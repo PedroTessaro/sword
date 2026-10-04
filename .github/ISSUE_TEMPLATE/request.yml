@@ -1,0 +1,15 @@
+name: Library, tools or documentation
+description: Something missing or unclear in the standard library, the tools, the editors or the docs.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What is missing or unclear
+    validations:
+      required: true
+  - type: textarea
+    id: use
+    attributes:
+      label: What you were trying to do
+      description: The program you were writing when you needed it, if there was one.

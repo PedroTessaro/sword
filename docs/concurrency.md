@@ -670,6 +670,23 @@ scope {
 }
 ```
 
+Each operation on an atomic is indivisible; two of them in a row are not.
+
+```sword
+func bump(counter *atomic[u64]) {
+    seen := counter.Load()
+    counter.Store(seen + 1)     // compiles, and loses updates
+}
+```
+
+Two tasks can both load before either stores, and one increment disappears.
+The race checker has nothing to say — every access went through the atomic,
+which is exactly what it asks — because this is not a data race but a race in
+the logic. `Add` is the one-step version. For the cases with no one-step
+version, and to find the ones you did not see, `shield test -sim` runs a test
+under many orders on purpose and prints the one that breaks it;
+[Testing](testing.md#simulation) shows it finding this very function.
+
 ## Shared structures
 
 An atomic covers one scalar. A hit table, a work queue, a cache — anything with
@@ -765,7 +782,7 @@ lock a := &table {
 
 That is the version the compiler can see. The version it cannot — a second
 `lock` reached through a function call — aborts at runtime with a message rather
-than hanging, because the guard remembers which thread holds it.
+than hanging, because the guard remembers which task holds it.
 
 **A task cannot outlive the lock it starts under.**
 
@@ -782,14 +799,24 @@ still running in between. Put the `scope` inside the `lock` — which is safe an
 useful, parallel work over a locked structure — or put the `lock` inside the
 task.
 
+What neither rule covers is two different values locked in opposite orders:
+one task holds `a` and wants `b`, the other holds `b` and wants `a`. Nothing
+about either task is wrong on its own, so the compiler accepts both, and whether
+they deadlock depends on how they interleave. Take locks in one order everywhere.
+To check that you did, `shield test -sim` tries many interleavings and reports
+one that deadlocks, with the seed that makes it happen again.
+
 ### What it costs
 
-A contended lock spins for a moment and then sleeps, and while it sleeps it
-tells the scheduler, so a thread waiting behind a long critical section does not
-cost a core. Eight tasks doing 200 000 locked increments each — 1.6 million
-lock/unlock pairs — take about 25 ms on a ten-core machine. The same work
-through one `atomic[u64]` takes about 45 ms, because eight threads hammering one
-cache line contend harder than eight threads taking turns. Read nothing general
+A contended lock spins for a moment and then puts the task down behind it, and
+the thread goes on to other work until the lock is handed over. So a task
+waiting behind a long critical section does not cost a core, and a task that
+holds a lock while it waits — for a timer, a socket, a `Wait` — lets the others
+behind it wait without taking a thread each. Eight tasks doing 200 000 locked
+increments each — 1.6 million lock/unlock pairs — take about 22 ms on a
+ten-core machine. The same work through one `atomic[u64]` takes about 35 ms,
+because eight threads hammering one cache line contend harder than eight
+threads taking turns. Read nothing general
 into that: the point is only that the lock is not going to be your bottleneck.
 
 What is missing: no read-only lock, so two readers still take turns, and no

@@ -222,6 +222,7 @@ struct Emitter {
     }
 
     case IR_ATOMIC_RMW: {
+      sim_point();
       static const char *names[] = {"add", "sub", "and", "or",  "xor",
                                     "min", "max", "xchg", "fadd"};
       const char *name = names[in.imm];
@@ -249,6 +250,7 @@ struct Emitter {
     }
 
     case IR_ATOMIC_LOAD:
+      sim_point();
       // LLVM will not touch an i1 atomically, so a bool travels as a byte.
       if (in.type->kind == TY_BOOL) {
         fprintf(out, "  %%wide%d = load atomic i8, ptr %s seq_cst, align 1\n",
@@ -263,6 +265,7 @@ struct Emitter {
       break;
 
     case IR_ATOMIC_STORE:
+      sim_point();
       if (in.type->kind == TY_BOOL) {
         fprintf(out, "  %%wide%d = zext i1 %s to i8\n", in.a,
                 val(in.a).c_str());
@@ -276,6 +279,7 @@ struct Emitter {
       break;
 
     case IR_ATOMIC_CAS: {
+      sim_point();
       if (in.type->kind == TY_BOOL) {
         fprintf(out, "  %%exp%d = zext i1 %s to i8\n", in.dst,
                 val(in.b).c_str());
@@ -605,6 +609,10 @@ struct Emitter {
       fprintf(out, "%s\n", entry.decl);
       any = true;
     }
+    if (mod.sim_points) {
+      fputs("declare void @sword_sim_point()\n", out);
+      any = true;
+    }
     if (calls("memcmp") && !declared.count("memcmp")) {
       fputs("declare i32 @memcmp(ptr, ptr, i64)\n", out);
       any = true;
@@ -620,6 +628,11 @@ struct Emitter {
         any = true;
       }
     if (any) fputc('\n', out);
+  }
+
+  // Before an atomic operation, in a build for the simulator.
+  void sim_point() {
+    if (mod.sim_points) fputs("  call void @sword_sim_point()\n", out);
   }
 
   bool calls(const std::string &name) const {
