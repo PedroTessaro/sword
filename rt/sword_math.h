@@ -1,0 +1,1 @@
+float sword_math_trunc(float number);

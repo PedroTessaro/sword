@@ -1,0 +1,11 @@
+package math
+const Pi = 3.14
+
+
+
+extern func sword_math_trunc(number f32) f32
+func Trunc(number f32) f32 {
+    return sword_math_trunc(number)
+} 
+
+//extern func trunc(number f32) f32
