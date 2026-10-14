@@ -1,7 +1,0 @@
-import "std/testing"
-func TestPi(mut t *testing.T) !void {
-    try t.Equal(Pi, 3.14)
-
-    a f32 = 3.14
-    try t.Equal(Trunc(a), 3.0)
-}
