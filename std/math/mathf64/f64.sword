@@ -1,0 +1,231 @@
+package f64
+
+extern func acos(x f64) f64
+extern func acosh(x f64) f64
+extern func asin(x f64) f64
+extern func asinh(x f64) f64
+extern func atan(x f64) f64
+extern func atan2(y f64, x f64) f64
+extern func atanh(x f64) f64
+extern func cbrt(x f64) f64
+extern func ceil(x f64) f64
+extern func copysign(x f64, y f64) f64
+extern func cos(x f64) f64
+extern func cosh(x f64) f64
+extern func erf(x f64) f64
+extern func erfc(x f64) f64
+extern func exp(x f64) f64
+extern func exp2(x f64) f64
+extern func expm1(x f64) f64
+extern func fabs(x f64) f64
+extern func fdim(x f64, y f64) f64
+extern func floor(x f64) f64
+extern func fma(x f64, y f64, z f64) f64
+extern func fmax(x f64, y f64) f64
+extern func fmin(x f64, y f64) f64
+extern func fmod(x f64, y f64) f64
+//extern func frexp(extern func value, int *exp) f64
+extern func hypot(x f64, y f64) f64
+//int ilogb(x f64) f64
+//extern func ldexp(x f64, int exp) f64
+extern func lgamma(x f64) f64
+//long long llrint(x f64) f64
+//long long llround(x f64) f64
+extern func log(x f64) f64
+extern func log10(x f64) f64
+extern func log1p(x f64) f64
+extern func log2(x f64) f64
+extern func logb(x f64) f64
+//long lrint(x f64) f64
+//long lround(x f64) f64
+//extern func modf(extern func value, extern func *iptr) f64
+//extern func nan(const char *tagp) f64
+extern func nearbyint(x f64) f64
+extern func nextafter(x f64, y f64) f64
+//extern func nexttoward(x f64, long y f64) f64
+extern func pow(x f64, y f64) f64
+extern func remainder(x f64, y f64) f64
+//extern func remquo(x f64, y f64, int *quo) f64
+extern func rint(x f64) f64
+extern func round(x f64) f64
+//extern func scalbln(x f64, long exp) f64
+//extern func scalbn(x f64, int exp) f64
+extern func sin(x f64) f64
+extern func sinh(x f64) f64
+extern func sqrt(x f64) f64
+extern func tan(x f64) f64
+extern func tanh(x f64) f64
+extern func tgamma(x f64) f64
+extern func trunc(x f64) f64
+
+func Acos(x f64) f64 {
+    return acos(x)
+}
+
+func Acosh(x f64) f64 {
+    return acosh(x)
+}
+
+func Asin(x f64) f64 {
+    return asin(x)
+}
+
+func Asinh(x f64) f64 {
+    return asinh(x)
+}
+
+func Atan(x f64) f64 {
+    return atan(x)
+}
+
+func Atan2(y f64, x f64) f64 {
+    return atan2(y, x)
+}
+
+func Atanh(x f64) f64 {
+    return atanh(x)
+}
+
+func Abs(x f64) f64 {
+    return fabs(x)
+}
+
+func Cbrt(x f64) f64 {
+    return cbrt(x)
+}
+
+func Ceil(x f64) f64 {
+    return ceil(x)
+}
+
+func Copysign(x f64, y f64) f64 {
+    return copysign(x, y)
+}
+
+func Cos(x f64) f64 {
+    return Cos(x)
+}
+
+func Erf(x f64) f64 {
+    return erf(x)
+}
+
+func Erfc(x f64) f64 {
+    return erfc(x)
+}
+
+func Exp(x f64) f64 {
+    return exp(x)
+}
+
+func Exp2(x f64) f64 {
+    return exp2(x)
+}
+
+func Expm1(x f64) f64 {
+    return expm1(x)
+}
+
+func Dim(x f64, y f64) f64 {
+    return fdim(x, y)
+}
+
+func Floor(x f64) f64 {
+    return floor(x)
+}
+
+func Fma(x f64, y f64, z f64) f64 {
+    return fma(x, y, z)
+}
+
+func Max(x f64 , y f64) f64 {
+    return fmax(x, y)
+}
+
+func Min(x f64, y f64) f64 {
+    return fmin(x, y)
+}
+
+func Mod(x f64, y f64) f64 {
+    return fmod(x, y)
+}
+
+func Hypot(x f64, y f64) f64 {
+    return hypot(x, y)
+}
+
+func Lgamma(x f64) f64 {
+    return lgamma(x)
+}
+
+func Log(x f64) f64 {
+    return log(x)
+}
+
+func Log10(x f64) f64 {
+    return log10(x)
+}
+
+func Log1p(x f64) f64 {
+    return log1p(x)
+}
+
+func Log2(x f64) f64 {
+    return log2(x)
+}
+
+func Lobg(x f64) f64 {
+    return logb(x)
+}
+
+func Nearbyint(x f64) f64 {
+    return nearbyint(x)
+}
+
+func Nextafter(x f64, y f64) f64 {
+    return nextafter(x, y)
+}
+
+func Pow(x f64, y f64) f64 {
+    return pow(x, y)
+}
+
+func Remainder(x f64, y f64) f64 {
+    return remainder(x, y)
+}
+
+func Rint(x f64) f64 {
+    return rint(x)
+}
+
+func Round(x f64) f64 {
+    return round(x)
+}
+
+func Sin(x f64) f64 {
+    return sin(x)
+}
+
+func Sinh(x f64) f64 {
+    return sinh(x)
+}
+
+func Sqrt(x f64) f64 {
+    return sqrt(x)
+}
+
+func Tan(x f64) f64 {
+    return tan(x)
+}
+
+func Tanh(x f64) f64 {
+    return tanh(x)
+}
+
+func Tgamma(x f64) f64 {
+    return tgamma(x)
+}
+
+func Trunc(x f64) f64 {
+    return trunc(x)
+}

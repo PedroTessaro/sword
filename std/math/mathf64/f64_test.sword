@@ -1,0 +1,5 @@
+import "std/testing"
+
+func TestAbs64(mut t *testing.T) !void {
+    try t.Equal(f64.Abs(-2.0), 2.0)
+}
