@@ -289,7 +289,12 @@ int32_t sword_net_dial_timeout(const char *host, int64_t host_len, int32_t port,
     int connected = connect_within(fd, at->ai_addr, at->ai_addrlen, millis);
     if (connected == 0) break;
     timed_out = connected == -2;
-    close(fd);
+    // The wait put this socket on the poller, and a refused connect is a socket
+    // already shut down whose event may fire as it is attached — the very case
+    // in which a close beside kqueue hangs in the kernel for good. So it goes the
+    // way every other socket goes, and its generation moves on with it.
+    forget_limits(fd);
+    sword_close_fd(fd);
     fd = -1;
   }
   freeaddrinfo(found);
