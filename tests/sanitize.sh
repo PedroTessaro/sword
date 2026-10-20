@@ -29,7 +29,7 @@ fi
 # The concurrency tests: everything that spawns, waits, locks or serves.
 concurrent="blocking parallel scope atomics shared http router httpmany deadline
 testparallel files metrics channels chunked graceful signals libcnames tls https
-filepool static clientreply lockpark dialreuse"
+filepool static clientreply lockpark dialreuse dialrefused"
 
 if [ $# -eq 0 ]; then
     if [ "$mode" = thread ]; then
