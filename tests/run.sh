@@ -420,6 +420,14 @@ refused "--target with no runtime for it" "make TARGET=x86_64-sword-none" \
 refused "shield test --target" "test runs what it builds" \
     test "$tmp/picked" --target=x86_64-unknown-linux-gnu
 
+# -O takes a level clang knows and nothing that would reach the shell as more.
+refused "-O with more than a level" "is not a level" \
+    "$tmp/cross/main.sword" "-O2; touch $tmp/cross/ran" -o "$tmp/cross/prog"
+if [ -e "$tmp/cross/ran" ]; then
+    echo "FAIL -O: its value ran as a command"
+    fail=$((fail + 1))
+fi
+
 # A reduction has to answer the same thing whatever the pool looks like. The
 # float sum is the one that shows it: adding the pieces in the order they
 # finish rounds differently from adding them in the order they were cut, so

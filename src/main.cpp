@@ -220,7 +220,7 @@ bool assemble(const std::string &ll_path, const std::string &out_path,
   // a program that never spawns links nothing from it.
   // `-x none` puts clang back into guess-by-extension mode, so the archive is
   // read as an archive and not as more LLVM IR.
-  std::string cmd = "clang -O" + opt_level + " -Wno-override-module";
+  std::string cmd = "clang " + quoted("-O" + opt_level) + " -Wno-override-module";
   if (!target.empty()) cmd += " --target=" + quoted(target);
   cmd += " -x ir " + quoted(ll_path);
   if (object_only) {
@@ -500,6 +500,16 @@ int main(int argc, char **argv) {
 
   if (!testing && output.empty()) output = "a.out";
 
+  // The level goes to clang, so it is one clang knows; anything else would
+  // reach the command line as more than a level.
+  if (!opt_level.empty() && opt_level != "0" && opt_level != "1" &&
+      opt_level != "2" && opt_level != "3" && opt_level != "s" &&
+      opt_level != "z") {
+    fprintf(stderr, "shield: -O%s is not a level; use -O0, -O1, -O2, -O3, -Os"
+                    " or -Oz\n",
+            opt_level.c_str());
+    return 1;
+  }
   if (!target.empty() && !sixty_four_bits(target)) return 1;
   if (testing && (object_only || !target.empty())) {
     fprintf(stderr, "shield: test runs what it builds, so it builds for this"
