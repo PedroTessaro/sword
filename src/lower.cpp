@@ -2296,7 +2296,11 @@ struct Lowerer {
     out.is_extern = decl->is_extern;
     out.is_c_variadic = decl->is_c_variadic;
     out.is_weak = decl->is_weak;
-    out.is_internal = decl->is_hidden;
+    // A program is one module, and nothing outside it calls a Sword function by
+    // name — the runtime gets thunks, C gets addresses. Only the entry point is
+    // seen from outside, so everything else is internal: LLVM drops what nothing
+    // calls, and with it the C symbols only those functions needed.
+    out.is_internal = decl->is_hidden || decl->name != "main.main";
     out.ret_by_pointer = is_aggregate(out.ret);
     for (Node *p : decl->kids) out.params.push_back(p->type);
     if (decl->is_extern) return;
