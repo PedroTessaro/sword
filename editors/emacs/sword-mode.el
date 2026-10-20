@@ -65,6 +65,9 @@
     (,(concat "\\_<\\(?:struct\\|interface\\|enum\\)\\_>\\s-+\\(" sword--name "\\)")
      1 font-lock-type-face)
     (,(concat "\\_<error\\_>\\s-+\\(" sword--name "\\)") 1 font-lock-constant-face)
+    ;; `type' is a word only where an alias begins; elsewhere it is a name.
+    (,(concat "^\\(type\\)\\s-+\\(" sword--name "\\)")
+     (1 font-lock-keyword-face) (2 font-lock-type-face))
     (,(concat "\\_<error\\.\\(" sword--name "\\)") 1 font-lock-constant-face)
     (,(concat "\\(" sword--name "\\)\\s-*(") 1 font-lock-function-name-face)
     ("\\_<0[xX][0-9A-Fa-f_]+\\_>" . font-lock-constant-face)
@@ -89,7 +92,7 @@
 
 (defvar sword-imenu-generic-expression
   `(("func" ,(concat "^func\\s-+\\(?:(" sword--name "[^)]*)\\s-*\\)?\\(" sword--name "\\)") 1)
-    ("type" ,(concat "^\\(?:struct\\|interface\\|enum\\)\\s-+\\(" sword--name "\\)") 1)
+    ("type" ,(concat "^\\(?:struct\\|interface\\|enum\\|type\\)\\s-+\\(" sword--name "\\)") 1)
     ("error" ,(concat "^error\\s-+\\(" sword--name "\\)") 1)
     ("const" ,(concat "^const\\s-+\\(" sword--name "\\)") 1))
   "What `imenu' offers to jump to.")

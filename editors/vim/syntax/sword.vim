@@ -23,6 +23,8 @@ syn match swordNumber "\<0b[01_]\+\>"
 syn match swordNumber "\<0o[0-7_]\+\>"
 syn match swordNumber "\<\d[0-9_]*\.\d[0-9_]*\%([eE][-+]\?\d\+\)\?\>"
 syn match swordError "\<error\.\h\w*\>"
+" `type` is a word only where an alias begins; elsewhere it is a name.
+syn match swordKeyword "^type\ze\s\+\h"
 syn match swordOperator "[-+*/%<>=!&|^~?]\|:=\|\.\."
 
 syn region swordString start=+"+ skip=+\\.+ end=+"+ contains=swordEscape
