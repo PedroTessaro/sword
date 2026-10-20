@@ -241,8 +241,9 @@ qsort(xs.ptr, n, 8, ascending)        // a Sword function, handed to C
 A Sword function converts to an `extern func` of the same signature on its own:
 with only scalars in it, Sword calls the way C does. It never converts back, and
 an address never becomes a `func`. The signature follows the rule of an
-`extern` declaration — scalars only, so a string is passed as `.ptr` and `.len`
-— and cannot end in `...`, for the reason a variadic C function is only called
+`extern` declaration — scalars only, so a string is passed as `.ptr` and `.len`,
+or through `strings.ToC` to a function that wants a zero at its end — and
+cannot end in `...`, for the reason a variadic C function is only called
 by name.
 
 The conversion from an address is a promise nobody checks: if the function
@@ -749,6 +750,28 @@ func ParseF64(s string) !f64                 // the nearest double, exactly
 
 func Concat(mut a mem.Allocator, parts ...string) !string
 func Join(mut a mem.Allocator, parts []string, sep string) !string
+
+func FromC(p [*]u8) string                   // up to the zero, not copied
+func FromCMax(p [*]u8, most u64) string      // and at most `most` bytes
+func ToC(s string, mut into []u8) ![*]u8     // s and a zero, into `into`
+```
+
+A C string is a pointer to bytes ending in a zero; a Sword string is a pointer
+and a length, with no zero after it. `FromC` reads up to the zero and answers
+with a view of that memory, so a string from a buffer the library reuses or
+frees has to be copied out before it is kept. `FromCMax` also stops after
+`most` bytes, for a `char[N]` field that the text fills, which then has no zero
+at all. `ToC` writes the string and its zero into a buffer of the caller's —
+`error.NoSpace` when it does not fit, and `error.InteriorNul` when the string
+holds a zero itself, since C would read a different string from the one
+passed.
+
+```sword
+extern func getenv(name [*]u8) ?[*]u8
+
+mut room := [64]u8{}
+p := getenv(try strings.ToC("HOME", room[..])) orelse return ""
+home := strings.FromC(p)
 ```
 
 `ParseF64` takes an optional sign, digits with an optional point, and an

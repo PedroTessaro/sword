@@ -113,3 +113,42 @@ func TestConcatExactSize(mut t *testing.T) !void {
     }
     try t.Failf("allocated past the arena")
 }
+
+// --- C strings -------------------------------------------------------------
+
+func TestFromC(mut t *testing.T) !void {
+    text := [6]u8{104, 101, 108, 108, 111, 0}  // "hello" and its end
+    try t.Equal(FromC(text[..].ptr), "hello")
+    nothing := [1]u8{0}
+    try t.Equal(FromC(nothing[..].ptr), "")
+}
+
+// A char[N] that the text fills has no zero; the limit is what stops the read.
+func TestFromCMax(mut t *testing.T) !void {
+    full := [4]u8{65, 66, 67, 68}
+    try t.Equal(FromCMax(full[..].ptr, 4), "ABCD")
+    short := [4]u8{65, 0, 67, 68}
+    try t.Equal(FromCMax(short[..].ptr, 4), "A")
+    try t.Equal(FromCMax(full[..].ptr, 0), "")
+}
+
+func TestToC(mut t *testing.T) !void {
+    mut room := [6]u8{}
+    p := try ToC("hello", room[..])
+    try t.Equal(room[5], u8(0))
+    try t.Equal(FromC(p), "hello")
+
+    // Exactly the length plus its zero fits; one less does not.
+    mut tight := [5]u8{}
+    mut refused := false
+    ToC("hello", tight[..]) catch {
+        refused = true
+    }
+    try t.Equal(refused, true)
+
+    mut inner := false
+    ToC("a.txt\0../secret", room[..]) catch {
+        inner = true
+    }
+    try t.Equal(inner, true)
+}

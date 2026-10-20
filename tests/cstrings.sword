@@ -1,0 +1,28 @@
+// expect: 42
+// expect-output: C strings cross both ways
+// Sword's strings to C and back, against libc itself: the zero ToC writes is
+// where strlen stops, and FromC reads back exactly what C holds.
+
+import "std/io"
+import "std/strings"
+
+extern func strlen(s [*]u8) u64
+extern func strchr(s [*]u8, c i32) ?[*]u8
+
+func main() !int {
+    mut room := [32]u8{}
+    c := try strings.ToC("sword/strings", room[..])
+    if strlen(c) != 13 {
+        return 1
+    }
+    // A pointer C hands back into the middle of the same bytes.
+    slash := strchr(c, 47) orelse return 2
+    if strings.FromC(slash) != "/strings" {
+        return 3
+    }
+    if strings.FromC(c) != "sword/strings" {
+        return 4
+    }
+    try io.Println("C strings cross both ways")
+    return 42
+}

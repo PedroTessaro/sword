@@ -4,6 +4,22 @@ Releases are numbered by [semantic versioning](https://semver.org): until 1.0,
 a minor version may change the language, and each one says how. Each release is
 also named for a step in making a blade, in the order they happen.
 
+## 0.2.3 — Fold
+
+*2026-10-20.* A hotfix to Fold for programs that talk to C: strings cross
+between the two without each program writing its own conversion.
+
+### Standard library
+
+- **`strings.FromC`** reads a C string up to its zero, and **`strings.FromCMax`**
+  also stops at a limit, for a `char[N]` field the text fills. Both answer with
+  a view of the C memory and copy nothing.
+- **`strings.ToC`** writes a string and its zero into a buffer of the caller's
+  for a C function that wants a `const char *`, and refuses a string holding a
+  zero, which C would read as a different, shorter one.
+
+Nothing that compiled before stops compiling.
+
 ## 0.2.2 — Fold
 
 *2026-10-20.* A patch to Fold: what a server needs to authenticate, sign, stamp
