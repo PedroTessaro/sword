@@ -1,0 +1,258 @@
+package encoding
+
+// Bytes as text and back: hex, and base64 in its two alphabets (RFC 4648).
+// Nothing here allocates. Every function writes into a slice the caller gives
+// it and answers with the part it filled, so a digest can be printed or a
+// token decoded inside a request handler without an arena.
+
+error NoSpace   = "the buffer given has no room for the result"
+error BadHex    = "that is not hexadecimal"
+error BadBase64 = "that is not base64"
+
+// How much room an encoding of `n` bytes needs.
+func HexSize(n u64) u64 {
+    return n * 2
+}
+
+func Base64Size(n u64) u64 {
+    return (n + 2) / 3 * 4
+}
+
+// Without padding: every whole three bytes are four characters, and what is
+// left over is one more than itself.
+func Base64UrlSize(n u64) u64 {
+    rest := n % 3
+    if rest == 0 {
+        return n / 3 * 4
+    }
+    return n / 3 * 4 + rest + 1
+}
+
+// --- hex -------------------------------------------------------------------
+
+// Lowercase, which is how digests are usually written and compared.
+func Hex(src []u8, mut into []u8) !string {
+    if into.len < HexSize(src.len) {
+        return error.NoSpace
+    }
+    digits := "0123456789abcdef"
+    for i in 0..src.len {
+        into[i * 2] = digits[u64(src[i] >> 4)]
+        into[i * 2 + 1] = digits[u64(src[i] & 0x0f)]
+    }
+    return string(into[0..src.len * 2])
+}
+
+// Either case is read. Answers how many bytes were written.
+func DecodeHex(text string, mut into []u8) !u64 {
+    if text.len % 2 != 0 {
+        return error.BadHex
+    }
+    n := text.len / 2
+    if into.len < n {
+        return error.NoSpace
+    }
+    for i in 0..n {
+        high := try hexValue(text[i * 2])
+        low := try hexValue(text[i * 2 + 1])
+        into[i] = high << 4 | low
+    }
+    return n
+}
+
+func hexValue(c u8) !u8 {
+    if c >= 48 && c <= 57 { // 0-9
+        return c - 48
+    }
+    if c >= 97 && c <= 102 { // a-f
+        return c - 87
+    }
+    if c >= 65 && c <= 70 { // A-F
+        return c - 55
+    }
+    return error.BadHex
+}
+
+// --- base64 ----------------------------------------------------------------
+
+const padding = 61 // '='
+
+func standardAlphabet() string {
+    return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+}
+
+func urlAlphabet() string {
+    return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+}
+
+// The standard alphabet, padded with '=' to a multiple of four. This is what
+// SCRAM, MIME and HTTP Basic authentication expect.
+func Base64(src []u8, mut into []u8) !string {
+    if into.len < Base64Size(src.len) {
+        return error.NoSpace
+    }
+    n := encode(src, standardAlphabet(), true, into)
+    return string(into[0..n])
+}
+
+// The URL and file name alphabet, '-' and '_' in place of '+' and '/', and no
+// padding: the form a token takes in a URL, a cookie or a JWT, where '=' would
+// have to be escaped.
+func Base64Url(src []u8, mut into []u8) !string {
+    if into.len < Base64UrlSize(src.len) {
+        return error.NoSpace
+    }
+    n := encode(src, urlAlphabet(), false, into)
+    return string(into[0..n])
+}
+
+func encode(src []u8, alphabet string, pad bool, mut into []u8) u64 {
+    mut at u64 = 0
+    mut i u64 = 0
+    for i + 3 <= src.len {
+        v := u32(src[i]) << 16 | u32(src[i + 1]) << 8 | u32(src[i + 2])
+        into[at] = alphabet[u64(v >> 18 & 63)]
+        into[at + 1] = alphabet[u64(v >> 12 & 63)]
+        into[at + 2] = alphabet[u64(v >> 6 & 63)]
+        into[at + 3] = alphabet[u64(v & 63)]
+        at += 4
+        i += 3
+    }
+    rest := src.len - i
+    if rest == 0 {
+        return at
+    }
+    mut v := u32(src[i]) << 16
+    if rest == 2 {
+        v = v | u32(src[i + 1]) << 8
+    }
+    into[at] = alphabet[u64(v >> 18 & 63)]
+    into[at + 1] = alphabet[u64(v >> 12 & 63)]
+    at += 2
+    if rest == 2 {
+        into[at] = alphabet[u64(v >> 6 & 63)]
+        at += 1
+    }
+    if pad {
+        for at % 4 != 0 {
+            into[at] = padding
+            at += 1
+        }
+    }
+    return at
+}
+
+// The padding is required and nothing but the alphabet is accepted — no line
+// breaks, no spaces. Answers how many bytes were written.
+//
+// The unused bits of the last character must be zero. Otherwise several texts
+// would decode to the same bytes, and a token compared as text after decoding
+// would no longer mean one thing.
+func DecodeBase64(text string, mut into []u8) !u64 {
+    if text.len % 4 != 0 {
+        return error.BadBase64
+    }
+    mut body := text.len
+    if body > 0 && text[body - 1] == padding {
+        body -= 1
+        if text[body - 1] == padding {
+            body -= 1
+        }
+    }
+    return decode(text, body, false, into)
+}
+
+// Padding may be there or not, since both are written in the wild; the rest is
+// as strict as DecodeBase64.
+func DecodeBase64Url(text string, mut into []u8) !u64 {
+    mut body := text.len
+    if body % 4 == 0 && body > 0 && text[body - 1] == padding {
+        body -= 1
+        if text[body - 1] == padding {
+            body -= 1
+        }
+    }
+    return decode(text, body, true, into)
+}
+
+// `body` is the length without padding. One character left over cannot carry
+// a whole byte, so that length is refused whatever the characters are.
+func decode(text string, body u64, url bool, mut into []u8) !u64 {
+    rest := body % 4
+    if rest == 1 {
+        return error.BadBase64
+    }
+    mut n := body / 4 * 3
+    if rest > 0 {
+        n += rest - 1
+    }
+    if into.len < n {
+        return error.NoSpace
+    }
+
+    mut at u64 = 0
+    mut i u64 = 0
+    for i + 4 <= body {
+        a := try sextet(text[i], url)
+        b := try sextet(text[i + 1], url)
+        c := try sextet(text[i + 2], url)
+        d := try sextet(text[i + 3], url)
+        v := a << 18 | b << 12 | c << 6 | d
+        into[at] = u8(v >> 16 & 0xff)
+        into[at + 1] = u8(v >> 8 & 0xff)
+        into[at + 2] = u8(v & 0xff)
+        at += 3
+        i += 4
+    }
+    if rest == 0 {
+        return at
+    }
+    a := try sextet(text[i], url)
+    b := try sextet(text[i + 1], url)
+    mut v := a << 18 | b << 12
+    // Whatever the last character holds beyond the final byte.
+    mut unused u32 = 0xffff
+    if rest == 3 {
+        c := try sextet(text[i + 2], url)
+        v = v | c << 6
+        unused = 0xff
+    }
+    if v & unused != 0 {
+        return error.BadBase64
+    }
+    into[at] = u8(v >> 16 & 0xff)
+    at += 1
+    if rest == 3 {
+        into[at] = u8(v >> 8 & 0xff)
+        at += 1
+    }
+    return at
+}
+
+func sextet(c u8, url bool) !u32 {
+    if c >= 65 && c <= 90 { // A-Z
+        return u32(c - 65)
+    }
+    if c >= 97 && c <= 122 { // a-z
+        return u32(c - 71)
+    }
+    if c >= 48 && c <= 57 { // 0-9
+        return u32(c + 4)
+    }
+    if url {
+        if c == 45 { // '-'
+            return 62
+        }
+        if c == 95 { // '_'
+            return 63
+        }
+    } else {
+        if c == 43 { // '+'
+            return 62
+        }
+        if c == 47 { // '/'
+            return 63
+        }
+    }
+    return error.BadBase64
+}
