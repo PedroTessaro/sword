@@ -1,0 +1,79 @@
+// expect: 42
+// expect-output: C functions as values
+// A C function is a value of its own type: called the way C calls it, opaque to
+// everything the compiler follows through a Sword function, and convertible to
+// and from the bare address C hands over. A Sword function whose signature C
+// could have written goes the other way, which is how qsort gets a comparison.
+
+import "std/io"
+
+extern func abs(x i32) i32
+extern func qsort(base [*]u8, n u64, size u64,
+                  less extern func([*]u8, [*]u8) i32)
+
+func at(p [*]u8) i64 {
+    return [*]i64(p)[0..1][0]
+}
+
+func ascending(a [*]u8, b [*]u8) i32 {
+    if at(a) < at(b) {
+        return -1
+    }
+    if at(a) > at(b) {
+        return 1
+    }
+    return 0
+}
+
+struct Table {
+    name string
+    run  extern func(i32) i32
+}
+
+func chosen() extern func(i32) i32 {
+    return abs
+}
+
+func main() !int {
+    f := abs
+    if f(-7) != 7 {
+        return 1
+    }
+
+    // `?extern func(...)` is the address, with null standing for absence.
+    mut maybe ?extern func(i32) i32 = nil
+    if first := maybe {
+        return 2
+    }
+    maybe = chosen()
+    if g := maybe {
+        if g(-8) != 8 {
+            return 3
+        }
+    } else {
+        return 4
+    }
+
+    // Through the bare address and back, which is what a loader hands out.
+    raw := [*]u8(f)
+    back := extern func(i32) i32(raw)
+    if back(-9) != 9 {
+        return 5
+    }
+
+    t := Table{name: "abs", run: abs}
+    if t.run(-10) != 10 {
+        return 6
+    }
+
+    mut xs := [5]i64{30, 10, 50, 20, 40}
+    qsort([*]u8(xs[..].ptr), 5, 8, ascending)
+    for i in 0..4 {
+        if xs[i] > xs[i + 1] {
+            return 7
+        }
+    }
+
+    try io.Print("C functions as values\n")
+    return 42
+}

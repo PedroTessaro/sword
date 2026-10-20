@@ -22,11 +22,12 @@ For looking things up. [The tour](tour.md) is the place to learn from.
 | `struct` `interface` | |
 | `enum` | a named set of integers, with its own type |
 | `func(T, mut U) R` | a function value: one word, no capture |
+| `extern func(T) R` | a C function: one word, called the way C calls |
 | `atomic[T]` | an integer or bool many tasks may write at once |
 | `shared[T]` | any value, behind a mutex; `lock` is the only way in |
 | `any` | a boxed value, what a `...any` parameter gathers |
 
-`?*T`, `?[*]T` and `?func(...)` cost one word. Over anything else, `?T` is the
+`?*T`, `?[*]T`, `?func(...)` and `?extern func(...)` cost one word. Over anything else, `?T` is the
 value with a flag beside it.
 
 ### String literals
@@ -112,7 +113,7 @@ arguments to reach the answer:
 | a channel shared by two senders or two receivers at once | the same |
 | `select`, `TrySend`, `TryRecv`, `Len`, `Cap`, `Closed` | the timing decides |
 | a channel copied, stored or returned | the compiler can no longer follow it |
-| an `extern` call | the clock, the operating system, malloc's addresses |
+| an `extern` call, or one through an `extern func` | the clock, the operating system, malloc's addresses |
 | an address turned into a number | the layout decides |
 | a call through an interface or a function value | unless every target is det |
 | a call to anything that is not det | |
@@ -204,6 +205,38 @@ Write `mut` on a parameter the function may write through: `func(mut []i64)` and
 `func([]i64)` are different types. A generic function has no value — there is no
 single function to point at. When a callback needs state alongside it, use an
 interface: the state travels in the pointer.
+
+### C functions as values
+
+An `extern func` is a function C wrote. It has a type of its own, because a
+`func` value can only point at a Sword function — that is what lets `det` follow
+a call through one — and nothing could say which Sword function an address C
+handed over really is.
+
+```sword
+extern func abs(x i32) i32
+extern func qsort(base [*]u8, n u64, size u64,
+                  less extern func([*]u8, [*]u8) i32)
+
+f := abs                              // extern func(i32) i32
+g := extern func(i32) i32(address)    // from a [*]T, typed by whoever writes it
+p := [*]u8(f)                         // and back
+
+func ascending(a [*]u8, b [*]u8) i32 { ... }
+qsort(xs.ptr, n, 8, ascending)        // a Sword function, handed to C
+```
+
+A Sword function converts to an `extern func` of the same signature on its own:
+with only scalars in it, Sword calls the way C does. It never converts back, and
+an address never becomes a `func`. The signature follows the rule of an
+`extern` declaration — scalars only, so a string is passed as `.ptr` and `.len`
+— and cannot end in `...`, for the reason a variadic C function is only called
+by name.
+
+The conversion from an address is a promise nobody checks: if the function
+there takes something else, the call is wrong in whatever way C would be. A C
+function that calls back into Sword should do it on the thread that called into
+C, while that call is still running.
 
 ## Variadic functions
 
@@ -480,7 +513,9 @@ would mean comparing payloads, and an absent one has none.
 
 `T(x)` between numeric types, between raw pointers, and between `string` and
 `[]u8` in either direction. `*T` converts to `[*]T`, never the other way — that
-would fabricate a non-null guarantee.
+would fabricate a non-null guarantee. A raw pointer and an `extern func` convert
+both ways; a `func` converts to an `extern func` of the same signature and to
+nothing else.
 
 `p[a..b]` on a `[*]T`, with both bounds written, produces a `[]T`. It is the
 crossing from unchecked memory to checked.

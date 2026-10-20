@@ -400,7 +400,7 @@ std::string type_str(const Type *t) {
     if (t->is_shared) return "shared[" + type_str(t->elem) + "]";
     return shown_name(t->name);
   case TY_FUNC: {
-    std::string s = "func(";
+    std::string s = t->is_extern ? "extern func(" : "func(";
     for (size_t i = 0; i < t->params.size(); i++) {
       if (i) s += ", ";
       if (i < t->param_mut.size() && t->param_mut[i]) s += "mut ";
@@ -413,6 +413,18 @@ std::string type_str(const Type *t) {
   }
   }
   return "?";
+}
+
+// Two function types take and give the same things, whoever is behind them.
+static bool same_signature(const Type *a, const Type *b) {
+  if (a->params.size() != b->params.size()) return false;
+  if (a->is_c_variadic != b->is_c_variadic) return false;
+  if (!type_eq(a->ret, b->ret)) return false;
+  for (size_t i = 0; i < a->params.size(); i++) {
+    if (!type_eq(a->params[i], b->params[i])) return false;
+    if (a->param_mut[i] != b->param_mut[i]) return false;
+  }
+  return true;
 }
 
 bool type_eq(const Type *a, const Type *b) {
@@ -429,16 +441,8 @@ bool type_eq(const Type *a, const Type *b) {
   case TY_ARRAY:
     return a->count == b->count && type_eq(a->elem, b->elem);
   case TY_STRUCT: case TY_ENUM: return a->name == b->name;
-  case TY_FUNC: {
-    if (a->params.size() != b->params.size()) return false;
-    if (a->is_c_variadic != b->is_c_variadic) return false;
-    if (!type_eq(a->ret, b->ret)) return false;
-    for (size_t i = 0; i < a->params.size(); i++) {
-      if (!type_eq(a->params[i], b->params[i])) return false;
-      if (a->param_mut[i] != b->param_mut[i]) return false;
-    }
-    return true;
-  }
+  case TY_FUNC:
+    return a->is_extern == b->is_extern && same_signature(a, b);
   default: return true;
   }
 }
@@ -459,6 +463,12 @@ bool assignable(const Type *from, const Type *to) {
   // A string is a []u8 that promises not to change, so it converts one way.
   if (from->kind == TY_STRING && to->kind == TY_SLICE && to->elem->bits == 8)
     return true;
+  // A Sword function whose signature C could have written is called the way C
+  // calls, so it can be handed to C. Never the other way: a C function passed
+  // off as a Sword one is a call the checker would think it can follow.
+  if (from->kind == TY_FUNC && to->kind == TY_FUNC && to->is_extern &&
+      !from->is_extern)
+    return same_signature(from, to);
   return false;
 }
 

@@ -144,6 +144,14 @@ struct Parser {
       n->lhs = type_expr();
       return n->lhs ? n : nullptr;
     }
+    // `extern func(T) R` is a C function: the same shape, called the way C
+    // calls, and opaque to everything the checker follows through a Sword one.
+    if (kind() == TK_EXTERN && kind(1) == TK_FUNC) {
+      advance();
+      Node *n = type_expr();
+      if (n) n->is_extern = true;
+      return n;
+    }
     // `func(T, mut U) R`. Parameters are types only: a name there would have
     // nothing to name.
     if (kind() == TK_FUNC) {
@@ -152,6 +160,11 @@ struct Parser {
       if (!expect(TK_LPAREN, "after 'func' in a type")) return nullptr;
       if (!match(TK_RPAREN)) {
         do {
+          if (kind() == TK_ELLIPSIS) {
+            fail("a function type cannot end in '...'; a variadic C function"
+                 " is called by its name");
+            return nullptr;
+          }
           bool is_mut = match(TK_MUT);
           Node *param = type_expr();
           if (!param) return nullptr;
@@ -161,8 +174,10 @@ struct Parser {
         if (!expect(TK_RPAREN, "after the parameters of a function type"))
           return nullptr;
       }
-      // A result is optional, and `{` or a comma means there is none.
+      // A result is optional, and `{` or a comma means there is none — as does
+      // `(`, which is a conversion to a function type that returns nothing.
       if (kind() != TK_LBRACE && kind() != TK_COMMA && kind() != TK_RPAREN &&
+          kind() != TK_LPAREN &&
           kind() != TK_TERM && kind() != TK_RBRACK && kind() != TK_ASSIGN &&
           kind() != TK_EOF) {
         n->lhs = type_expr();
@@ -199,7 +214,7 @@ struct Parser {
   bool starts_type() const {
     switch (kind()) {
     case TK_IDENT: case TK_STAR: case TK_QUESTION: case TK_LBRACK:
-    case TK_BANG: case TK_FUNC:
+    case TK_BANG: case TK_FUNC: case TK_EXTERN:
       return true;
     default: return false;
     }
@@ -310,6 +325,9 @@ struct Parser {
       return n;
     }
     case TK_LBRACK:
+      return array_lit();
+    // `extern func(i32) i32(p)`: a conversion, like `[*]u8(p)`.
+    case TK_EXTERN: case TK_FUNC:
       return array_lit();
     case TK_IDENT: {
       std::string name = advance().text;
@@ -789,7 +807,7 @@ struct Parser {
   bool starts_type_at(size_t ahead) const {
     switch (kind(ahead)) {
     case TK_IDENT: case TK_STAR: case TK_QUESTION: case TK_LBRACK:
-    case TK_BANG:
+    case TK_BANG: case TK_FUNC: case TK_EXTERN:
       return true;
     default: return false;
     }

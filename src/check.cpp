@@ -162,6 +162,18 @@ struct Checker {
 
   // --- types -------------------------------------------------------------
 
+  // Aggregates cross our own call boundary as a pointer, which is not the C
+  // ABI; the FFI boundary has to stay scalar.
+  void c_boundary(const Type *fn, Pos pos, const std::string &what) {
+    for (const Type *p : fn->params)
+      if (is_aggregate(p))
+        error(pos, "%s cannot take %s; pass .ptr and .len", what.c_str(),
+              type_str(p).c_str());
+    if (fn->ret && is_aggregate(fn->ret))
+      error(pos, "%s cannot return %s", what.c_str(),
+            type_str(fn->ret).c_str());
+  }
+
   Type *resolve(Node *n) {
     if (!n) return types.void_ty;
     switch (n->kind) {
@@ -179,7 +191,12 @@ struct Checker {
         params.push_back(resolve(p));
         param_mut.push_back(p->is_mut);
       }
-      return types.func(params, resolve(n->lhs), param_mut);
+      Type *t = types.func(params, resolve(n->lhs), param_mut);
+      if (n->is_extern) {
+        t->is_extern = true;
+        c_boundary(t, n->pos, "an extern function type");
+      }
+      return t;
     }
     case ND_TYPE_RAWPTR: return types.rawptr(resolve(n->lhs));
     case ND_TYPE_SLICE: return types.slice(resolve(n->lhs));
@@ -1263,6 +1280,12 @@ struct Checker {
               (from->kind == TY_RAWPTR && is_integer(target) &&
                target->bits == 64) ||
               (is_integer(from) && from->bits == 64 &&
+               target->kind == TY_RAWPTR) ||
+              // A C function is an address C handed over, typed by whoever
+              // converts it; a Sword one is never made this way.
+              (from->kind == TY_RAWPTR && target->kind == TY_FUNC &&
+               target->is_extern) ||
+              (from->kind == TY_FUNC && from->is_extern &&
                target->kind == TY_RAWPTR);
     if (!ok) {
       error(n->pos, "cannot convert %s to %s", type_str(from).c_str(),
@@ -3767,16 +3790,9 @@ struct Checker {
 
       if (fn->is_c_variadic) sym->type->is_c_variadic = true;
 
-      // Aggregates cross our own call boundary as a pointer, which is not the
-      // C ABI; the FFI boundary has to stay scalar.
       if (fn->is_extern) {
-        for (Type *p : params)
-          if (is_aggregate(p))
-            error(fn->pos, "extern '%s' cannot take %s; pass .ptr and .len",
-                  fn->name.c_str(), type_str(p).c_str());
-        if (is_aggregate(ret))
-          error(fn->pos, "extern '%s' cannot return %s", fn->name.c_str(),
-                type_str(ret).c_str());
+        sym->type->is_extern = true;
+        c_boundary(sym->type, fn->pos, "extern '" + fn->name + "'");
       }
 
       if (fn->name == "main" && pkg.prefix.empty()) {
@@ -3967,6 +3983,9 @@ struct Determinism {
         if (n->form == 3) mark(fn, n->pos, "reads or writes an atomic", nullptr);
         else if (n->form == 5) mark(fn, n->pos, "waits on a shared value", nullptr);
         else if (n->sym && n->sym->decl && n->sym->decl->is_extern)
+          mark(fn, n->pos, "calls out of the language", nullptr);
+        else if (n->form == 4 && n->lhs && n->lhs->type &&
+                 n->lhs->type->kind == TY_FUNC && n->lhs->type->is_extern)
           mark(fn, n->pos, "calls out of the language", nullptr);
         return;
       default:

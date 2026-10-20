@@ -1,0 +1,11 @@
+// expect-error: a function type cannot end in '...'
+// How C's extra arguments travel is decided at the call, from the declaration;
+// a call through a value would put them where the callee does not look.
+
+func size(cb extern func(i32, ...) i32) i32 {
+    return 0
+}
+
+func main() int {
+    return 0
+}
