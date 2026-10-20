@@ -595,6 +595,27 @@ else
     fail=$((fail + 1))
 fi
 
+# A C function reached through a value is as far outside the simulator as one
+# called by name, and -sim says so about both.
+mkdir -p "$tmp/simextern"
+cat > "$tmp/simextern/simextern_test.sword" <<'EOF'
+import "std/testing"
+
+extern func abs(x i32) i32
+
+func TestThroughAValue(mut t *testing.T) !void {
+    f := abs
+    try t.Equal(f(-3), 3)
+}
+EOF
+out=$("$shield" test "$tmp/simextern" -sim -seeds 1 2>&1)
+if ! printf '%s\n' "$out" | grep -qF "calls out of the language through an extern func"; then
+    echo "FAIL shield test -sim: no warning for a call through an extern func"
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
+
 # Any program runs simulated under SWORD_SIM_SEED: the clock is virtual, the
 # same seed gives the same run, and different seeds explore different orders.
 "$shield" "$root/tests/simprograms/clock.sword" -o "$tmp/simclock" \

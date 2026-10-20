@@ -260,6 +260,11 @@ void warn_calls_out(Node *n) {
             "this calls out of the language (%s); the simulator cannot "
             "replay what it does",
             n->sym->name.c_str());
+  else if (n->kind == ND_CALL && n->lhs && n->lhs->type &&
+           n->lhs->type->kind == TY_FUNC && n->lhs->type->is_extern)
+    warning(n->pos,
+            "this calls out of the language through an extern func; the "
+            "simulator cannot replay what it does");
   for (Node *kid : n->kids) warn_calls_out(kid);
   warn_calls_out(n->lhs);
   warn_calls_out(n->rhs);
