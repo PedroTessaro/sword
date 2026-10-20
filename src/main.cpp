@@ -52,6 +52,9 @@ void usage() {
         "                 against; one argument each, repeat for more\n"
         "  --static       link the libraries extern declarations name from\n"
         "                 their archives (lib<name>.a)\n"
+        "  --target=<t>   build for another machine, a 64-bit LLVM triple such\n"
+        "                 as x86_64-unknown-linux-gnu\n"
+        "  -c             stop at the object file, linking nothing\n"
         "  --mode=<m>     debug | safe | fast | small (default safe)\n"
         "                 debug and safe check bounds and integer overflow\n"
         "  -O<level>      override the optimization level\n"
@@ -176,20 +179,60 @@ std::string base_of(std::string path) {
   return base.empty() || base == "." || base == ".." ? "package" : base;
 }
 
+// Sword lays memory out in 64-bit words — a pointer, a length, a usize are all
+// eight bytes, and struct layouts are computed from that before LLVM sees
+// them — so a triple is accepted by what its architecture is, and a narrower
+// one is refused rather than built wrong. So is a big-endian one: nothing has
+// ever run there, and code that reads bytes back as numbers would not say so.
+bool sixty_four_bits(const std::string &target) {
+  std::string arch = target.substr(0, target.find('-'));
+  static const char *wide[] = {"x86_64",   "amd64",      "aarch64",
+                               "arm64",    "arm64e",     "riscv64",
+                               "ppc64le",  "powerpc64le", "mips64el",
+                               "loongarch64", "wasm64"};
+  static const char *big_endian[] = {"ppc64", "powerpc64", "s390x", "mips64",
+                                     "sparcv9", "sparc64", "aarch64_be"};
+  for (const char *a : wide)
+    if (arch == a) return true;
+  for (const char *a : big_endian)
+    if (arch == a) {
+      fprintf(stderr,
+              "shield: '%s' is big-endian, and Sword has only ever run where"
+              " the low byte comes first\n",
+              arch.c_str());
+      return false;
+    }
+  fprintf(stderr,
+          "shield: '%s' is not a 64-bit architecture shield knows; Sword lays"
+          " memory out in 64-bit words, and on a narrower machine every"
+          " pointer and length would be the wrong size\n",
+          arch.c_str());
+  return false;
+}
+
 // Hands the generated LLVM IR to clang, which assembles and links it. This is
 // also where LLVM's own optimization pipeline runs.
 bool assemble(const std::string &ll_path, const std::string &out_path,
-              const std::string &opt_level, const std::string &runtime,
+              const std::string &opt_level, const std::string &target,
+              bool object_only, const std::string &runtime,
               const std::vector<std::string> &link) {
   // The archive only contributes objects the program actually references, so
   // a program that never spawns links nothing from it.
   // `-x none` puts clang back into guess-by-extension mode, so the archive is
   // read as an archive and not as more LLVM IR.
-  std::string cmd = "clang -O" + opt_level + " -Wno-override-module -x ir " +
-                    quoted(ll_path);
+  std::string cmd = "clang " + quoted("-O" + opt_level) + " -Wno-override-module";
+  if (!target.empty()) cmd += " --target=" + quoted(target);
+  cmd += " -x ir " + quoted(ll_path);
+  if (object_only) {
+    cmd += " -c -o " + quoted(out_path);
+    if (system(cmd.c_str()) == 0) return true;
+    fprintf(stderr, "shield: clang failed while assembling %s\n",
+            ll_path.c_str());
+    return false;
+  }
   // -pthread because the scheduler runs threads, and on older Linux they are
   // not in libc; on Darwin it is accepted and does nothing.
-  if (!runtime.empty()) cmd += " -x none " + runtime + " -pthread";
+  if (!runtime.empty()) cmd += " -x none " + quoted(runtime) + " -pthread";
   // After the program's own object, which is where a linker expects to be told
   // what resolves what is still missing: what the runtime was built against,
   // then --link, then the libraries extern declarations named.
@@ -217,6 +260,11 @@ void warn_calls_out(Node *n) {
             "this calls out of the language (%s); the simulator cannot "
             "replay what it does",
             n->sym->name.c_str());
+  else if (n->kind == ND_CALL && n->lhs && n->lhs->type &&
+           n->lhs->type->kind == TY_FUNC && n->lhs->type->is_extern)
+    warning(n->pos,
+            "this calls out of the language through an extern func; the "
+            "simulator cannot replay what it does");
   for (Node *kid : n->kids) warn_calls_out(kid);
   warn_calls_out(n->lhs);
   warn_calls_out(n->rhs);
@@ -375,6 +423,8 @@ int main(int argc, char **argv) {
   // Objects and libraries of the caller's own, in the order they were given.
   std::vector<std::string> link_with;
   bool prefer_static = false;
+  std::string target;       // --target: empty for this machine
+  bool object_only = false; // -c
   std::string output = "a.out";
   Stage stage = STAGE_BINARY;
   Mode mode = MODE_SAFE;
@@ -401,6 +451,9 @@ int main(int argc, char **argv) {
     else if (!strcmp(arg, "--link") && i + 1 < argc)
       link_with.push_back(argv[++i]);
     else if (!strcmp(arg, "--static")) prefer_static = true;
+    else if (!strncmp(arg, "--target=", 9)) target = arg + 9;
+    else if (!strcmp(arg, "--target") && i + 1 < argc) target = argv[++i];
+    else if (!strcmp(arg, "-c")) object_only = true;
     else if (!strncmp(arg, "-O", 2) && arg[2]) opt_level = arg + 2;
     else if (!strncmp(arg, "--mode=", 7)) {
       const char *name = arg + 7;
@@ -446,6 +499,24 @@ int main(int argc, char **argv) {
   }
 
   if (!testing && output.empty()) output = "a.out";
+
+  // The level goes to clang, so it is one clang knows; anything else would
+  // reach the command line as more than a level.
+  if (!opt_level.empty() && opt_level != "0" && opt_level != "1" &&
+      opt_level != "2" && opt_level != "3" && opt_level != "s" &&
+      opt_level != "z") {
+    fprintf(stderr, "shield: -O%s is not a level; use -O0, -O1, -O2, -O3, -Os"
+                    " or -Oz\n",
+            opt_level.c_str());
+    return 1;
+  }
+  if (!target.empty() && !sixty_four_bits(target)) return 1;
+  if (testing && (object_only || !target.empty())) {
+    fprintf(stderr, "shield: test runs what it builds, so it builds for this"
+                    " machine and links it\n");
+    return 1;
+  }
+  if (object_only && !named) output = "a.o";
 
   if (opt_level.empty()) {
     // Debug keeps every local on the stack, which is what makes a debug build
@@ -494,8 +565,16 @@ int main(int argc, char **argv) {
   LinkRequest request;
   request.libraries = prog.libraries;
   request.weak_symbols = prog.weak_symbols;
-  std::string runtime = runtime_archive();
-  if (!runtime.empty()) request.runtime_flags = runtime_link_flags();
+  std::string runtime = runtime_archive(target);
+  if (!runtime.empty()) request.runtime_flags = runtime_link_flags(target);
+  if (!target.empty() && runtime.empty() && !object_only) {
+    fprintf(stderr,
+            "shield: there is no runtime for %s; build one with"
+            " `make TARGET=%s`, or stop at the object with -c and link it"
+            " yourself\n",
+            target.c_str(), target.c_str());
+    return 1;
+  }
   request.user = link_with;
   request.prefer_static = prefer_static;
 
@@ -551,7 +630,8 @@ int main(int argc, char **argv) {
     unlink(ll_path.c_str());
     return 1;
   }
-  bool ok = assemble(ll_path, output, opt_level, runtime, link_args);
+  bool ok = assemble(ll_path, output, opt_level, target, object_only, runtime,
+                     link_args);
   unlink(ll_path.c_str());
   if (!ok) return 1;
   if (!testing) return 0;

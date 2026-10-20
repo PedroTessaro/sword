@@ -1293,8 +1293,67 @@ time.Sleep(time.Millis(250))
 try conn.SetTimeout(time.Seconds(5))
 ```
 
-A method needs a value with an address, so `time.Since(start).AsMillis()` is
-rejected — bind the duration to a name first, as above.
+A method can be called on a value that has no name yet —
+`time.Since(start).AsMillis()` — unless it writes through its receiver: then
+the change would have nowhere to go, and the compiler asks you to bind the value
+first.
+
+### Talking to C
+
+Sword calls C directly. `extern` declares a C function by its own name, and the
+call is an ordinary call:
+
+```sword
+extern func abs(x i32) i32
+
+func main() int {
+    return int(abs(-42))
+}
+```
+
+Only scalars cross — numbers, `bool`, raw pointers — because a `string` or a
+slice is two words to Sword and a pointer to C, so you pass `.ptr` and `.len`.
+When the function lives in a library, name the library after `extern`, the way
+`-l` would, and it is linked without anyone mentioning it on the command line:
+
+```sword
+extern "z" func zlibVersion() [*]u8
+```
+
+It is linked dynamically unless you build with `shield --static`, which takes
+it from `libz.a` instead.
+
+A C function can be a value too. Its type is `extern func(...)`, kept apart
+from `func(...)`, which only ever points at Sword code. A Sword function can be
+handed to C wherever C expects one — this is how `qsort` gets its comparison:
+
+```sword
+extern func qsort(base [*]u8, n u64, size u64,
+                  less extern func([*]u8, [*]u8) i32)
+```
+
+A function that only some machines have is declared `extern weak`. The program
+starts either way, and the name is an optional to check before calling:
+
+```sword
+extern weak func getentropy(buf [*]u8, n u64) i32
+
+if fill := getentropy {
+    // here, fill is the function
+}
+```
+
+And a library the program finds while it runs — a plugin — is opened with
+`std/dl`, which hands back addresses for you to say the type of:
+
+```sword
+mut ld := dl.NewLoader()
+lib := ld.Open("libplugin.so") catch {
+    try io.Printf("{}\n", ld.Why())
+    return 1
+}
+start := extern func() i32(try ld.Symbol(lib, "plugin_start"))
+```
 
 ## Build modes
 

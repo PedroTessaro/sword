@@ -106,6 +106,41 @@ rt/sword_tls.o: rt/sword_tls.cpp $(TLS_STAMP)
 %.o: %.S
 	$(CXX) -c $< -o $@
 
+# A runtime for another machine, beside this one's: `make TARGET=<triple>`, after
+# which `shield --target=<triple>` links against it. clang is a cross compiler by
+# nature; what it needs is the other machine's C and C++ headers and libraries,
+# as SYSROOT=<dir> unless they are this machine's own (another Apple
+# architecture, say). Built without TLS: where OpenSSL for another machine lives
+# is not something to guess. The context switch is written for x86-64 and
+# aarch64, so those are the two it builds for.
+ifneq ($(TARGET),)
+TARGET_RT    := libsword_rt-$(TARGET).a
+TARGET_FLAGS := libsword_rt-$(TARGET).flags
+TARGET_DIR   := rt/$(TARGET)
+TARGET_OBJ   := $(patsubst rt/%,$(TARGET_DIR)/%,$(RTOBJ))
+TARGET_CXX   := clang++ --target=$(TARGET) $(if $(SYSROOT),--sysroot=$(SYSROOT))
+TARGET_LIBS  ?= $(if $(findstring apple,$(TARGET)),-lc++,-ldl -lstdc++)
+TARGET_AR    := $(firstword $(shell command -v llvm-ar 2>/dev/null) ar)
+
+all: $(TARGET_RT) $(TARGET_FLAGS)
+
+$(TARGET_RT): $(TARGET_OBJ)
+	$(TARGET_AR) rcs $@ $^
+
+$(TARGET_FLAGS): FORCE
+	@echo '$(TARGET_LIBS)' > $@
+
+$(TARGET_DIR)/%.o: rt/%.cpp
+	@mkdir -p $(TARGET_DIR)
+	$(TARGET_CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
+
+$(TARGET_DIR)/%.o: rt/%.S
+	@mkdir -p $(TARGET_DIR)
+	$(TARGET_CXX) -c $< -o $@
+
+-include $(TARGET_OBJ:.o=.d)
+endif
+
 -include $(OBJ:.o=.d) $(RTOBJ:.o=.d)
 
 test: $(BIN) $(LSP) $(RT) $(RTFLAGS)
@@ -126,6 +161,9 @@ install: all
 	install -m 755 $(LSP) $(DESTDIR)$(PREFIX)/bin/$(LSP)
 	install -m 644 $(RT) $(DESTDIR)$(PREFIX)/lib/sword/$(RT)
 	install -m 644 $(RTFLAGS) $(DESTDIR)$(PREFIX)/lib/sword/$(RTFLAGS)
+	for f in libsword_rt-*.a libsword_rt-*.flags; do \
+	    [ -e "$$f" ] && install -m 644 "$$f" $(DESTDIR)$(PREFIX)/lib/sword/; \
+	done; true
 	cp -R std/. $(DESTDIR)$(PREFIX)/share/sword/std/
 	tar -cf - --exclude node_modules --exclude .vscode-test --exclude '*.vsix' editors | \
 	    tar -xf - -C $(DESTDIR)$(PREFIX)/share/sword
@@ -139,6 +177,7 @@ uninstall:
 
 clean:
 	rm -f $(OBJ) $(OBJ:.o=.d) $(RTOBJ) $(RTOBJ:.o=.d) $(BIN) $(LSP) $(RT) \
-	      $(RTFLAGS) rt/.tls-on rt/.tls-off
+	      $(RTFLAGS) rt/.tls-on rt/.tls-off libsword_rt-*.a libsword_rt-*.flags
+	find rt -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
 
 .PHONY: all test install uninstall clean FORCE
