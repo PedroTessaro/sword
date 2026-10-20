@@ -1,0 +1,12 @@
+// expect: 32
+// An array whose length is another package's constant, written the way an
+// expression would name it. A digest's size lives beside the hash, and a
+// buffer for one should not have to repeat the number.
+
+import "std/crypto"
+
+func main() int {
+    mut d := [crypto.Sha256Size]u8{}
+    d = crypto.Sha256Of([]u8("abc"))
+    return int(d.len)
+}

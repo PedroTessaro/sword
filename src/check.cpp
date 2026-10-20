@@ -250,10 +250,27 @@ struct Checker {
     case ND_TYPE_ARRAY: {
       int64_t count = (int64_t)n->ival;
       if (!n->name.empty()) {
-        Symbol *sym = lookup(n->name);
+        Symbol *sym = nullptr;
+        std::string shown = n->name;
+        if (!n->text.empty()) {
+          Package *other = imported(n->text);
+          if (!other) {
+            error(n->pos, "'%s' is not an imported package", n->text.c_str());
+            return types.void_ty;
+          }
+          sym = find_in(other->globals, n->name, false);
+          if (!sym) {
+            error(n->pos, "package '%s' has no exported constant '%s'",
+                  other->name.c_str(), n->name.c_str());
+            return types.void_ty;
+          }
+          shown = n->text + "." + n->name;
+        } else {
+          sym = lookup(n->name);
+        }
         if (!sym || !sym->const_value ||
             sym->const_value->kind != ND_INT_LIT) {
-          error(n->pos, "'%s' is not an integer constant", n->name.c_str());
+          error(n->pos, "'%s' is not an integer constant", shown.c_str());
           return types.void_ty;
         }
         count = (int64_t)sym->const_value->ival;
