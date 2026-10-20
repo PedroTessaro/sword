@@ -29,6 +29,14 @@ struct Op {
     run  func(i64, i64) i64
 }
 
+// A function value can be the answer as well as the argument.
+func pick(multiply bool) func(i64, i64) i64 {
+    if multiply {
+        return mul
+    }
+    return add
+}
+
 func main() !int {
     if apply(add, 20, 22) != 42 || apply(mul, 6, 7) != 42 {
         return 1
@@ -71,6 +79,12 @@ func main() !int {
         }
     } else {
         return 7
+    }
+
+    times := pick(true)
+    plus := pick(false)
+    if times(6, 7) != 42 || plus(40, 2) != 42 {
+        return 8
     }
 
     try io.Print("function values work\n")

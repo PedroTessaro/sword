@@ -199,7 +199,7 @@ struct Parser {
   bool starts_type() const {
     switch (kind()) {
     case TK_IDENT: case TK_STAR: case TK_QUESTION: case TK_LBRACK:
-    case TK_BANG:
+    case TK_BANG: case TK_FUNC:
       return true;
     default: return false;
     }
