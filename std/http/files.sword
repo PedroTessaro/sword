@@ -2,6 +2,7 @@ package http
 
 import "std/fs"
 import "std/strings"
+import "std/time"
 
 error NoSuchFile = "there is no file at that path"
 error ShortFile  = "the file is smaller than it said it was"
@@ -87,22 +88,124 @@ func MimeType(path string) string {
 // Reading a file puts the task down like any other wait; the thread it borrows
 // comes from the pool the runtime keeps for work that cannot be polled.
 func ServeFile(mut res *Response, path string) !void {
-    known := fs.Size(path)
-    if known == nil {
-        return error.NoSuchFile
+    info := fs.Stat(path) catch return error.NoSuchFile
+    mut dateRoom := [time.HttpDateSize]u8{}
+    mut tagRoom := [maxTag]u8{}
+    v := validators(info, dateRoom[..], tagRoom[..])
+    try sendFile(res, path, info.Size, v)
+}
+
+// What a cache keeps so that it can ask again whether the file changed: when it
+// was last modified, and a tag made of its size and modification time — what
+// changes when the file does — rather than a hash, which would mean reading the
+// whole file to answer a request that wants none of it. The tag is weak because
+// it says nothing happened that the filesystem saw, not that every byte is the
+// same.
+struct validator {
+    modified string
+    tag      string
+    seconds  i64
+}
+
+const maxTag = 40 // W/"" around two hex numbers of 16 digits and a dash
+
+func validators(info fs.Info, mut dateRoom []u8, mut tagRoom []u8) validator {
+    seconds := info.ModifiedNanos / 1000000000
+    modified := time.HttpDate(seconds, dateRoom) catch ""
+    mut at u64 = 0
+    for c in "W/\"" {
+        tagRoom[at] = c
+        at += 1
     }
-    try sendFile(res, path, known orelse 0)
+    at += writeHex(tagRoom[at..tagRoom.len], info.Size)
+    tagRoom[at] = 45 // '-'
+    at += 1
+    at += writeHex(tagRoom[at..tagRoom.len], u64(info.ModifiedNanos))
+    tagRoom[at] = 34 // '"'
+    at += 1
+    return validator{modified: modified, tag: string(tagRoom[0..at]),
+                     seconds: seconds}
+}
+
+func writeHex(mut into []u8, value u64) u64 {
+    digits := "0123456789abcdef"
+    mut n u64 = 1
+    mut v := value >> 4
+    for v > 0 {
+        n += 1
+        v = v >> 4
+    }
+    mut rest := value
+    mut i := n
+    for i > 0 {
+        i -= 1
+        into[i] = digits[rest & 15]
+        rest = rest >> 4
+    }
+    return n
+}
+
+// The headers go on only once the head is about to go out. They point into the
+// caller's stack, and a response that fell back to an error page would carry
+// them out after the handler had returned.
+func stampHead(mut res *Response, v validator) !void {
+    if v.modified.len > 0 {
+        try res.SetHeader("Last-Modified", v.modified)
+    }
+    try res.SetHeader("ETag", v.tag)
+}
+
+// RFC 9110 section 13.2.2: If-None-Match decides when it is there, and only
+// without it does If-Modified-Since. A GET or HEAD whose cache already has this
+// version is answered with 304 and no body.
+func notModified(req *Request, v validator) bool {
+    match := req.Headers.Get("If-None-Match")
+    if match.len > 0 {
+        return anyTagMatches(match, v.tag)
+    }
+    since := req.Headers.Get("If-Modified-Since")
+    if since.len == 0 {
+        return false
+    }
+    when := time.ParseHttpDate(since) catch return false
+    return v.seconds <= when
+}
+
+// A list of tags or `*`, compared weakly — the W/ is ignored on both sides,
+// which is the comparison RFC 9110 prescribes for If-None-Match.
+func anyTagMatches(list string, tag string) bool {
+    want := withoutWeak(tag)
+    mut rest := list
+    for {
+        cut := strings.IndexByte(rest, 44) // ','
+        item := strings.TrimSpace(rest[0..cut])
+        if item == "*" || withoutWeak(item) == want {
+            return true
+        }
+        if cut == rest.len {
+            return false
+        }
+        rest = rest[cut+1..rest.len]
+    }
+}
+
+func withoutWeak(tag string) string {
+    if strings.HasPrefix(tag, "W/") {
+        return tag[2..tag.len]
+    }
+    return tag
 }
 
 // The head, then the file in pieces. Split out because a HEAD request needs the
 // first half of this and none of the second.
-func sendFile(mut res *Response, path string, size u64) !void {
+func sendFile(mut res *Response, path string, size u64, v validator) !void {
     mut f := try fs.Open(path, fs.Mode.Read)
     defer f.Close()
 
     if res.Headers.Get("Content-Type").len == 0 {
         try res.SetHeader("Content-Type", MimeType(path))
     }
+    try stampHead(res, v)
     try res.Send(200, size)
 
     mut buf := [FileChunk]u8{}
@@ -220,22 +323,33 @@ func (f *Files) Serve(req *Request, mut res *Response) !void {
     }
     path := string(room[0..n])
 
-    known := fs.Size(path)
-    if known == nil {
+    info := fs.Stat(path) catch {
         try res.Text(404, "not found\n")
         return
     }
-    size := known orelse 0
+    size := info.Size
+    mut dateRoom := [time.HttpDateSize]u8{}
+    mut tagRoom := [maxTag]u8{}
+    v := validators(info, dateRoom[..], tagRoom[..])
+
+    // The same head a 200 would have, length included, which RFC 9110 allows
+    // and a cache uses to refresh what it holds; no body follows.
+    if notModified(req, v) {
+        try stampHead(res, v)
+        try res.Send(304, size)
+        return
+    }
 
     // A HEAD answer is the head of the GET answer: same length, same type, no
     // body. The client asked what is there, not for it.
     if req.Method == "HEAD" {
         try res.SetHeader("Content-Type", MimeType(path))
+        try stampHead(res, v)
         try res.Send(200, size)
         return
     }
 
-    sendFile(res, path, size) catch {
+    sendFile(res, path, size, v) catch {
         // Only reachable before the head went out; after that there is nothing
         // left to say on this connection.
         if !res.sent {
