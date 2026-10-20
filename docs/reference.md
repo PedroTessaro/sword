@@ -22,11 +22,12 @@ For looking things up. [The tour](tour.md) is the place to learn from.
 | `struct` `interface` | |
 | `enum` | a named set of integers, with its own type |
 | `func(T, mut U) R` | a function value: one word, no capture |
+| `extern func(T) R` | a C function: one word, called the way C calls |
 | `atomic[T]` | an integer or bool many tasks may write at once |
 | `shared[T]` | any value, behind a mutex; `lock` is the only way in |
 | `any` | a boxed value, what a `...any` parameter gathers |
 
-`?*T`, `?[*]T` and `?func(...)` cost one word. Over anything else, `?T` is the
+`?*T`, `?[*]T`, `?func(...)` and `?extern func(...)` cost one word. Over anything else, `?T` is the
 value with a flag beside it.
 
 ### String literals
@@ -75,6 +76,8 @@ func (mut r *T) Method() R { ... }
 det func name(a T) R { ... }        // checked: the answer is a function of a
 extern func c_name(a T) R          // C ABI, name unchanged
 extern func c_name(a T, ...) R     // C's own variadic: ioctl, fcntl, printf
+extern "z" func c_name(a T) R      // and it comes from libz
+extern weak func c_name(a T) R     // and it may be missing at run time
 
 struct Name { field T ... }
 struct Name[T] { field T ... }     // generic; a type only once instantiated
@@ -112,7 +115,7 @@ arguments to reach the answer:
 | a channel shared by two senders or two receivers at once | the same |
 | `select`, `TrySend`, `TryRecv`, `Len`, `Cap`, `Closed` | the timing decides |
 | a channel copied, stored or returned | the compiler can no longer follow it |
-| an `extern` call | the clock, the operating system, malloc's addresses |
+| an `extern` call, or one through an `extern func` | the clock, the operating system, malloc's addresses |
 | an address turned into a number | the layout decides |
 | a call through an interface or a function value | unless every target is det |
 | a call to anything that is not det | |
@@ -205,6 +208,38 @@ Write `mut` on a parameter the function may write through: `func(mut []i64)` and
 single function to point at. When a callback needs state alongside it, use an
 interface: the state travels in the pointer.
 
+### C functions as values
+
+An `extern func` is a function C wrote. It has a type of its own, because a
+`func` value can only point at a Sword function — that is what lets `det` follow
+a call through one — and nothing could say which Sword function an address C
+handed over really is.
+
+```sword
+extern func abs(x i32) i32
+extern func qsort(base [*]u8, n u64, size u64,
+                  less extern func([*]u8, [*]u8) i32)
+
+f := abs                              // extern func(i32) i32
+g := extern func(i32) i32(address)    // from a [*]T, typed by whoever writes it
+p := [*]u8(f)                         // and back
+
+func ascending(a [*]u8, b [*]u8) i32 { ... }
+qsort(xs.ptr, n, 8, ascending)        // a Sword function, handed to C
+```
+
+A Sword function converts to an `extern func` of the same signature on its own:
+with only scalars in it, Sword calls the way C does. It never converts back, and
+an address never becomes a `func`. The signature follows the rule of an
+`extern` declaration — scalars only, so a string is passed as `.ptr` and `.len`
+— and cannot end in `...`, for the reason a variadic C function is only called
+by name.
+
+The conversion from an address is a promise nobody checks: if the function
+there takes something else, the call is wrong in whatever way C would be. A C
+function that calls back into Sword should do it on the thread that called into
+C, while that call is still running.
+
 ## Variadic functions
 
 The last parameter may gather the rest of the arguments, and inside the
@@ -251,6 +286,64 @@ one, an `f32` as an `f64`. Only scalars fit through — a `string` is two words
 here and a pointer there, so pass `.ptr` and `.len`. And a variadic function
 can only be called by name: a function value carries one word and no
 signature, which is not enough to know where the extra arguments go.
+
+## C libraries
+
+A string after `extern` names the library a function comes from, the way `-l`
+would: `"z"` is libz, `"sqlite3"` is libsqlite3. That is all it takes to link
+it — nothing on the command line, and nothing for whoever builds a program that
+imports the package doing the declaring.
+
+```sword
+extern "sqlite3" func sqlite3_libversion_number() i32
+extern "z" func zlibVersion() [*]u8
+```
+
+It is a name and never a path or an option; those belong to `--link`, where
+whoever builds the program can see them. Two packages may declare the same
+function, and must then agree on where it comes from.
+
+How a library is linked is a question for the build rather than the source,
+since one package is built both ways depending on where the program is going.
+By default it is linked dynamically. `shield --static` takes every library the
+program declared from its archive, `lib<name>.a`, and refuses to build when
+there is none rather than quietly linking the other way; whatever those
+archives need comes from an archive too when there is one. The system's own
+libraries — libc, libm, pthreads, the C++ library — always stay dynamic: an
+archive of libm beside a shared libc is two copies of one library in one
+process. On Linux that means a `--static` program still needs the C library of
+the machine it runs on, and still resolves names and loads libraries the
+ordinary way.
+
+Where a library lives is asked of pkg-config when the machine has it — under the
+name in the source, then with `lib` in front, which is how `extern "curl"` finds
+libcurl's file. What it says is used as it says it, so a library whose file
+names something else is still found. Without pkg-config, or for a library it
+does not know, the name goes to the linker as `-l<name>`, searched in the usual
+places and in every directory given with `--link -L<dir>`. A shared library
+found in a directory like that is also looked for there when the program starts.
+
+### Weak functions
+
+`extern weak` declares a function the program can run without — one that only
+newer versions of a library have, say. The program links and starts whether or
+not anything provides it, and its name is an `?extern func`, nil when nothing
+did. Calling it by name is an error, because a missing one would be a jump to
+address zero:
+
+```sword
+extern weak func getentropy(buf [*]u8, n u64) i32
+
+if fill := getentropy {
+    try check(fill(room.ptr, room.len))
+} else {
+    // the older way
+}
+```
+
+`weak` is about the function, not the library: a library named after it has to
+be there when the program starts. A library that may be missing altogether is
+loaded with [`std/dl`](#stddl).
 
 ## Atomics
 
@@ -480,7 +573,9 @@ would mean comparing payloads, and an absent one has none.
 
 `T(x)` between numeric types, between raw pointers, and between `string` and
 `[]u8` in either direction. `*T` converts to `[*]T`, never the other way — that
-would fabricate a non-null guarantee.
+would fabricate a non-null guarantee. A raw pointer and an `extern func` convert
+both ways; a `func` converts to an `extern func` of the same signature and to
+nothing else.
 
 `p[a..b]` on a `[*]T`, with both bounds written, produces a `[]T`. It is the
 crossing from unchecked memory to checked.
@@ -1220,6 +1315,50 @@ Starting a program and waiting for one both stop a thread and neither is
 anything a poller can help with, so both go to the same pool as file I/O and
 the task waiting is put down like any other.
 
+### `std/dl`
+
+Loading a library while the program runs. A library named by `extern "z"` has
+to be there for the program to start; this is for one that may not be, or whose
+name the program only learns while running — a plugin, an optional codec.
+
+```sword
+func NewLoader() Loader
+func (mut l *Loader) Open(path string) !Library
+func (mut l *Loader) Symbol(lib Library, name string) ![*]u8
+func (mut l *Loader) Close(lib Library) !void
+func (l *Loader) Why() string
+func Suffix() string                 // ".so" or ".dylib"
+```
+
+```sword
+mut ld := dl.NewLoader()
+lib := ld.Open("libz.so.1") catch {
+    try io.Printf("no zlib: {}\n", ld.Why())
+    return 1
+}
+defer ld.Close(lib) catch {}
+version := extern func() [*]u8(try ld.Symbol(lib, "zlibVersion"))
+```
+
+A path is taken as written, and a name without a slash is searched for the way
+the system searches. `Open("")` is the program itself and everything already
+loaded into it. Every symbol a library needs is bound when it is opened, so a
+missing one is `Open`'s failure rather than a crash at its first call, and what
+one library brings in does not leak into the lookups of the next.
+
+The errors are `CannotOpen`, `NoSymbol` and `CannotClose`, and each has one
+sentence. What the system said — which file it could not find, which symbol a
+library wanted — is kept in the `Loader` for `Why()`, cleared at the start of
+every call. It lives there rather than anywhere global because two loaders in
+two tasks fail for two reasons.
+
+`Symbol` answers the bare address, and converting it to an `extern func` is the
+program's own promise about what is there. After `Close`, nothing found in the
+library may be used: the code may be gone, and as with memory an allocator has
+taken back, nothing checks. Opening and closing read files and run the
+library's initialisers, so both go to the io pool and the task waiting is put
+down like any other.
+
 ### `std/runtime`
 
 What the scheduler is doing, for whoever runs the program rather than writes it.
@@ -1589,6 +1728,7 @@ shield test <file.sword | directory> [options]
   -o <path>       output binary, default a.out
   -I <dir>        another directory to search for packages
   --link <arg>    an object, a library or a linker option; one per --link
+  --static        link the libraries `extern` names from their archives
   --mode=<m>      debug | safe | fast | small, default safe
   -O<level>       override the optimisation level
   -p <n>          test only: how many tests may run at once
@@ -1602,19 +1742,27 @@ shield test <file.sword | directory> [options]
   --emit-ast      stop after parsing and checking
   --emit-ir       stop after lowering, print Sword IR
   --emit-llvm     print the LLVM IR
+  --emit-link     print what the linker gets after the program's object
 ```
 
 A `.sword` file compiles alone. A directory compiles as one package.
 
-`--link` reaches the linker, which is how a program calls C that `extern` alone
-cannot describe — a function taking a struct whose layout differs between
-systems, say. One argument each, in the order given, after the program's own
-object:
+A library named by `extern "name"` is linked without being mentioned here (see
+[C libraries](#c-libraries)). `--link` reaches the linker for the rest — an
+object of the program's own, a library somewhere unusual, a shim around C that
+`extern` alone cannot describe, such as a function taking a struct whose layout
+differs between systems. One argument each, in the order given, after the
+program's own object and before the declared libraries:
 
 ```
 shield sheath.sword -o sheath --link shim.o --link -L/opt/homebrew/lib \
     --link -lsomething
 ```
+
+A build that links by its own means — through `--emit-llvm` and a Makefile, say
+— asks `--emit-link` for the rest of the line: what the runtime was built
+against, `--link`, the declared libraries and what weak functions need, one
+argument a line, to go after the program's object and the runtime archive.
 
 `shield test` builds the package together with its `*_test.sword` files behind a
 generated entry point, runs it, and hands back its exit status. Those files are

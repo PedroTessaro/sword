@@ -1,0 +1,10 @@
+// expect-error: cannot convert [*]u8 to func(i32) i32
+// An address becomes a C function, never a Sword one: nothing could say which
+// Sword function it was, and a det call through it would be a guess.
+
+func main() int {
+    x := 0
+    p := [*]u8(&x)
+    g := func(i32) i32(p)
+    return int(g(-1))
+}

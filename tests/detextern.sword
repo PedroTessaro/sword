@@ -1,0 +1,14 @@
+// expect-error: magnitude calls out of the language
+// A C function reached through a value is as far outside as one called by
+// name: nothing says what it reads.
+
+extern func abs(x i32) i32
+
+det func magnitude(x i32) i32 {
+    f := abs
+    return f(x)
+}
+
+func main() int {
+    return int(magnitude(-42))
+}

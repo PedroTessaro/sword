@@ -85,8 +85,11 @@ for name in "$@"; do
         fail=$((fail + 1))
         continue
     fi
+    # What shield itself would link against: the runtime's libraries, those the
+    # test's extern declarations name, and its weak symbols.
     if ! clang++ -O1 -g $flags -Wno-override-module -x ir "$out/$name.ll" \
-            -x none $objs $linkflags -o "$out/$name" 2> "$out/$name.log"; then
+            -x none $objs $("$shield" "$src" --emit-link) -o "$out/$name" \
+            2> "$out/$name.log"; then
         echo "FAIL $name: does not link"
         sed 's/^/     /' "$out/$name.log" | head -5
         fail=$((fail + 1))

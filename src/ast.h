@@ -112,6 +112,12 @@ struct Node {
   // nothing. What the call site writes after the fixed parameters is what the
   // callee reads, by the platform's rules rather than by ours.
   bool is_c_variadic = false;
+  // ND_FUNC on an extern declaration: `extern "z" func ...` names the library
+  // the symbol comes from, which is what puts it on the link line. `weak` says
+  // the symbol may be missing when the program starts, and makes the name a
+  // `?extern func` to be checked before it is called.
+  std::string library;
+  bool is_weak = false;
   // ND_FUNC: `det`, a claim that what this answers depends on its arguments
   // and on nothing else — not on the schedule, the thread count, the clock or
   // an address. The compiler checks it and it changes no generated code.

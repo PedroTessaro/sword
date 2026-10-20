@@ -1,0 +1,92 @@
+package dl
+
+// Loading a library while the program runs, and finding functions in it. A
+// library named by `extern "z"` is linked before the program starts, and has to
+// be there for it to start at all; this is for the one that may not be, or whose
+// name is only known once the program is running — a plugin, an optional codec.
+//
+//     mut ld := dl.NewLoader()
+//     lib := ld.Open("libz.so.1") catch {
+//         try io.Printf("no zlib: {}\n", ld.Why())
+//         return 1
+//     }
+//     defer ld.Close(lib) catch {}
+//     version := extern func() [*]u8(try ld.Symbol(lib, "zlibVersion"))
+//
+// A symbol comes back as the bare address, and the conversion to an extern func
+// is the program's promise of what is there: nothing can check it.
+
+error CannotOpen  = "the library could not be loaded"
+error NoSymbol    = "the library has no such symbol"
+error CannotClose = "the library could not be unloaded"
+
+extern func sword_dl_open(path [*]u8, path_len i64, why [*]u8, why_cap i64,
+                          why_len *i64) ?[*]u8
+extern func sword_dl_symbol(handle [*]u8, name [*]u8, name_len i64,
+                            why [*]u8, why_cap i64, why_len *i64) ?[*]u8
+extern func sword_dl_close(handle [*]u8, why [*]u8, why_cap i64,
+                           why_len *i64) i32
+extern func sword_dl_suffix(len *i64) [*]u8
+
+// A library in the process. Only its handle, so it copies freely; every copy
+// is the same library, and closing it closes it for all of them.
+struct Library {
+    handle [*]u8
+}
+
+// Loads and unloads libraries, and keeps the system's own words about the last
+// call that failed. Those are the useful part — which file was missing, which
+// symbol it wanted — and they only exist at the moment of the failure, so they
+// are written here rather than into an error, which has one fixed sentence.
+struct Loader {
+    why    [512]u8
+    whyLen i64
+}
+
+func NewLoader() Loader {
+    return Loader{why: [512]u8{}, whyLen: 0}
+}
+
+// Searched for the way the system searches: a name without a slash goes
+// through the usual directories, a path is taken as written. An empty path is
+// the program itself, and everything already loaded into it.
+func (mut l *Loader) Open(path string) !Library {
+    handle := sword_dl_open(path.ptr, i64(path.len), l.why[..].ptr,
+                            i64(l.why.len), &l.whyLen)
+    if h := handle {
+        return Library{handle: h}
+    }
+    return error.CannotOpen
+}
+
+// The address of a function or a variable in the library.
+func (mut l *Loader) Symbol(lib Library, name string) ![*]u8 {
+    found := sword_dl_symbol(lib.handle, name.ptr, i64(name.len),
+                             l.why[..].ptr, i64(l.why.len), &l.whyLen)
+    if p := found {
+        return p
+    }
+    return error.NoSymbol
+}
+
+// Whatever was found in the library is not to be used afterwards: the code it
+// pointed at may be gone. Nothing checks that, the same way nothing checks a
+// pointer into memory an allocator has taken back.
+func (mut l *Loader) Close(lib Library) !void {
+    if sword_dl_close(lib.handle, l.why[..].ptr, i64(l.why.len), &l.whyLen) != 0 {
+        return error.CannotClose
+    }
+}
+
+// What the system said about the last call that failed, or "" when the last
+// call succeeded. Valid until the next call on this loader.
+func (l *Loader) Why() string {
+    return string(l.why[0..u64(l.whyLen)])
+}
+
+// What a shared library's file name ends in on this system: ".so" or ".dylib".
+func Suffix() string {
+    mut n i64 = 0
+    p := sword_dl_suffix(&n)
+    return string(p[0..u64(n)])
+}

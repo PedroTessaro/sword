@@ -6,6 +6,7 @@
 #include "diag.h"
 #include "ir.h"
 #include "lexer.h"
+#include "link.h"
 #include "lower.h"
 #include "parser.h"
 #include "version.h"
@@ -24,7 +25,14 @@
 
 namespace {
 
-enum Stage { STAGE_TOKENS, STAGE_AST, STAGE_IR, STAGE_LLVM, STAGE_BINARY };
+enum Stage {
+  STAGE_TOKENS,
+  STAGE_AST,
+  STAGE_IR,
+  STAGE_LLVM,
+  STAGE_LINK,
+  STAGE_BINARY
+};
 
 void usage() {
   fputs("usage: shield <file.sword | directory> [options]\n"
@@ -42,6 +50,8 @@ void usage() {
         "  -I <dir>       add a directory to the package search path\n"
         "  --link <arg>   an object, a library or a linker option to link\n"
         "                 against; one argument each, repeat for more\n"
+        "  --static       link the libraries extern declarations name from\n"
+        "                 their archives (lib<name>.a)\n"
         "  --mode=<m>     debug | safe | fast | small (default safe)\n"
         "                 debug and safe check bounds and integer overflow\n"
         "  -O<level>      override the optimization level\n"
@@ -49,6 +59,8 @@ void usage() {
         "  --emit-ast     stop after parsing and checking\n"
         "  --emit-ir      stop after lowering, print Sword IR\n"
         "  --emit-llvm    stop after codegen, print LLVM IR\n"
+        "  --emit-link    print what the linker gets after the program's\n"
+        "                 object, one argument a line\n"
         "  --version      print the version and stop\n",
         stderr);
 }
@@ -168,7 +180,7 @@ std::string base_of(std::string path) {
 // also where LLVM's own optimization pipeline runs.
 bool assemble(const std::string &ll_path, const std::string &out_path,
               const std::string &opt_level, const std::string &runtime,
-              const std::string &extra, const std::vector<std::string> &link) {
+              const std::vector<std::string> &link) {
   // The archive only contributes objects the program actually references, so
   // a program that never spawns links nothing from it.
   // `-x none` puts clang back into guess-by-extension mode, so the archive is
@@ -178,12 +190,9 @@ bool assemble(const std::string &ll_path, const std::string &out_path,
   // -pthread because the scheduler runs threads, and on older Linux they are
   // not in libc; on Darwin it is accepted and does nothing.
   if (!runtime.empty()) cmd += " -x none " + runtime + " -pthread";
-  // Whatever the runtime was built against, from the file beside the archive:
-  // OpenSSL when it has TLS, and always the C++ library of the compiler that
-  // built it.
-  if (!runtime.empty() && !extra.empty()) cmd += " " + extra;
   // After the program's own object, which is where a linker expects to be told
-  // what resolves what is still missing.
+  // what resolves what is still missing: what the runtime was built against,
+  // then --link, then the libraries extern declarations named.
   for (const std::string &arg : link) cmd += " " + quoted(arg);
   cmd += " -o " + quoted(out_path);
   int status = system(cmd.c_str());
@@ -365,6 +374,7 @@ int main(int argc, char **argv) {
   std::vector<std::string> search;
   // Objects and libraries of the caller's own, in the order they were given.
   std::vector<std::string> link_with;
+  bool prefer_static = false;
   std::string output = "a.out";
   Stage stage = STAGE_BINARY;
   Mode mode = MODE_SAFE;
@@ -390,6 +400,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(arg, "-I") && i + 1 < argc) search.push_back(argv[++i]);
     else if (!strcmp(arg, "--link") && i + 1 < argc)
       link_with.push_back(argv[++i]);
+    else if (!strcmp(arg, "--static")) prefer_static = true;
     else if (!strncmp(arg, "-O", 2) && arg[2]) opt_level = arg + 2;
     else if (!strncmp(arg, "--mode=", 7)) {
       const char *name = arg + 7;
@@ -406,6 +417,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(arg, "--emit-ast")) stage = STAGE_AST;
     else if (!strcmp(arg, "--emit-ir")) stage = STAGE_IR;
     else if (!strcmp(arg, "--emit-llvm")) stage = STAGE_LLVM;
+    else if (!strcmp(arg, "--emit-link")) stage = STAGE_LINK;
     else if (testing && !strcmp(arg, "-p") && i + 1 < argc)
       forwarded += " -p " + quoted(argv[++i]);
     else if (testing && !strcmp(arg, "-run") && i + 1 < argc)
@@ -476,6 +488,26 @@ int main(int argc, char **argv) {
     return 0;
   }
 
+  // Whatever the runtime was built against comes from the file beside the
+  // archive: OpenSSL when it has TLS, and always the C++ library of the
+  // compiler that built it.
+  LinkRequest request;
+  request.libraries = prog.libraries;
+  request.weak_symbols = prog.weak_symbols;
+  std::string runtime = runtime_archive();
+  if (!runtime.empty()) request.runtime_flags = runtime_link_flags();
+  request.user = link_with;
+  request.prefer_static = prefer_static;
+
+  // For a build that links by its own means: everything but the program's
+  // object and the runtime archive, which it already has.
+  if (stage == STAGE_LINK) {
+    std::vector<std::string> link_args;
+    if (!link_arguments(request, link_args)) return 1;
+    for (const std::string &arg : link_args) printf("%s\n", arg.c_str());
+    return 0;
+  }
+
   if (sim) warn_unsimulated(prog);
 
   IrModule mod;
@@ -514,8 +546,12 @@ int main(int argc, char **argv) {
   emit_llvm(mod, ll);
   fclose(ll);
 
-  bool ok = assemble(ll_path, output, opt_level, runtime_archive(),
-                     runtime_link_flags(), link_with);
+  std::vector<std::string> link_args;
+  if (!link_arguments(request, link_args)) {
+    unlink(ll_path.c_str());
+    return 1;
+  }
+  bool ok = assemble(ll_path, output, opt_level, runtime, link_args);
   unlink(ll_path.c_str());
   if (!ok) return 1;
   if (!testing) return 0;

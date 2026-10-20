@@ -18,7 +18,7 @@ RT       := libsword_rt.a
 RTFLAGS  := libsword_rt.flags
 RTOBJ    := rt/sword_rt.o rt/sword_net.o rt/sword_os.o rt/sword_poll.o \
             rt/sword_fs.o rt/sword_proc.o rt/sword_chan.o rt/sword_tls.o \
-            rt/sword_ctx.o
+            rt/sword_dl.o rt/sword_ctx.o
 
 # TLS is optional: the protocol is not something to write by hand, so it is
 # OpenSSL or nothing. Found here, or the runtime answers "built without TLS" and
@@ -64,6 +64,10 @@ CXXLIB := -L$(CXXLIBDIR) -lstdc++
 endif
 endif
 
+# std/dl's dlopen is in libc on macOS and on glibc from 2.34; older glibc keeps
+# it in libdl, and naming libdl where it is only a stub costs nothing.
+DLLIB := $(if $(filter Linux,$(shell uname -s)),-ldl)
+
 all: $(BIN) $(LSP) $(RT) $(RTFLAGS)
 
 $(BIN): $(COREOBJ) src/main.o
@@ -81,7 +85,7 @@ $(RT): $(RTOBJ)
 # it changes, so that the TLS object below is rebuilt exactly when the decision
 # does.
 $(RTFLAGS): FORCE
-	@echo '$(TLS_LDFLAGS) $(CXXLIB)' > $@
+	@echo '$(TLS_LDFLAGS) $(DLLIB) $(CXXLIB)' > $@
 
 # The decision is in the file's name, so flipping it leaves a prerequisite that
 # does not exist and the object is rebuilt. Comparing timestamps would not do:

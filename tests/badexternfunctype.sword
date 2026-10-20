@@ -1,0 +1,11 @@
+// expect-error: an extern function type cannot take string; pass .ptr and .len
+// The same rule as an extern declaration: C has no string, and a Sword one
+// crosses Sword's own calls as a pointer, which is not how C would read it.
+
+func size(cb extern func(string) i32) i32 {
+    return cb("x")
+}
+
+func main() int {
+    return 0
+}
