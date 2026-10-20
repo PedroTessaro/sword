@@ -624,6 +624,17 @@ else
     pass=$((pass + 1))
 fi
 
+# The runtime calls the standard library makes are the ones the simulator knows,
+# and that holds for a std package under test too, which has no import path.
+out=$("$shield" test "$root/std/fs" -sim -seeds 1 2>&1)
+if printf '%s\n' "$out" | grep -qF "calls out of the language"; then
+    echo "FAIL shield test -sim std/fs: warned about the runtime's own calls"
+    printf '%s\n' "$out" | head -3 | sed 's/^/     /'
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
+
 # Any program runs simulated under SWORD_SIM_SEED: the clock is virtual, the
 # same seed gives the same run, and different seeds explore different orders.
 "$shield" "$root/tests/simprograms/clock.sword" -o "$tmp/simclock" \
