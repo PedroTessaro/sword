@@ -984,6 +984,23 @@ A round count of zero is refused rather than read as one. It often comes from
 the other end of a connection, and a peer asking for a password hash one HMAC
 deep is not asking for something to be quietly granted.
 
+Keys, salts and tokens are made from the system's random source:
+
+```sword
+error NoEntropy = "the system would not give random bytes"
+
+func Random(mut into []u8) !void
+```
+
+```sword
+mut token := [32]u8{}
+try crypto.Random(token[0..32])
+```
+
+`std/rand` is the wrong package for this. Its numbers are a pure function of
+the seed, which is what a simulation wants and exactly what a secret must not
+be.
+
 ### `std/num`
 
 Adding floating point loses the small terms: once the running total is large
