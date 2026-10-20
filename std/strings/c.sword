@@ -1,0 +1,50 @@
+package strings
+
+// Between a Sword string — a pointer and a length — and a C one, which is a
+// pointer to bytes ending in a zero. Neither direction allocates: FromC answers
+// with a view of the C memory, and ToC writes into a buffer the caller gives.
+
+error NoSpace     = "the buffer given has no room for the result"
+error InteriorNul = "the string holds a zero byte, where C would see its end"
+
+// The bytes from `p` up to the first zero, as a string. Nothing is copied, so
+// the string is only good while the C memory is: a buffer the library reuses or
+// frees has to be copied out first (`strings.Concat(&arena, s)`).
+func FromC(p [*]u8) string {
+    mut n u64 = 0
+    for p[n] != 0 {
+        n += 1
+    }
+    return string(p[0..n])
+}
+
+// The same, stopping after `most` bytes when no zero comes first. A `char[N]`
+// field in a C struct is full when the text fills it, and then has no zero at
+// all; reading on would read the next field.
+func FromCMax(p [*]u8, most u64) string {
+    mut n u64 = 0
+    for n < most && p[n] != 0 {
+        n += 1
+    }
+    return string(p[0..n])
+}
+
+// `s` with a zero after it, written into `into`, for a C function that wants a
+// `const char *`. The answer points into `into`, which must outlive the call.
+//
+// A zero inside `s` is refused: C would stop there and read a different string
+// from the one passed — a path "a.txt\0/../secret" opens a.txt — and nobody
+// would see it happen.
+func ToC(s string, mut into []u8) ![*]u8 {
+    if s.len + 1 > into.len {
+        return error.NoSpace
+    }
+    for i in 0..s.len {
+        if s[i] == 0 {
+            return error.InteriorNul
+        }
+        into[i] = s[i]
+    }
+    into[s.len] = 0
+    return into.ptr
+}
