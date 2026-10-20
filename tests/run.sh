@@ -657,6 +657,26 @@ else
     fail=$((fail + 1))
 fi
 
+# crypto.Random under a seed is the seed's: the same one gives the same bytes,
+# another gives others, and outside the simulator no two runs agree.
+if "$shield" "$root/tests/simprograms/random.sword" -o "$tmp/simrandom" \
+        > "$tmp/simrandom.log" 2>&1; then
+    a=$(SWORD_SIM_SEED=7 "$tmp/simrandom")
+    b=$(SWORD_SIM_SEED=7 "$tmp/simrandom")
+    c=$(SWORD_SIM_SEED=8 "$tmp/simrandom")
+    d=$("$tmp/simrandom")
+    e=$("$tmp/simrandom")
+    if [ -n "$a" ] && [ "$a" = "$b" ] && [ "$a" != "$c" ] && [ -n "$d" ] && [ "$d" != "$e" ]; then
+        pass=$((pass + 1))
+    else
+        echo "FAIL simulated random: seed 7 gave '$a' then '$b', seed 8 '$c', unsimulated '$d' and '$e'"
+        fail=$((fail + 1))
+    fi
+else
+    echo "FAIL simulated random: compilation failed"
+    fail=$((fail + 1))
+fi
+
 # `--sim` puts a switch point before every atomic operation; without it the
 # code is what it always was.
 with_points=$("$shield" "$root/tests/atomics.sword" --sim --emit-llvm 2>&1 | grep -c "call void @sword_sim_point")

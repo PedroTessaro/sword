@@ -11,6 +11,9 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#if !defined(__APPLE__)
+#include <sys/random.h>
+#endif
 
 namespace {
 
@@ -199,6 +202,37 @@ const char *sword_os_hostname(int64_t *len) {
 int64_t sword_os_cpus(void) {
   long n = sysconf(_SC_NPROCESSORS_ONLN);
   return n > 0 ? (int64_t)n : 1;
+}
+
+// Simulated, the bytes come from the seed, so a run that makes a token makes
+// the same one every time under that seed — which is also why no program meant
+// for real use may run with SWORD_SIM_SEED set.
+int32_t sword_os_random(uint8_t *into, int64_t len) {
+  if (sword_sim_on()) {
+    for (int64_t i = 0; i < len; i += 8) {
+      uint64_t word = sword_sim_entropy();
+      for (int64_t j = 0; j < 8 && i + j < len; j++)
+        into[i + j] = (uint8_t)(word >> (8 * j));
+    }
+    return 0;
+  }
+#if defined(__APPLE__)
+  // The kernel keeps it seeded, and it has no way to fail.
+  arc4random_buf(into, (size_t)len);
+#else
+  // A large request may come back short, and a signal may cut one off before
+  // anything arrived; neither is the kernel refusing.
+  while (len > 0) {
+    ssize_t n = getrandom(into, (size_t)len, 0);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      return -1;
+    }
+    into += n;
+    len -= n;
+  }
+#endif
+  return 0;
 }
 
 // clock_gettime rather than gettimeofday: nanosecond resolution, and a

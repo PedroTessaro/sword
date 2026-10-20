@@ -465,6 +465,9 @@ thread_local int tl_parked = 0;
 bool g_sim = false;
 uint64_t g_sim_seed = 0;
 uint64_t g_sim_rng = 0;
+// What crypto.Random hands out, drawn from the seed on a stream of its own, so
+// a program that starts asking for random bytes does not change the schedule.
+uint64_t g_sim_entropy = 0;
 // Virtual monotonic time. It starts a second in, so that nothing that
 // subtracts an earlier reading from a later one ever sees zero.
 const int64_t kSimStart = 1000000000;
@@ -475,12 +478,14 @@ uint64_t g_sim_timer_seq = 0;
 std::map<std::pair<int64_t, uint64_t>, Fiber *> g_sim_timers;
 
 // splitmix64: small, fast, and the whole of its state is one word.
-uint64_t sim_next() {
-  uint64_t z = (g_sim_rng += 0x9E3779B97F4A7C15ull);
+uint64_t splitmix(uint64_t &state) {
+  uint64_t z = (state += 0x9E3779B97F4A7C15ull);
   z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
   z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
   return z ^ (z >> 31);
 }
+
+uint64_t sim_next() { return splitmix(g_sim_rng); }
 
 uint64_t sim_below(uint64_t n) { return n <= 1 ? 0 : sim_next() % n; }
 
@@ -776,6 +781,7 @@ Pool &pool() {
       g_sim = true;
       g_sim_seed = strtoull(seed, nullptr, 10);
       g_sim_rng = g_sim_seed;
+      g_sim_entropy = ~g_sim_seed;
     }
     int n = g_sim ? 1 : thread_count();
     p->target = n;
@@ -1550,6 +1556,8 @@ int32_t sword_sim_on(void) {
 }
 
 int64_t sword_sim_mono(void) { return g_sim_now; }
+
+uint64_t sword_sim_entropy(void) { return splitmix(g_sim_entropy); }
 
 // What the simulator cannot do yet ends the run with a message that says so,
 // rather than letting a real socket make the run depend on the machine.

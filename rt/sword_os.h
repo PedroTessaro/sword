@@ -33,6 +33,8 @@ int64_t sword_os_pid(void);
 int32_t sword_os_kill(int64_t pid, int32_t sig);
 const char *sword_os_hostname(int64_t *len);
 int64_t sword_os_cpus(void);
+// Fills `into` from the kernel's random source: 0, or -1 when it refused.
+int32_t sword_os_random(uint8_t *into, int64_t len);
 
 // Nanoseconds on a clock that only moves forward, which is the one to measure
 // with: the wall clock can jump backwards.

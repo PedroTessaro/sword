@@ -1,0 +1,14 @@
+// Run under SWORD_SIM_SEED by tests/run.sh: the same seed gives the same random
+// bytes, so a simulated run that makes a token can be had again.
+
+import "std/crypto"
+import "std/io"
+
+func main() !void {
+    mut bytes := [16]u8{}
+    try crypto.Random(bytes[0..16])
+    for i in 0..16 {
+        try io.Printf("{x}.", bytes[i])
+    }
+    try io.Print("\n")
+}

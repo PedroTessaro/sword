@@ -211,3 +211,27 @@ func TestPbkdf2RefusesZeroRounds(mut t *testing.T) !void {
     }
     try t.Equal(refused, true)
 }
+
+// --- Random ----------------------------------------------------------------
+
+// Nothing about a single draw can be checked, but two 32-byte draws agreeing
+// would happen once in 2^256 tries; and a request far larger than any key has
+// to come back whole.
+func TestRandom(mut t *testing.T) !void {
+    mut a := [32]u8{}
+    mut b := [32]u8{}
+    try Random(a[0..32])
+    try Random(b[0..32])
+    try t.Equal(Equal(a[0..32], b[0..32]), false)
+
+    mut big := [100000]u8{}
+    try Random(big[0..100000])
+    // The last 4096 bytes all zero would mean the fill stopped short.
+    mut seen u8 = 0
+    for i in 100000 - 4096..100000 {
+        seen = seen | big[i]
+    }
+    try t.Equal(seen != 0, true)
+
+    try Random(a[0..0])
+}
