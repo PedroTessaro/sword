@@ -76,6 +76,8 @@ func (mut r *T) Method() R { ... }
 det func name(a T) R { ... }        // checked: the answer is a function of a
 extern func c_name(a T) R          // C ABI, name unchanged
 extern func c_name(a T, ...) R     // C's own variadic: ioctl, fcntl, printf
+extern "z" func c_name(a T) R      // and it comes from libz
+extern weak func c_name(a T) R     // and it may be missing at run time
 
 struct Name { field T ... }
 struct Name[T] { field T ... }     // generic; a type only once instantiated
@@ -284,6 +286,63 @@ one, an `f32` as an `f64`. Only scalars fit through — a `string` is two words
 here and a pointer there, so pass `.ptr` and `.len`. And a variadic function
 can only be called by name: a function value carries one word and no
 signature, which is not enough to know where the extra arguments go.
+
+## C libraries
+
+A string after `extern` names the library a function comes from, the way `-l`
+would: `"z"` is libz, `"sqlite3"` is libsqlite3. That is all it takes to link
+it — nothing on the command line, and nothing for whoever builds a program that
+imports the package doing the declaring.
+
+```sword
+extern "sqlite3" func sqlite3_libversion_number() i32
+extern "z" func zlibVersion() [*]u8
+```
+
+It is a name and never a path or an option; those belong to `--link`, where
+whoever builds the program can see them. Two packages may declare the same
+function, and must then agree on where it comes from.
+
+How a library is linked is a question for the build rather than the source,
+since one package is built both ways depending on where the program is going.
+By default it is linked dynamically. `shield --static` takes every library the
+program declared from its archive, `lib<name>.a`, and refuses to build when
+there is none rather than quietly linking the other way; whatever those
+archives need comes from an archive too when there is one. The system's own
+libraries — libc, libm, pthreads, the C++ library — always stay dynamic: an
+archive of libm beside a shared libc is two copies of one library in one
+process. On Linux that means a `--static` program still needs the C library of
+the machine it runs on, and still resolves names and loads libraries the
+ordinary way.
+
+Where a library lives is asked of pkg-config when the machine has it — under the
+name in the source, then with `lib` in front, which is how `extern "curl"` finds
+libcurl's file. What it says is used as it says it, so a library whose file
+names something else is still found. Without pkg-config, or for a library it
+does not know, the name goes to the linker as `-l<name>`, searched in the usual
+places and in every directory given with `--link -L<dir>`. A shared library
+found in a directory like that is also looked for there when the program starts.
+
+### Weak functions
+
+`extern weak` declares a function the program can run without — one that only
+newer versions of a library have, say. The program links and starts whether or
+not anything provides it, and its name is an `?extern func`, nil when nothing
+did. Calling it by name is an error, because a missing one would be a jump to
+address zero:
+
+```sword
+extern weak func getentropy(buf [*]u8, n u64) i32
+
+if fill := getentropy {
+    try check(fill(room.ptr, room.len))
+} else {
+    // the older way
+}
+```
+
+`weak` is about the function, not the library: a library named after it has to
+be there when the program starts.
 
 ## Atomics
 
@@ -1624,6 +1683,7 @@ shield test <file.sword | directory> [options]
   -o <path>       output binary, default a.out
   -I <dir>        another directory to search for packages
   --link <arg>    an object, a library or a linker option; one per --link
+  --static        link the libraries `extern` names from their archives
   --mode=<m>      debug | safe | fast | small, default safe
   -O<level>       override the optimisation level
   -p <n>          test only: how many tests may run at once
@@ -1641,10 +1701,12 @@ shield test <file.sword | directory> [options]
 
 A `.sword` file compiles alone. A directory compiles as one package.
 
-`--link` reaches the linker, which is how a program calls C that `extern` alone
-cannot describe — a function taking a struct whose layout differs between
-systems, say. One argument each, in the order given, after the program's own
-object:
+A library named by `extern "name"` is linked without being mentioned here (see
+[C libraries](#c-libraries)). `--link` reaches the linker for the rest — an
+object of the program's own, a library somewhere unusual, a shim around C that
+`extern` alone cannot describe, such as a function taking a struct whose layout
+differs between systems. One argument each, in the order given, after the
+program's own object and before the declared libraries:
 
 ```
 shield sheath.sword -o sheath --link shim.o --link -L/opt/homebrew/lib \

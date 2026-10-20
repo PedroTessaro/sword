@@ -73,6 +73,14 @@ struct Program {
   Symbol *error_name = nullptr;
   Symbol *error_message = nullptr;
 
+  // What `extern "z"` declarations name, in the order they were first met, and
+  // the symbols declared weak. The driver turns both into the link line.
+  std::vector<std::string> libraries;
+  std::vector<std::string> weak_symbols;
+  // Every C symbol by the declaration that first named it. Two packages may both
+  // declare one, but must agree on where it comes from and whether it is weak.
+  std::unordered_map<std::string, Node *> c_symbols;
+
   Package *main() { return order.empty() ? nullptr : order.back(); }
 };
 

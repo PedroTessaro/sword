@@ -427,7 +427,7 @@ struct Emitter {
     if (f.is_extern) {
       if (f.is_c_variadic) variadic_type[f.name] = variadic_signature(f);
       if (!declared.insert(f.name).second) return;
-      signature(f, "declare");
+      signature(f, f.is_weak ? "declare extern_weak" : "declare");
       fputc('\n', out);
       return;
     }

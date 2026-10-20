@@ -239,6 +239,144 @@ else
     fi
 fi
 
+# A library named in the source is linked without being named on the command
+# line: dynamically by default, from its archive with --static. Each way is
+# told apart by taking the library away afterwards — a dynamic program then
+# fails to start, a static one does not notice.
+mkdir -p "$tmp/libs/lib" "$tmp/libs/onlyshared"
+cat > "$tmp/libs/shim.c" <<'EOF'
+int sword_lib_answer(void) { return 42; }
+int sword_lib_present(void) { return 7; }
+EOF
+cc -c -fPIC "$tmp/libs/shim.c" -o "$tmp/libs/shim.o" 2>/dev/null
+ar rcs "$tmp/libs/lib/libswordlib.a" "$tmp/libs/shim.o"
+if [ "$(uname -s)" = Darwin ]; then
+    shared=libswordlib.dylib
+    cc -dynamiclib "$tmp/libs/shim.o" -install_name "@rpath/$shared" \
+        -o "$tmp/libs/lib/$shared" 2>/dev/null
+else
+    shared=libswordlib.so
+    cc -shared "$tmp/libs/shim.o" -o "$tmp/libs/lib/$shared" 2>/dev/null
+fi
+cp "$tmp/libs/lib/$shared" "$tmp/libs/onlyshared/"
+cat > "$tmp/libs/main.sword" <<'EOF'
+extern "swordlib" func sword_lib_answer() i32
+extern weak "swordlib" func sword_lib_present() i32
+extern weak func sword_lib_nowhere() i32
+
+func main() int {
+    if f := sword_lib_nowhere {
+        return 1
+    }
+    g := sword_lib_present orelse return 2
+    if g() != 7 {
+        return 3
+    }
+    return int(sword_lib_answer())
+}
+EOF
+libsrc="$tmp/libs/main.sword"
+libcheck() { # name, exit wanted once the library is moved away, shield args
+    what=$1 want_away=$2
+    shift 2
+    if ! "$shield" "$libsrc" -o "$tmp/libs/prog" "$@" \
+            > "$tmp/libs/log" 2>&1; then
+        echo "FAIL $what: compilation failed"
+        sed 's/^/     /' "$tmp/libs/log"
+        fail=$((fail + 1))
+        return
+    fi
+    "$tmp/libs/prog"
+    got=$?
+    mv "$tmp/libs/lib" "$tmp/libs/away"
+    "$tmp/libs/prog" 2>/dev/null
+    away=$?
+    mv "$tmp/libs/away" "$tmp/libs/lib"
+    if [ "$got" != 42 ]; then
+        echo "FAIL $what: exit $got, want 42"
+        fail=$((fail + 1))
+    elif [ "$want_away" = 42 ] && [ "$away" != 42 ]; then
+        echo "FAIL $what: exit $away once the library was gone, want 42"
+        fail=$((fail + 1))
+    elif [ "$want_away" != 42 ] && [ "$away" = 42 ]; then
+        echo "FAIL $what: still ran without the library, so it was not dynamic"
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+}
+libcheck "extern library, dynamic" gone --link "-L$tmp/libs/lib"
+libcheck "extern library, --static" 42 --static --link "-L$tmp/libs/lib"
+
+# --static with only a shared library to be had is refused rather than quietly
+# linked the other way.
+out=$("$shield" "$tmp/libs/main.sword" -o "$tmp/libs/prog" --static \
+      --link "-L$tmp/libs/onlyshared" 2>&1)
+if [ $? -eq 0 ] || ! printf '%s\n' "$out" | grep -qF "there is no libswordlib.a"; then
+    echo "FAIL --static without an archive: $out"
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
+
+# pkg-config is asked where a library is: under the name the source used, then
+# with lib in front, which is how libz9.pc is found for `extern "z9"` here and
+# turns out to mean -lswordlib. A machine without pkg-config gets a stand-in
+# that knows only --libs.
+mkdir -p "$tmp/libs/pc" "$tmp/libs/bin"
+printf 'Name: z9\nDescription: test\nVersion: 1\nLibs: -L%s -lswordlib\n' \
+    "$tmp/libs/lib" > "$tmp/libs/pc/libz9.pc"
+pkgpath=$PATH
+if ! command -v pkg-config > /dev/null; then
+    cat > "$tmp/libs/bin/pkg-config" <<'EOF'
+#!/bin/sh
+for last; do :; done
+[ -f "$PKG_CONFIG_PATH/$last.pc" ] || exit 1
+sed -n 's/^Libs: //p' "$PKG_CONFIG_PATH/$last.pc"
+EOF
+    chmod +x "$tmp/libs/bin/pkg-config"
+    pkgpath="$tmp/libs/bin:$PATH"
+fi
+sed 's/"swordlib"/"z9"/' "$tmp/libs/main.sword" > "$tmp/libs/viapc.sword"
+libsrc="$tmp/libs/viapc.sword"
+saved_path=$PATH
+PATH=$pkgpath
+PKG_CONFIG_PATH="$tmp/libs/pc"
+export PKG_CONFIG_PATH
+libcheck "extern library through pkg-config" gone
+libcheck "extern library through pkg-config, --static" 42 --static
+PATH=$saved_path
+unset PKG_CONFIG_PATH
+libsrc="$tmp/libs/main.sword"
+
+# Two packages may declare the same C function, but not disagree about it.
+mkdir -p "$tmp/clash/other"
+cat > "$tmp/clash/main.sword" <<'EOF'
+import "other"
+
+extern func sword_lib_answer() i32
+
+func main() int {
+    return int(sword_lib_answer()) + other.Zero()
+}
+EOF
+cat > "$tmp/clash/other/other.sword" <<'EOF'
+package other
+
+extern weak func sword_lib_answer() i32
+
+func Zero() int {
+    return 0
+}
+EOF
+out=$("$shield" "$tmp/clash/main.sword" -o "$tmp/clash/prog" 2>&1)
+if [ $? -eq 0 ] || ! printf '%s\n' "$out" | grep -qF "is weak here and not where it was first declared"; then
+    echo "FAIL weak and not weak: $out"
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
+
 # A reduction has to answer the same thing whatever the pool looks like. The
 # float sum is the one that shows it: adding the pieces in the order they
 # finish rounds differently from adding them in the order they were cut, so

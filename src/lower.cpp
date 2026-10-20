@@ -2295,6 +2295,7 @@ struct Lowerer {
     out.ret = ret = decl->sym->type->ret;
     out.is_extern = decl->is_extern;
     out.is_c_variadic = decl->is_c_variadic;
+    out.is_weak = decl->is_weak;
     out.is_internal = decl->is_hidden;
     out.ret_by_pointer = is_aggregate(out.ret);
     for (Node *p : decl->kids) out.params.push_back(p->type);

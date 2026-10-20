@@ -1210,13 +1210,32 @@ struct Parser {
       return error_decl();
 
     bool is_extern = match(TK_EXTERN);
+    // `extern weak "z" func f(...)`. Neither word is reserved: `weak` is only
+    // special between `extern` and what it declares.
+    bool is_weak = false;
+    std::string library;
+    if (is_extern && kind() == TK_IDENT && peek().text == "weak" &&
+        (kind(1) == TK_STRING || kind(1) == TK_FUNC)) {
+      advance();
+      is_weak = true;
+    }
+    if (is_extern && kind() == TK_STRING) library = advance().text;
     // `det func f(...)`: a claim the compiler checks — what this answers is a
     // function of what it was given, and of nothing else.
     bool is_det = match(TK_DET);
     if (kind() == TK_FUNC) {
       Node *fn = func_decl(is_extern);
-      if (fn) fn->is_det = is_det;
+      if (fn) {
+        fn->is_det = is_det;
+        fn->is_weak = is_weak;
+        fn->library = library;
+      }
       return fn;
+    }
+    if (is_weak || !library.empty()) {
+      fail("a library and 'weak' belong to an extern function; an extern"
+           " struct is only a layout");
+      return nullptr;
     }
     if (is_det) {
       fail("'det' belongs to a function");

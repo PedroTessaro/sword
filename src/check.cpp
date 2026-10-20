@@ -174,6 +174,52 @@ struct Checker {
             type_str(fn->ret).c_str());
   }
 
+  // What follows -l, and nothing that would reach the linker as an option or a
+  // path: those belong to --link, where whoever builds the program can see them.
+  static bool library_name(const std::string &name) {
+    if (name.empty() || name[0] == '-' || name[0] == '.') return false;
+    for (char c : name)
+      if (!isalnum((unsigned char)c) && c != '_' && c != '-' && c != '.' &&
+          c != '+')
+        return false;
+    return true;
+  }
+
+  // Two packages may each declare the same C function, and agree about it.
+  void c_symbol(Node *fn) {
+    if (!fn->library.empty() && !library_name(fn->library)) {
+      error(fn->pos,
+            "\"%s\" is not a library name; write what follows -l, such as"
+            " \"z\" for libz, and give paths and options to --link",
+            fn->library.c_str());
+      return;
+    }
+    auto at = prog.c_symbols.emplace(fn->name, fn);
+    Node *first = at.first->second;
+    if (!at.second) {
+      if (first->is_weak != fn->is_weak) {
+        error(fn->pos, "'%s' is weak here and not where it was first declared",
+              fn->name.c_str());
+        note(first->pos, "first declared here");
+        return;
+      }
+      if (!first->library.empty() && !fn->library.empty() &&
+          first->library != fn->library) {
+        error(fn->pos, "'%s' comes from \"%s\" here and from \"%s\" where it"
+              " was first declared", fn->name.c_str(), fn->library.c_str(),
+              first->library.c_str());
+        note(first->pos, "first declared here");
+        return;
+      }
+    } else if (fn->is_weak) {
+      prog.weak_symbols.push_back(fn->name);
+    }
+    if (!fn->library.empty() &&
+        std::find(prog.libraries.begin(), prog.libraries.end(),
+                  fn->library) == prog.libraries.end())
+      prog.libraries.push_back(fn->library);
+  }
+
   Type *resolve(Node *n) {
     if (!n) return types.void_ty;
     switch (n->kind) {
@@ -1598,6 +1644,7 @@ struct Checker {
       return nullptr;
     }
     if (sym->is_generic) return check_generic_call(n, sym, other, {});
+    if (!present(n, sym)) return nullptr;
     n->sym = sym;
     n->name = sym->name;
     if (!check_args(n, sym, 0)) return nullptr;
@@ -2067,6 +2114,7 @@ struct Checker {
     n->lhs->sym = sym;
 
     if (sym->is_generic) return check_generic_call(n, sym, &pkg, {});
+    if (!present(n, sym)) return nullptr;
     n->sym = sym;
     n->name = sym->name;
     if (!check_args(n, sym, 0)) return nullptr;
@@ -2493,6 +2541,17 @@ struct Checker {
   // A function named but not called is its own address. There are no closures,
   // so nothing is captured and nothing is allocated — which is also why a
   // generic has no value: there is no one function to point at.
+  // A weak symbol may be missing when the program runs, and a call by name
+  // would jump to address zero; the value is an optional to be looked at first.
+  bool present(Node *call, Symbol *sym) {
+    if (!sym->decl || !sym->decl->is_weak) return true;
+    error(call->pos,
+          "'%s' is weak and may be missing when the program runs; check it"
+          " first: if f := %s { f(...) }",
+          sym->name.c_str(), sym->name.c_str());
+    return false;
+  }
+
   Type *check_func_value(Node *n, Symbol *sym) {
     if (sym->is_generic) {
       error(n->pos,
@@ -2508,6 +2567,7 @@ struct Checker {
             shown_name(sym->name).c_str());
       return nullptr;
     }
+    if (sym->decl && sym->decl->is_weak) return n->type = types.opt(sym->type);
     return n->type = sym->type;
   }
 
@@ -3793,6 +3853,7 @@ struct Checker {
       if (fn->is_extern) {
         sym->type->is_extern = true;
         c_boundary(sym->type, fn->pos, "extern '" + fn->name + "'");
+        c_symbol(fn);
       }
 
       if (fn->name == "main" && pkg.prefix.empty()) {
