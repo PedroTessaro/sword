@@ -92,9 +92,6 @@ for name in "$@"; do
         fail=$((fail + 1))
         continue
     fi
-    # What a test that died halfway left behind would make the next run fail
-    # for the wrong reason.
-    rm -rf /tmp/sword_static
     # On Linux, AddressSanitizer also looks for leaks when the program ends.
     # Under OpenSSL it reports memory inside the library although every
     # context and connection the tests make is freed, so a test that uses
