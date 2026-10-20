@@ -83,6 +83,8 @@ setup and what the build needs.
   beside the code.
 - **[Reference](docs/reference.md)** — types, operators, keywords, standard
   library. For looking things up once you know the language.
+- **[Grammar](docs/grammar.md)** — the syntax in EBNF, token by token, for
+  writing a tool that reads Sword or settling what parses.
 
 ## What it looks like
 
