@@ -1,0 +1,50 @@
+// expect: 42
+// expect-output: every dial was refused, and the next one connected
+// Dials to a port nobody listens on, from many tasks at once. Each connect is
+// answered with a reset after the socket has gone to the poller to wait, and a
+// failed dial used to close it with a plain close() on the task's own thread.
+// On macOS a close that meets kqueue activity on the same socket can wait in
+// the kernel for good, in a state no signal ends; a test process was found
+// stuck exactly there. The failed dial now closes through the poller like
+// every other socket, and a dial made after all of them still connects.
+
+import "std/io"
+import "std/net"
+
+func dialer(port i32, rounds u64, mut refused *atomic[u64]) {
+    for i in 0..rounds {
+        mut c := net.Dial("127.0.0.1", port) catch {
+            refused.Add(1)
+            continue
+        }
+        c.Close()
+    }
+}
+
+func main() !int {
+    mut closed := try net.Listen(0)
+    port := closed.Port()
+    closed.Close()
+
+    mut refused := atomic[u64](0)
+    scope {
+        for i in 0..8 {
+            spawn dialer(port, 50, &refused)
+        }
+    }
+    if refused.Load() != 400 {
+        try io.Printf("{} of 400 dials were refused\n", refused.Load())
+        return 1
+    }
+
+    // The sockets those dials closed hand their numbers to whatever comes next,
+    // and that has to work as if nothing had happened.
+    mut l := try net.Listen(0)
+    mut c := try net.Dial("127.0.0.1", l.Port())
+    mut s := try l.Accept()
+    s.Close()
+    c.Close()
+    l.Close()
+    try io.Println("every dial was refused, and the next one connected")
+    return 42
+}
