@@ -87,6 +87,7 @@ enum Name T { A; B = 3; C }        // T is the width, default int
 error Name = "what went wrong"     // declared, with the sentence it says
 error Name                         // declared, saying nothing
 error A, B, C
+type Name = T                      // another name for T, the same type
 
 package name                       // documentation; the directory decides
 import "path/to/package"
@@ -94,6 +95,15 @@ import "path/to/package"
 
 `mut` on a parameter or receiver means the callee may write through it. Only a
 mutable binding can be passed to one.
+
+`type Name = T` gives a type a second name, nothing more: a `Name` is a `T`, and
+values pass between the two without a conversion. It is for a name that says
+what a type is for (`type Bytes = []u8`) or one that saves repeating a long one
+(`type Set = collections.Map[string, bool]`), and an alias of a struct can be
+used to write a literal or declare a method of it. An alias takes no type
+parameters of its own, and is declared at the top of a file. `type` is a word
+only there; a variable or field called `type` is a name like any other. A type
+that is new rather than renamed is a struct or an enum.
 
 A name is exported from its package when it starts with a capital letter. That
 covers a struct's fields as well: a type can be public and its insides private,
@@ -947,6 +957,98 @@ digest := h.Sum()
 so there is nothing sensible to append afterwards: a hasher is spent once its
 digest has been taken, and another message needs another hasher.
 
+HMAC-SHA-256 has the same shape, with the key given when the value is built:
+
+```sword
+func HmacSha256Of(key []u8, message []u8) [Sha256Size]u8
+
+func NewHmacSha256(key []u8) HmacSha256
+func (mut h *HmacSha256) Write(p []u8)
+func (mut h *HmacSha256) Sum() [Sha256Size]u8
+
+func Equal(a []u8, b []u8) bool            // in time that does not depend on the bytes
+```
+
+A tag that arrived from outside is checked with `crypto.Equal`, never with a
+loop that stops at the first difference: how long that loop takes tells the
+sender how much of a guess was right, and a tag can then be guessed a byte at a
+time.
+
+```sword
+want := crypto.HmacSha256Of(secret, payload)
+if !crypto.Equal(want[0..crypto.Sha256Size], tag) {
+    return error.BadSignature
+}
+```
+
+PBKDF2-HMAC-SHA-256 derives a key from a password, filling the slice it is
+given whatever its length:
+
+```sword
+error BadRounds = "a derived key needs at least one round"
+
+func Pbkdf2Sha256(password []u8, salt []u8, rounds u32, mut into []u8) !void
+```
+
+A round count of zero is refused rather than read as one. It often comes from
+the other end of a connection, and a peer asking for a password hash one HMAC
+deep is not asking for something to be quietly granted.
+
+Keys, salts and tokens are made from the system's random source:
+
+```sword
+error NoEntropy = "the system would not give random bytes"
+
+func Random(mut into []u8) !void
+```
+
+```sword
+mut token := [32]u8{}
+try crypto.Random(token[0..32])
+```
+
+`std/rand` is the wrong package for this. Its numbers are a pure function of
+the seed, which is what a simulation wants and exactly what a secret must not
+be.
+
+### `std/encoding`
+
+Bytes as text and back: hex, and base64 in the two alphabets of RFC 4648.
+Like `std/crypto` it allocates nothing — each function writes into the slice it
+is given and answers with the part it filled, and a slice too small is
+`error.NoSpace`, never a write past its end.
+
+```sword
+func Hex(src []u8, mut into []u8) !string           // lowercase
+func DecodeHex(text string, mut into []u8) !u64     // either case
+
+func Base64(src []u8, mut into []u8) !string        // + and /, padded with =
+func Base64Url(src []u8, mut into []u8) !string     // - and _, no padding
+func DecodeBase64(text string, mut into []u8) !u64
+func DecodeBase64Url(text string, mut into []u8) !u64
+
+func HexSize(n u64) u64        // the room an encoding of n bytes takes
+func Base64Size(n u64) u64
+func Base64UrlSize(n u64) u64
+```
+
+The standard alphabet is what SCRAM, MIME and HTTP Basic authentication use;
+the URL one is what goes into a URL, a cookie or a JWT, where `+`, `/` and `=`
+would have to be escaped.
+
+```sword
+mut token := [32]u8{}
+try crypto.Random(token[0..32])
+mut room := [43]u8{}
+cookie := try encoding.Base64Url(token[0..32], room[..])
+```
+
+Decoding is strict. Padding is required in the standard form and optional in
+the URL one, nothing outside the alphabet is accepted — not a line break, not
+a space — and the unused bits of the last character must be zero. A lenient
+decoder reads several texts as the same bytes, and then a token that was
+checked after decoding no longer has one spelling.
+
 ### `std/num`
 
 Adding floating point loses the small terms: once the running total is large
@@ -1123,6 +1225,33 @@ func Sleep(d Duration)            // the scheduler is told first
 A method can be called on a temporary — `time.Since(start).AsMillis()` — except
 one that writes through its receiver, which needs a binding to keep the
 change.
+
+Wall-clock seconds are written as the two dates a server deals in, always in
+UTC, into a slice the caller gives:
+
+```sword
+const Rfc3339Size = 20   // 2026-10-20T14:03:00Z
+const HttpDateSize = 29  // Tue, 20 Oct 2026 14:03:00 GMT
+
+func Rfc3339(unix i64, mut into []u8) !string
+func HttpDate(unix i64, mut into []u8) !string
+
+func ParseRfc3339(text string) !i64
+func ParseHttpDate(text string) !i64
+```
+
+```sword
+mut room := [32]u8{}
+try res.Headers.Set("Date", try time.HttpDate(time.Unix(), room[..]))
+```
+
+`ParseRfc3339` reads any offset (`Z`, `-03:00`, `+05:30`) and drops a fraction
+of a second. `ParseHttpDate` reads the three forms an HTTP recipient must
+accept — the IMF-fixdate above, the obsolete RFC 850 form with a two-digit year
+(69 and up is 19xx), and C's `asctime` — while `HttpDate` writes only the first,
+the one a sender may use. Years run from 0000 to 9999; outside them a date is
+`error.YearOutOfRange`, and a leap second, which Unix time cannot count, is
+refused.
 
 ### `std/testing`
 
@@ -1661,7 +1790,9 @@ func MimeType(path string) string            // by extension
 `Files` serves what a `{path...}` route caught, under its root. A path containing
 `..`, a NUL or a backslash is refused rather than resolved. A directory gets
 `Index` — `index.html` by default, and an empty `Index` makes directories 404.
-Only GET and HEAD; anything else is a 405.
+Only GET and HEAD; anything else is a 405. Both send `Last-Modified` and a weak
+`ETag` built from the size and modification time; `Files` answers
+`If-None-Match` and `If-Modified-Since` with 304, the tag taking precedence.
 
 Header lookup is case-insensitive. A request carries at most 32 headers and
 16 KiB of head; beyond that the connection is rejected. An accepted connection

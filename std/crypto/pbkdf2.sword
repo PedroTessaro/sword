@@ -1,0 +1,55 @@
+package crypto
+
+error BadRounds = "a derived key needs at least one round"
+
+// PBKDF2-HMAC-SHA-256, RFC 8018. Fills `into`, however long it is: SCRAM asks
+// for exactly one block, and a longer key costs one more pass per block.
+//
+// The round count is refused rather than corrected when it is zero. It usually
+// arrives from the other end of a connection — SCRAM carries it in the server's
+// first message — and a count of zero there is a peer asking for a password
+// hash that is one HMAC deep. Quietly reading it as one would be doing what it
+// asked.
+func Pbkdf2Sha256(password []u8, salt []u8, rounds u32, mut into []u8) !void {
+    if rounds == 0 {
+        return error.BadRounds
+    }
+
+    mut done u64 = 0
+    mut counter u32 = 1
+    for done < into.len {
+        // U_1 = HMAC(password, salt || counter), the counter big-endian.
+        mut seed := [4]u8{}
+        seed[0] = u8((counter >> 24) & 0xff)
+        seed[1] = u8((counter >> 16) & 0xff)
+        seed[2] = u8((counter >> 8) & 0xff)
+        seed[3] = u8(counter & 0xff)
+
+        mut u := NewHmacSha256(password)
+        u.Write(salt)
+        u.Write(seed[0..4])
+        mut last := u.Sum()
+        // The block is every U xored together, which is what makes the work
+        // impossible to skip to the end of.
+        mut acc := last
+
+        mut r u32 = 1
+        for r < rounds {
+            last = HmacSha256Of(password, last[0..Sha256Size])
+            for i in 0..Sha256Size {
+                acc[i] = acc[i] ^ last[i]
+            }
+            r += 1
+        }
+
+        mut n := into.len - done
+        if n > Sha256Size {
+            n = Sha256Size
+        }
+        for i in 0..n {
+            into[done + i] = acc[i]
+        }
+        done += n
+        counter += 1
+    }
+}

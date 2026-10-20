@@ -40,6 +40,13 @@
           "name": "keyword.declaration.sword",
           "match": "\\b(package|import|func|struct|interface|enum|extern|const)\\b"
         },
+        {
+          "match": "^(type)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.sword" },
+            "2": { "name": "entity.name.type.sword" }
+          }
+        },
         { "name": "storage.modifier.sword", "match": "\\bmut\\b" },
         { "name": "constant.language.sword", "match": "\\b(true|false|nil)\\b" }
       ]

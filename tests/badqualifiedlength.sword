@@ -1,0 +1,9 @@
+// expect-error: package 'crypto' has no exported constant 'sha256Block'
+// A private constant stays private when it is used as a length.
+
+import "std/crypto"
+
+func main() int {
+    mut b := [crypto.sha256Block]u8{}
+    return int(b.len)
+}

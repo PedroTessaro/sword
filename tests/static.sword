@@ -3,6 +3,8 @@
 // Serving a file is streamed against a length the operating system already knows,
 // so a large download costs one buffer. And the part that matters more than
 // speed: a path that tries to climb out of the root is refused, not resolved.
+// A file goes out with its ETag and Last-Modified, and a cache that already has
+// that version is answered 304 without the body.
 
 import "std/fs"
 import "std/http"
@@ -33,10 +35,13 @@ func ask(port i32, request string, mut into []u8) !u64 {
 
 func drive(port i32, mut score *atomic[u64], s *http.Server) !void {
     mut room := [8192]u8{}
+    // Kept apart: the validators in this answer are asked with further down,
+    // after `room` has held several other replies.
+    mut first := [1024]u8{}
 
     n := ask(port, "GET /files/hello.txt HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
-             room[..]) catch 0
-    reply := string(room[0..n])
+             first[..]) catch 0
+    reply := string(first[0..n])
     if strings.Contains(reply, "200 OK") &&
        strings.Contains(reply, "Content-Length: 11") &&
        strings.Contains(reply, "text/plain") &&
@@ -89,6 +94,48 @@ func drive(port i32, mut score *atomic[u64], s *http.Server) !void {
         score.Add(32)
     }
 
+    // The validators the first answer carried, and the ways of asking with them.
+    tagAt := strings.Index(reply, "ETag: ")
+    if tagAt < reply.len && strings.Contains(reply, "Last-Modified: ") {
+        rest := reply[tagAt + 6..reply.len]
+        tag := rest[0..strings.Index(rest, "\r\n")]
+        if strings.HasPrefix(tag, "W/\"") {
+            score.Add(64)
+        }
+        mut backing := [512]u8{}
+        mut arena := mem.NewArena(backing[..])
+        q1 := try strings.Concat(&arena, "GET /files/hello.txt HTTP/1.1\r\nHost: x\r\nIf-None-Match: \"x\", ",
+                                 tag, "\r\nConnection: close\r\n\r\n")
+        k := ask(port, q1, room[..]) catch 0
+        same := string(room[0..k])
+        if strings.Contains(same, "304") && strings.Contains(same, tag) &&
+           !strings.Contains(same, "hello world") {
+            score.Add(128)
+        }
+    }
+    star := ask(port, "GET /files/hello.txt HTTP/1.1\r\nHost: x\r\nIf-None-Match: *\r\nConnection: close\r\n\r\n",
+                room[..]) catch 0
+    if strings.Contains(string(room[0..star]), "304") {
+        score.Add(256)
+    }
+    later := ask(port, "GET /files/hello.txt HTTP/1.1\r\nHost: x\r\nIf-Modified-Since: Fri, 31 Dec 9999 23:59:59 GMT\r\nConnection: close\r\n\r\n",
+                 room[..]) catch 0
+    if strings.Contains(string(room[0..later]), "304") {
+        score.Add(512)
+    }
+    earlier := ask(port, "GET /files/hello.txt HTTP/1.1\r\nHost: x\r\nIf-Modified-Since: Thu, 01 Jan 1970 00:00:00 GMT\r\nConnection: close\r\n\r\n",
+                   room[..]) catch 0
+    if strings.Contains(string(room[0..earlier]), "hello world") {
+        score.Add(1024)
+    }
+    // A tag that does not match decides on its own: the date beside it is not
+    // even read, however far in the future it is.
+    other := ask(port, "GET /files/hello.txt HTTP/1.1\r\nHost: x\r\nIf-None-Match: \"other\"\r\nIf-Modified-Since: Fri, 31 Dec 9999 23:59:59 GMT\r\nConnection: close\r\n\r\n",
+                 room[..]) catch 0
+    if strings.Contains(string(room[0..other]), "hello world") {
+        score.Add(2048)
+    }
+
     s.Close()
 }
 
@@ -133,7 +180,7 @@ func main() !int {
     fs.Remove(blob) catch {}
     fs.RemoveDir(root) catch {}
 
-    if score.Load() != 63 {
+    if score.Load() != 4095 {
         try io.Printf("score {}\n", score.Load())
         return 1
     }

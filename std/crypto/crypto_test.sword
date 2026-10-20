@@ -4,70 +4,234 @@ import "std/testing"
 
 // Inside the package, so a failure names what the package declares.
 
-// The digest compared as text: a mismatch that prints two hex strings says
-// which one, and comparing 32 bytes one by one does not.
-func hex(d [Sha256Size]u8, mut into []u8) string {
+// Digests compared as text: a mismatch that prints two hex strings says which
+// one, and comparing bytes one at a time does not.
+func hex(d []u8, mut into []u8) string {
     digits := "0123456789abcdef"
-    for i in 0..Sha256Size {
+    for i in 0..d.len {
         into[i * 2] = digits[u64(d[i] >> 4)]
         into[i * 2 + 1] = digits[u64(d[i] & 0x0f)]
     }
-    return string(into[0..Sha256Size * 2])
+    return string(into[0..d.len * 2])
 }
 
-// FIPS 180-4 and RFC 6234. The empty message matters more than it looks: it is
-// all padding, and nothing else exercises that path alone.
-func TestSha256Vectors(mut t *testing.T) !void {
-    mut buf := [64]u8{}
+func fill(mut b []u8, value u8) []u8 {
+    for i in 0..b.len {
+        b[i] = value
+    }
+    return b
+}
 
-    try t.Equal(hex(Sha256Of([]u8("")), buf[0..64]),
+// --- SHA-256 ---------------------------------------------------------------
+
+// FIPS 180-4. The empty message matters more than it looks: it is all padding,
+// and nothing else exercises that path alone.
+func TestSha256Vectors(mut t *testing.T) !void {
+    mut buf := [128]u8{}
+
+    empty := Sha256Of([]u8(""))
+    try t.Equal(hex(empty[0..Sha256Size], buf[0..128]),
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
-    try t.Equal(hex(Sha256Of([]u8("abc")), buf[0..64]),
+
+    abc := Sha256Of([]u8("abc"))
+    try t.Equal(hex(abc[0..Sha256Size], buf[0..128]),
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
 
     // 56 bytes: one byte of padding fits, the length does not, so this is the
     // message that needs a second block for nothing but its own size.
-    try t.Equal(hex(Sha256Of([]u8(
-        "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")), buf[0..64]),
+    mid := Sha256Of([]u8("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"))
+    try t.Equal(hex(mid[0..Sha256Size], buf[0..128]),
         "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1")
 
     // 112 bytes: exactly two blocks of message, so the padding opens a third.
     long := "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"
-    try t.Equal(hex(Sha256Of([]u8(long)), buf[0..64]),
+    two := Sha256Of([]u8(long))
+    try t.Equal(hex(two[0..Sha256Size], buf[0..128]),
         "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1")
 }
 
 // The long vector, written a thousand bytes at a time: the answer is only right
 // if the buffering carries state across calls that do not land on a block.
 func TestSha256Streaming(mut t *testing.T) !void {
-    mut buf := [64]u8{}
+    mut buf := [128]u8{}
     mut chunk := [1000]u8{}
-    for i in 0..1000 {
-        chunk[i] = 97
-    }
+    fill(chunk[0..1000], 97)
 
     mut h := NewSha256()
     for i in 0..1000 {
         h.Write(chunk[0..1000])
     }
-    try t.Equal(hex(h.Sum(), buf[0..64]),
+    d := h.Sum()
+    try t.Equal(hex(d[0..Sha256Size], buf[0..128]),
         "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0")
 }
 
 // Every split of the same message has to give the same digest. 64 is the block
 // size and 55, 56, 57 surround the point where the length stops fitting.
 func TestSha256SplitsAgree(mut t *testing.T) !void {
-    mut want := [64]u8{}
-    mut got := [64]u8{}
+    mut want := [128]u8{}
+    mut got := [128]u8{}
     message := []u8("the quick brown fox jumps over the lazy dog, twice over, which is enough bytes to cross a block boundary or three")
 
-    whole := hex(Sha256Of(message), want[0..64])
+    d := Sha256Of(message)
+    whole := hex(d[0..Sha256Size], want[0..128])
+
     cuts := [6]u64{1, 55, 56, 57, 63, 64}
     for i in 0..6 {
         at := cuts[i]
         mut h := NewSha256()
         h.Write(message[0..at])
         h.Write(message[at..message.len])
-        try t.Equal(hex(h.Sum(), got[0..64]), whole)
+        part := h.Sum()
+        try t.Equal(hex(part[0..Sha256Size], got[0..128]), whole)
     }
+}
+
+// --- HMAC ------------------------------------------------------------------
+
+// RFC 4231, cases 1, 2, 3, 6 and 7: keys shorter than the block, data longer
+// than the key, and a key longer than the block with short and long data.
+// Cases 4 and 5 add nothing here (5 is a truncated tag).
+func TestHmacSha256Vectors(mut t *testing.T) !void {
+    mut buf := [128]u8{}
+
+    mut key1 := [20]u8{}
+    one := HmacSha256Of(fill(key1[0..20], 0x0b), []u8("Hi There"))
+    try t.Equal(hex(one[0..Sha256Size], buf[0..128]),
+        "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7")
+
+    two := HmacSha256Of([]u8("Jefe"), []u8("what do ya want for nothing?"))
+    try t.Equal(hex(two[0..Sha256Size], buf[0..128]),
+        "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
+
+    mut key3 := [20]u8{}
+    mut data3 := [50]u8{}
+    fill(key3[0..20], 0xaa)
+    three := HmacSha256Of(key3[0..20], fill(data3[0..50], 0xdd))
+    try t.Equal(hex(three[0..Sha256Size], buf[0..128]),
+        "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe")
+
+    // 131 bytes of key, so the key is hashed before it is padded.
+    mut key6 := [131]u8{}
+    fill(key6[0..131], 0xaa)
+    six := HmacSha256Of(key6[0..131],
+        []u8("Test Using Larger Than Block-Size Key - Hash Key First"))
+    try t.Equal(hex(six[0..Sha256Size], buf[0..128]),
+        "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54")
+
+    seven := HmacSha256Of(key6[0..131],
+        []u8("This is a test using a larger than block-size key and a larger than block-size data. The key needs to be hashed before being used by the HMAC algorithm."))
+    try t.Equal(hex(seven[0..Sha256Size], buf[0..128]),
+        "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2")
+}
+
+// Written in pieces it has to come out the same, which is what makes the
+// streaming form usable for a message nobody wants to hold whole.
+func TestHmacStreamingAgrees(mut t *testing.T) !void {
+    mut want := [128]u8{}
+    mut got := [128]u8{}
+    key := []u8("a key that is comfortably shorter than one block")
+    message := []u8("what do ya want for nothing? and then some more, past a block")
+
+    d := HmacSha256Of(key, message)
+    whole := hex(d[0..Sha256Size], want[0..128])
+
+    mut h := NewHmacSha256(key)
+    h.Write(message[0..7])
+    h.Write(message[7..40])
+    h.Write(message[40..message.len])
+    part := h.Sum()
+    try t.Equal(hex(part[0..Sha256Size], got[0..128]), whole)
+}
+
+// A test cannot time the comparison. What it can check is that a difference
+// counts wherever it is, in the first byte and in the last alike.
+func TestEqual(mut t *testing.T) !void {
+    a := []u8("0123456789abcdef")
+    b := []u8("0123456789abcdef")
+    early := []u8("X123456789abcdef")
+    late := []u8("0123456789abcdeX")
+
+    try t.Equal(Equal(a, b), true)
+    try t.Equal(Equal(a, early), false)
+    try t.Equal(Equal(a, late), false)
+    try t.Equal(Equal(a, []u8("0123456789abcde")), false)
+    try t.Equal(Equal([]u8(""), []u8("")), true)
+}
+
+// --- PBKDF2 ----------------------------------------------------------------
+
+// RFC 6070's inputs, which that RFC answers for SHA-1, here with SHA-256 and
+// checked against an independent implementation. The 4096-round ones
+// are the point: they are what says the iteration actually iterates.
+func TestPbkdf2Sha256Vectors(mut t *testing.T) !void {
+    mut buf := [128]u8{}
+    mut out := [64]u8{}
+
+    try Pbkdf2Sha256([]u8("password"), []u8("salt"), 1, out[0..32])
+    try t.Equal(hex(out[0..32], buf[0..128]),
+        "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b")
+
+    try Pbkdf2Sha256([]u8("password"), []u8("salt"), 2, out[0..32])
+    try t.Equal(hex(out[0..32], buf[0..128]),
+        "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43")
+
+    try Pbkdf2Sha256([]u8("password"), []u8("salt"), 4096, out[0..32])
+    try t.Equal(hex(out[0..32], buf[0..128]),
+        "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a")
+
+    // 40 bytes out of a 32-byte hash, so the answer spans two blocks and the
+    // counter has to advance.
+    try Pbkdf2Sha256([]u8("passwordPASSWORDpassword"),
+        []u8("saltSALTsaltSALTsaltSALTsaltSALTsalt"), 4096, out[0..40])
+    try t.Equal(hex(out[0..40], buf[0..128]),
+        "348c89dbcbd32b2f32d814b8116e84cf2b17347ebc1800181c4e2a1fb8dd53e1c635518c7dac47e9")
+}
+
+// RFC 7914 §11, the two PBKDF2-HMAC-SHA-256 vectors scrypt is built on. Both
+// ask for exactly two blocks.
+func TestPbkdf2Sha256Rfc7914(mut t *testing.T) !void {
+    mut buf := [128]u8{}
+    mut out := [64]u8{}
+
+    try Pbkdf2Sha256([]u8("passwd"), []u8("salt"), 1, out[0..64])
+    try t.Equal(hex(out[0..64], buf[0..128]),
+        "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783")
+
+    try Pbkdf2Sha256([]u8("Password"), []u8("NaCl"), 80000, out[0..64])
+    try t.Equal(hex(out[0..64], buf[0..128]),
+        "4ddcd8f60b98be21830cee5ef22701f9641a4418d04c0414aeff08876b34ab56a1d425a1225833549adb841b51c9b3176a272bdebba1d078478f62b397f33c8d")
+}
+
+func TestPbkdf2RefusesZeroRounds(mut t *testing.T) !void {
+    mut out := [32]u8{}
+    mut refused := false
+    Pbkdf2Sha256([]u8("password"), []u8("salt"), 0, out[0..32]) catch {
+        refused = true
+    }
+    try t.Equal(refused, true)
+}
+
+// --- Random ----------------------------------------------------------------
+
+// Nothing about a single draw can be checked, but two 32-byte draws agreeing
+// would happen once in 2^256 tries; and a request far larger than any key has
+// to come back whole.
+func TestRandom(mut t *testing.T) !void {
+    mut a := [32]u8{}
+    mut b := [32]u8{}
+    try Random(a[0..32])
+    try Random(b[0..32])
+    try t.Equal(Equal(a[0..32], b[0..32]), false)
+
+    mut big := [100000]u8{}
+    try Random(big[0..100000])
+    // The last 4096 bytes all zero would mean the fill stopped short.
+    mut seen u8 = 0
+    for i in 100000 - 4096..100000 {
+        seen = seen | big[i]
+    }
+    try t.Equal(seen != 0, true)
+
+    try Random(a[0..0])
 }

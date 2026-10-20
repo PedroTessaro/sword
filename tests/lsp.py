@@ -79,10 +79,15 @@ def main():
     good_dir = os.path.join(tmp, "good")
     bad_dir = os.path.join(tmp, "bad")
     pkg_dir = os.path.join(tmp, "pkg")
-    for d in (good_dir, bad_dir, pkg_dir):
+    alias_dir = os.path.join(tmp, "alias")
+    for d in (good_dir, bad_dir, pkg_dir, alias_dir):
         os.mkdir(d)
     good = write(good_dir, "good.sword", "func main() int {\n    x := 21\n    return x * 2\n}\n")
     bad = write(bad_dir, "bad.sword", "func main() int {\n    return nope\n}\n")
+    # `type` is an identifier to the lexer and a keyword only here.
+    alias = write(alias_dir, "alias.sword",
+                  "type Bytes = []u8\n\nfunc main() int {\n    b := Bytes(\"hi\")\n"
+                  "    return int(b.len)\n}\n")
 
     # Two files, one package: the name comes from the other file, and used to be
     # reported as undefined because only the open file was ever loaded.
@@ -184,6 +189,21 @@ def main():
         kinds = [types[data[i]] for i in range(3, len(data), 5)]
         check("an immutable binding shows up as a variable", "variable" in kinds)
         check("the builtin type is classified", "type" in kinds, str(kinds))
+
+    client.send("textDocument/semanticTokens/full",
+                {"textDocument": {"uri": "file://" + alias}})
+    reply = client.until(lambda m: "result" in m and "data" in m.get("result", {}))
+    data = reply["result"]["data"] if reply else []
+    if len(data) >= 10:
+        types = legend["tokenTypes"]
+        mods = legend["tokenModifiers"]
+        check("'type' opening an alias is a keyword", types[data[3]] == "keyword",
+              types[data[3]])
+        check("an alias's name is a type", types[data[8]] == "type", types[data[8]])
+        check("an alias's name is a declaration",
+              data[9] & (1 << mods.index("declaration")) != 0)
+    else:
+        check("semantic tokens come back for an alias", False, "len=%d" % len(data))
 
     client.close()
 

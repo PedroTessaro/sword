@@ -4,6 +4,58 @@ Releases are numbered by [semantic versioning](https://semver.org): until 1.0,
 a minor version may change the language, and each one says how. Each release is
 also named for a step in making a blade, in the order they happen.
 
+## 0.2.2 — Fold
+
+*2026-10-20.* A patch to Fold: what a server needs to authenticate, sign, stamp
+and cache, a second name for a type, the grammar written down, and three bugs
+in the runtime and its tests that had been showing up as flakes.
+
+### What changes for existing programs
+
+Nothing that compiled before stops compiling. `type` is not a keyword: it is
+special only at the start of a top-level declaration followed by a name, so a
+field or a variable called `type` is still a name.
+
+### The language
+
+- **`type Name = T`** gives a type a second name. A `Name` is a `T` — values
+  pass between them without a conversion — and an alias of a struct can write
+  a literal or declare a method. It takes no type parameters, though it may
+  name an instance: `type Set = collections.Map[string, bool]`. The language
+  server and the editors' own colouring know it.
+- **An array's length may be another package's constant**:
+  `[crypto.Sha256Size]u8`.
+- **[The grammar](docs/grammar.md)**, in EBNF: the lexical rules, including when
+  a newline ends a statement, and every production of the syntax.
+
+### Standard library
+
+- **`std/crypto`**: HMAC-SHA-256, `crypto.Equal` (a comparison that takes the
+  same time wherever the bytes differ), PBKDF2-HMAC-SHA-256, and
+  `crypto.Random`, bytes from the kernel's random source. Under
+  `SWORD_SIM_SEED` the random bytes come from the seed, so a simulated run that
+  makes a token makes the same one again.
+- **`std/encoding`**: hex, base64 and base64url into the caller's buffer.
+  Decoding is strict, so each byte string has one spelling.
+- **`std/time`**: `Rfc3339`, `HttpDate`, `ParseRfc3339` and `ParseHttpDate`,
+  which reads all three forms RFC 9110 requires a recipient to accept.
+- **`std/http`**: static files carry `Last-Modified` and a weak `ETag`, and
+  `Files` answers `If-None-Match` and `If-Modified-Since` with 304.
+
+Nothing in any of them allocates.
+
+### Fixes
+
+- A dial whose connect failed closed its socket outside the poller; on macOS
+  that is the close beside kqueue that can hang in the kernel until reboot
+  (#41).
+- `tests/dialreuse.sword` lost dials on macOS because it could fill the listen
+  queue, which there answers with a reset (#53).
+- Under ThreadSanitizer, a signal could be held in a task that parked and never
+  came back; `graceful` hung about once in three hundred runs (#48).
+- `shield test -sim` on a standard library package warned about the runtime's
+  own calls.
+
 ## 0.2.1 — Fold
 
 *2026-10-20.* A patch to Fold that finishes the way out to C: a library named in the

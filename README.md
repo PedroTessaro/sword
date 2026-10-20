@@ -53,7 +53,7 @@ make
 make install
 ```
 
-That builds the latest release, 0.2.1 "Fold", from `main`; `develop` has
+That builds the latest release, 0.2.2 "Fold", from `main`; `develop` has
 what is coming next. What each release changed is in
 [CHANGELOG.md](CHANGELOG.md).
 
@@ -83,6 +83,8 @@ setup and what the build needs.
   beside the code.
 - **[Reference](docs/reference.md)** — types, operators, keywords, standard
   library. For looking things up once you know the language.
+- **[Grammar](docs/grammar.md)** — the syntax in EBNF, token by token, for
+  writing a tool that reads Sword or settling what parses.
 
 ## What it looks like
 
@@ -118,8 +120,9 @@ exact and compensated sums and elementary functions with the same bits on
 every machine (`std/num`), random numbers that do not depend on the
 number of threads (`std/rand`), parallel scan, filter, sort and minimum with
 the same property (`std/par`), printing
-and formatting (`std/io`, `std/fmt`), JSON (`std/json`), hashing
-(`std/crypto`), arguments and environment (`std/os`), files, directories and
+and formatting (`std/io`, `std/fmt`), JSON (`std/json`), hashing, HMAC and
+keys derived from passwords (`std/crypto`), hex and base64 (`std/encoding`),
+arguments and environment (`std/os`), files, directories and
 standard input (`std/fs`), running another program (`std/process`), loading a
 library while the program runs (`std/dl`), clocks and
 durations (`std/time`), scheduler counters (`std/runtime`), TCP and UDP over IPv4 and IPv6 (`std/net`),
