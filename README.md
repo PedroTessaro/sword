@@ -53,7 +53,7 @@ make
 make install
 ```
 
-That builds the latest release, 0.2.2 "Fold", from `main`; `develop` has
+That builds the latest release, 0.2.3 "Fold", from `main`; `develop` has
 what is coming next. What each release changed is in
 [CHANGELOG.md](CHANGELOG.md).
 
