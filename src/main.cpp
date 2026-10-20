@@ -14,6 +14,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <climits>
 #include <cstring>
 #include <poll.h>
 #include <signal.h>
@@ -273,9 +274,25 @@ void warn_calls_out(Node *n) {
   warn_calls_out(n->els);
 }
 
+// The package under test arrives with no import path, so `shield test -sim
+// std/fs` would warn about the runtime calls the simulator knows best. That
+// one is recognised by where it lives instead.
+bool from_std(const Package *pkg) {
+  if (pkg->import_path.compare(0, 4, "std/") == 0) return true;
+  char here[PATH_MAX];
+  if (!realpath(pkg->dir.c_str(), here)) return false;
+  for (const std::string &root : package_roots()) {
+    char std_dir[PATH_MAX];
+    if (!realpath((root + "/std").c_str(), std_dir)) continue;
+    size_t n = strlen(std_dir);
+    if (strncmp(here, std_dir, n) == 0 && here[n] == '/') return true;
+  }
+  return false;
+}
+
 void warn_unsimulated(Program &prog) {
   for (Package *pkg : prog.order) {
-    if (pkg->import_path.compare(0, 4, "std/") == 0) continue;
+    if (from_std(pkg)) continue;
     for (Node *decl : pkg->unit->kids)
       if (decl->kind == ND_FUNC) warn_calls_out(decl->body);
   }
