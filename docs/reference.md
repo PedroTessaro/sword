@@ -947,6 +947,60 @@ digest := h.Sum()
 so there is nothing sensible to append afterwards: a hasher is spent once its
 digest has been taken, and another message needs another hasher.
 
+HMAC-SHA-256 has the same shape, with the key given when the value is built:
+
+```sword
+func HmacSha256Of(key []u8, message []u8) [Sha256Size]u8
+
+func NewHmacSha256(key []u8) HmacSha256
+func (mut h *HmacSha256) Write(p []u8)
+func (mut h *HmacSha256) Sum() [Sha256Size]u8
+
+func Equal(a []u8, b []u8) bool            // in time that does not depend on the bytes
+```
+
+A tag that arrived from outside is checked with `crypto.Equal`, never with a
+loop that stops at the first difference: how long that loop takes tells the
+sender how much of a guess was right, and a tag can then be guessed a byte at a
+time.
+
+```sword
+want := crypto.HmacSha256Of(secret, payload)
+if !crypto.Equal(want[0..crypto.Sha256Size], tag) {
+    return error.BadSignature
+}
+```
+
+PBKDF2-HMAC-SHA-256 derives a key from a password, filling the slice it is
+given whatever its length:
+
+```sword
+error BadRounds = "a derived key needs at least one round"
+
+func Pbkdf2Sha256(password []u8, salt []u8, rounds u32, mut into []u8) !void
+```
+
+A round count of zero is refused rather than read as one. It often comes from
+the other end of a connection, and a peer asking for a password hash one HMAC
+deep is not asking for something to be quietly granted.
+
+Keys, salts and tokens are made from the system's random source:
+
+```sword
+error NoEntropy = "the system would not give random bytes"
+
+func Random(mut into []u8) !void
+```
+
+```sword
+mut token := [32]u8{}
+try crypto.Random(token[0..32])
+```
+
+`std/rand` is the wrong package for this. Its numbers are a pure function of
+the seed, which is what a simulation wants and exactly what a secret must not
+be.
+
 ### `std/num`
 
 Adding floating point loses the small terms: once the running total is large

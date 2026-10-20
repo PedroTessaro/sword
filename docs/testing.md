@@ -269,6 +269,9 @@ What happens under `-sim`:
   then straight to the next deadline: a test with a thirty-second timeout, or an
   hour-long sleep, finishes at once. The wall clock reads 2000-01-01 00:00:00 UTC
   when the run starts and moves with it.
+- **Random bytes come from the seed.** `crypto.Random` gives the same bytes
+  under the same seed, so a run that makes a token makes the same token again.
+  A program run for real must never have `SWORD_SIM_SEED` set.
 - **A deadlock is an answer.** When every task waits for something only another
   task could give it and no clock will change that, the run stops and says so,
   where a real program would simply hang.

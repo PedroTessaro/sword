@@ -1,0 +1,21 @@
+package crypto
+
+extern func sword_os_random(into [*]u8, len i64) i32
+
+error NoEntropy = "the system would not give random bytes"
+
+// Fills `into` with bytes from the kernel's random source, which is what a key,
+// a salt or a session token is made of. std/rand is for simulations: a Philox
+// stream is reproducible on purpose, and a token anyone can reproduce is no
+// token at all.
+//
+// Under SWORD_SIM_SEED the bytes come from the seed instead, so a simulated run
+// that makes a token makes the same one again.
+func Random(mut into []u8) !void {
+    if into.len == 0 {
+        return
+    }
+    if sword_os_random(into.ptr, i64(into.len)) != 0 {
+        return error.NoEntropy
+    }
+}

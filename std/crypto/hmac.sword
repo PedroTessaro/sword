@@ -1,0 +1,67 @@
+package crypto
+
+// HMAC-SHA-256, RFC 2104. The key is folded into two hashers when the value is
+// built: everything written afterwards goes to the inner one, and Sum closes
+// the outer one over the inner digest. Nothing here allocates either.
+struct HmacSha256 {
+    inner Sha256
+    outer Sha256
+}
+
+func NewHmacSha256(key []u8) HmacSha256 {
+    // A key longer than a block is replaced by its own digest, a shorter one is
+    // padded with zeros. Either way what the pads are built from is one block.
+    mut block := [sha256Block]u8{}
+    if key.len > sha256Block {
+        digest := Sha256Of(key)
+        for i in 0..Sha256Size {
+            block[i] = digest[i]
+        }
+    } else {
+        for i in 0..key.len {
+            block[i] = key[i]
+        }
+    }
+
+    mut h := HmacSha256{inner: NewSha256(), outer: NewSha256()}
+    mut pad := [sha256Block]u8{}
+    for i in 0..sha256Block {
+        pad[i] = block[i] ^ 0x36
+    }
+    h.inner.Write(pad[0..sha256Block])
+    for i in 0..sha256Block {
+        pad[i] = block[i] ^ 0x5c
+    }
+    h.outer.Write(pad[0..sha256Block])
+    return h
+}
+
+func (mut h *HmacSha256) Write(p []u8) {
+    h.inner.Write(p)
+}
+
+func (mut h *HmacSha256) Sum() [Sha256Size]u8 {
+    digest := h.inner.Sum()
+    h.outer.Write(digest[0..Sha256Size])
+    return h.outer.Sum()
+}
+
+func HmacSha256Of(key []u8, message []u8) [Sha256Size]u8 {
+    mut h := NewHmacSha256(key)
+    h.Write(message)
+    return h.Sum()
+}
+
+// Compares two digests in time that does not depend on where they first differ.
+// Comparing a tag with `==` tells whoever is guessing it how much of the guess
+// was right, one byte at a time, which is how a tag gets guessed.
+func Equal(a []u8, b []u8) bool {
+    if a.len != b.len {
+        return false
+    }
+    mut diff u8 = 0
+    for i in 0..a.len {
+        diff = diff | (a[i] ^ b[i])
+    }
+    return diff == 0
+}
