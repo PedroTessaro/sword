@@ -72,10 +72,11 @@ nil       orelse    package   parallel  reduce    return    scope
 select    spawn     struct    switch    true      try
 ```
 
-`error` and `weak` are not keywords. Each is special in one position only —
-`error` at the start of a top-level declaration followed by a name, `weak`
-between `extern` and what it declares — and is an ordinary identifier
-everywhere else. That is what keeps `error.Timeout` an expression.
+`error`, `type` and `weak` are not keywords. Each is special in one position
+only — `error` and `type` at the start of a top-level declaration followed by a
+name, `weak` between `extern` and what it declares — and is an ordinary
+identifier everywhere else. That is what keeps `error.Timeout` an expression,
+and a field or a variable called `type` a name like any other.
 
 An identifier that begins with an upper-case letter is exported from its
 package; that is a rule of the checker, not of the grammar.
@@ -132,7 +133,7 @@ forms of `+`, `-` and `*`.
 ```ebnf
 SourceFile  = { ";" } { TopLevel { ";" } } .
 TopLevel    = PackageDecl | ImportDecl | ConstDecl | ErrorDecl
-            | FuncDecl | StructDecl | InterfaceDecl | EnumDecl .
+            | FuncDecl | StructDecl | InterfaceDecl | EnumDecl | AliasDecl .
 
 PackageDecl = "package" identifier .
 ImportDecl  = "import" string_lit .
@@ -168,6 +169,8 @@ MethodSpec  = identifier Params [ Type ] .
 
 EnumDecl    = "enum" identifier [ Type ] "{" { ";" } { EnumMember [ "," ] { ";" } } "}" .
 EnumMember  = identifier [ "=" Expr ] .
+
+AliasDecl   = "type" identifier "=" Type .
 ```
 
 `a, b u64` gives both names the type written after the last, as in Go, and
@@ -176,6 +179,10 @@ function is one written in C: it has no body, cannot be generic, may end its
 parameters in C's own bare `...`, and may name the library it comes from in
 quotes. `weak` makes it a value that may be missing at run time. `det` is a
 claim the checker verifies, not a hint.
+
+`type Name = T` is another name for `T`, the same type in every respect: values
+pass between the two without a conversion. An alias takes no type parameters,
+though it may name an instance (`type Set = collections.Map[string, bool]`).
 
 ## Types
 

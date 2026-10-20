@@ -87,6 +87,7 @@ enum Name T { A; B = 3; C }        // T is the width, default int
 error Name = "what went wrong"     // declared, with the sentence it says
 error Name                         // declared, saying nothing
 error A, B, C
+type Name = T                      // another name for T, the same type
 
 package name                       // documentation; the directory decides
 import "path/to/package"
@@ -94,6 +95,15 @@ import "path/to/package"
 
 `mut` on a parameter or receiver means the callee may write through it. Only a
 mutable binding can be passed to one.
+
+`type Name = T` gives a type a second name, nothing more: a `Name` is a `T`, and
+values pass between the two without a conversion. It is for a name that says
+what a type is for (`type Bytes = []u8`) or one that saves repeating a long one
+(`type Set = collections.Map[string, bool]`), and an alias of a struct can be
+used to write a literal or declare a method of it. An alias takes no type
+parameters of its own, and is declared at the top of a file. `type` is a word
+only there; a variable or field called `type` is a name like any other. A type
+that is new rather than renamed is a struct or an enum.
 
 A name is exported from its package when it starts with a capital letter. That
 covers a struct's fields as well: a type can be public and its insides private,

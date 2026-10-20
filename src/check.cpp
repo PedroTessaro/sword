@@ -23,6 +23,12 @@ struct Checker {
   std::vector<std::unordered_map<std::string, Symbol *>> scopes;
   // Type parameters in scope while an instantiation is being checked.
   std::vector<std::pair<std::string, Type *>> bindings;
+  // `type Name = T` declarations of this package, by name. Each is resolved the
+  // first time it is named — a struct field may use one declared further down,
+  // and one may name a struct that is — and a name met again while its own type
+  // is being resolved is a cycle.
+  std::unordered_map<std::string, Node *> aliases;
+  std::unordered_set<std::string> resolving_aliases;
   Type *ret_type = nullptr;
   int loop_depth = 0;
   std::vector<Node *> open_scopes;
@@ -119,7 +125,53 @@ struct Checker {
       if (it->first == name) return it->second;
     auto found = pkg.type_names.find(name);
     if (found != pkg.type_names.end()) return found->second;
+    if (Type *aliased = alias_type(name)) return aliased;
     return types.named(name);
+  }
+
+  // What an alias stands for, resolved on first use. It is resolved where it
+  // was declared, at the top of the file: the type parameters of whatever
+  // generic function happened to name it first are no business of its own.
+  Type *alias_type(const std::string &name) {
+    auto it = aliases.find(name);
+    if (it == aliases.end()) return nullptr;
+    Node *decl = it->second;
+    if (decl->type) return decl->type;
+    if (resolving_aliases.count(name)) {
+      error(decl->pos, "type alias '%s' stands for itself", name.c_str());
+      decl->type = types.void_ty;
+      return decl->type;
+    }
+    resolving_aliases.insert(name);
+    std::vector<std::pair<std::string, Type *>> outer;
+    outer.swap(bindings);
+    Type *t = resolve(decl->type_expr);
+    bindings.swap(outer);
+    resolving_aliases.erase(name);
+    if (!decl->type) decl->type = t;
+    pkg.type_names[name] = decl->type;
+    return decl->type;
+  }
+
+  // Names first, so that an alias and a struct can refer to each other in any
+  // order; what each stands for is settled once the structs exist.
+  bool declare_aliases() {
+    for (Node *decl : pkg.unit->kids) {
+      if (decl->kind != ND_TYPE_ALIAS) continue;
+      if (aliases.count(decl->name) || types.named(decl->name)) {
+        error(decl->pos, "'%s' is already a type", decl->name.c_str());
+        return false;
+      }
+      aliases[decl->name] = decl;
+    }
+    return true;
+  }
+
+  bool settle_aliases() {
+    int before = error_count();
+    for (Node *decl : pkg.unit->kids)
+      if (decl->kind == ND_TYPE_ALIAS) alias_type(decl->name);
+    return error_count() == before;
   }
 
   Type *lookup_type(Node *n) {
@@ -3516,7 +3568,8 @@ struct Checker {
     std::vector<Node *> made;
     for (Node *decl : pkg.unit->kids) {
       if (decl->kind != ND_ENUM_DECL) continue;
-      if (pkg.type_names.count(decl->name) || types.named(decl->name)) {
+      if (pkg.type_names.count(decl->name) || types.named(decl->name) ||
+          aliases.count(decl->name)) {
         error(decl->pos, "'%s' is already a type", decl->name.c_str());
         return false;
       }
@@ -3644,7 +3697,8 @@ struct Checker {
     for (Node *decl : pkg.unit->kids) {
       bool is_struct = decl->kind == ND_STRUCT_DECL;
       if (!is_struct && decl->kind != ND_INTERFACE_DECL) continue;
-      if (pkg.type_names.count(decl->name) || types.named(decl->name)) {
+      if (pkg.type_names.count(decl->name) || types.named(decl->name) ||
+          aliases.count(decl->name)) {
         error(decl->pos, "'%s' is already a type", decl->name.c_str());
         return false;
       }
@@ -3759,9 +3813,11 @@ struct Checker {
     // Constants come first: a struct field may be an array whose length is
     // one of them.
     declare_constants();
+    if (!declare_aliases()) return false;
     // Enums before structs: a field may be one.
     if (!declare_enums()) return false;
     if (!declare_structs()) return false;
+    if (!settle_aliases()) return false;
 
     // Signatures first: within a package, declaration order does not matter.
     for (Node *fn : pkg.unit->kids) {

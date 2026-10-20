@@ -20,3 +20,8 @@ enum Corner u8 {
     Round
     Bevelled
 }
+
+// Another name for what a side is measured in, exported like any type; the
+// lowercase one stays inside the package.
+type Length = i64
+type tally = u8

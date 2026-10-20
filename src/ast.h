@@ -25,6 +25,7 @@ enum NodeKind {
   ND_INTERFACE_DECL,
   ND_ENUM_DECL,  // kids are the members, type_expr the width
   ND_ENUM_MEMBER,
+  ND_TYPE_ALIAS, // `type Name = T`: name, and the type it stands for in type_expr
   ND_CONST_DECL,
   ND_ERROR_DECL, // kids name the errors; each kid's text is its message
   ND_RECV,       // `<-ch`, an expression: the next value, or nothing

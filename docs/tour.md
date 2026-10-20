@@ -430,6 +430,33 @@ Written in that order in C this is 24 bytes. Sword lays it out as `id`, `done`,
 `prio` and it comes to 16. If you need the declared order — because you are
 handing the struct to C — write `extern struct`.
 
+A type can also be given a second name:
+
+```sword
+type Celsius = f64
+type Point2 = Point
+
+struct Point {
+    x i32
+    y i32
+}
+
+func warmer(t Celsius) Celsius {
+    return t + 1.5
+}
+
+func main() int {
+    p := Point2{x: 1, y: 2}
+    reading f64 = 20.0
+    return int(warmer(reading)) + int(p.x + p.y)
+}
+```
+
+An alias is the type it names, not a new one: a plain `f64` goes into `warmer`
+without a conversion, and `Point2{...}` is a `Point`. It is there to say what a
+type is for, or to avoid spelling out a long one. A type that is really new —
+one the compiler keeps apart from everything else — is a struct or an enum.
+
 ## Pointers and optionals
 
 `*T` is a pointer, and it is never null. Absence lives in `?T`:

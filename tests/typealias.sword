@@ -1,0 +1,78 @@
+// expect: 42
+// expect-output: aliases are the types they name
+// `type Name = T` is another name for T, the same type in every respect: values
+// pass between the two without a conversion, a struct literal and a method can
+// be written through the alias, and an alias may name a struct declared further
+// down or be used by one declared above it. Exported aliases are named from
+// other packages like any type.
+
+import "shapes"
+import "std/collections"
+import "std/io"
+import "std/mem"
+import "std/time"
+
+type Bytes = []u8
+type Celsius = f64
+type Point = Pt
+type Wait = time.Duration
+type Set = collections.Map[string, bool]
+type Op = func(i64) i64
+
+struct Holder {
+    at  Point
+    raw Bytes
+}
+
+struct Pt {
+    x i64
+    y i64
+}
+
+func (p *Point) Sum() i64 {
+    return p.x + p.y
+}
+
+func length(b []u8) u64 {
+    return b.len
+}
+
+func twice(x shapes.Length) shapes.Length {
+    return x * 2
+}
+
+func main() !int {
+    b := Bytes("hello")
+    if length(b) != 5 {
+        return 1
+    }
+    c Celsius = 21.5
+    f f64 = c
+    if f != 21.5 {
+        return 2
+    }
+    h := Holder{at: Point{x: 2, y: 3}, raw: b}
+    if h.at.Sum() != 5 {
+        return 3
+    }
+    w Wait = time.Millis(5)
+    if w.AsMillis() != 5 {
+        return 4
+    }
+    mut backing := [4096]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut s Set = try collections.NewMap[bool](&arena, 8)
+    try s.Set("a", true)
+    if s.Len() != 1 {
+        return 5
+    }
+    op Op = twice
+    side i64 = 16
+    if op(side) != 32 {
+        return 6
+    }
+    // `type` is a word only at the top of a file.
+    type := 10
+    try io.Println("aliases are the types they name")
+    return int(op(side)) + type
+}

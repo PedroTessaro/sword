@@ -83,6 +83,10 @@ struct Classifier {
     case ND_ENUM_DECL:
       mark(n->name_pos, T_ENUM, M_DECLARATION);
       break;
+    case ND_TYPE_ALIAS:
+      mark(n->pos, T_KEYWORD);
+      mark(n->name_pos, T_TYPE, M_DECLARATION);
+      break;
     case ND_ENUM_MEMBER:
       mark(n->name_pos, T_ENUM_MEMBER, M_DECLARATION | M_READONLY);
       break;
