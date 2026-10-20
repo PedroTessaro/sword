@@ -57,11 +57,13 @@ std::vector<std::string> package_roots() {
   return roots;
 }
 
-std::string runtime_archive() {
+std::string runtime_archive(const std::string &target) {
   std::string bin = directory_of(executable_path());
+  std::string name =
+      target.empty() ? "libsword_rt.a" : "libsword_rt-" + target + ".a";
   const std::string candidates[] = {
-      bin + "/libsword_rt.a",
-      bin + "/../lib/sword/libsword_rt.a",
+      bin + "/" + name,
+      bin + "/../lib/sword/" + name,
   };
   for (const std::string &path : candidates)
     if (exists(path)) return path;
@@ -73,8 +75,8 @@ std::string runtime_archive() {
 // The runtime may have been built against a library only the build knew how to
 // find — OpenSSL, for TLS. The archive carries its own link line in a file
 // beside it rather than having the compiler guess at prefixes.
-std::string runtime_link_flags() {
-  std::string archive = runtime_archive();
+std::string runtime_link_flags(const std::string &target) {
+  std::string archive = runtime_archive(target);
   if (archive.empty()) return "";
   std::string path = archive.substr(0, archive.size() - 2) + ".flags";
   FILE *file = fopen(path.c_str(), "r");

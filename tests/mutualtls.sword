@@ -17,13 +17,6 @@ import "std/net"
 import "std/strings"
 import "std/tls"
 
-const ca = "/tmp/sword_mtls_ca_cert.pem"
-const caKey = "/tmp/sword_mtls_ca_key.pem"
-const serverCert = "/tmp/sword_mtls_server_cert.pem"
-const serverKey = "/tmp/sword_mtls_server_key.pem"
-const clientCert = "/tmp/sword_mtls_client_cert.pem"
-const clientKey = "/tmp/sword_mtls_client_key.pem"
-
 // Answers one connection, reporting who turned up.
 func serve(l *net.Listener, ctx *tls.Context, mut named *atomic[u64],
            mut anonymous *atomic[u64], mut refused *atomic[u64]) !void {
@@ -48,7 +41,8 @@ func serve(l *net.Listener, ctx *tls.Context, mut named *atomic[u64],
 
 // Calls once, presenting the certificate it was given — or none, when both are
 // empty.
-func call(port i32, cert string, key string, mut ok *atomic[u64]) !void {
+func call(port i32, ca string, cert string, key string,
+        mut ok *atomic[u64]) !void {
     mut conf := tls.NewConfig()
     conf.CAFile = ca
     conf.CertFile = cert
@@ -84,13 +78,14 @@ func serveHTTP(s *http.Server, h *Site) !void {
     try s.ServeWith(h, 8)
 }
 
-func fetch(port i32, mut ok *atomic[u64], s *http.Server) !void {
+func fetch(port i32, ca string, cert string, key string, mut ok *atomic[u64],
+         s *http.Server) !void {
     mut backing := [262144]u8{}
     mut arena := mem.NewArena(backing[..])
     mut client := http.NewClient()
     client.TLS.CAFile = ca
-    client.TLS.CertFile = clientCert
-    client.TLS.KeyFile = clientKey
+    client.TLS.CertFile = cert
+    client.TLS.KeyFile = key
 
     res := client.GetTLS("127.0.0.1", port, "/", &arena) catch {
         client.Close()
@@ -105,6 +100,22 @@ func fetch(port i32, mut ok *atomic[u64], s *http.Server) !void {
 }
 
 func main() !int {
+    // Named afresh on every run, so two suites side by side cannot hand each
+    // other a certificate in the middle of a handshake.
+    mut room := [1536]u8{}
+    ca := try fs.TempPath("/tmp/sword_mtls_ca_cert.", room[0..256])
+    defer fs.Remove(ca) catch {}
+    caKey := try fs.TempPath("/tmp/sword_mtls_ca_key.", room[256..512])
+    defer fs.Remove(caKey) catch {}
+    serverCert := try fs.TempPath("/tmp/sword_mtls_server_cert.", room[512..768])
+    defer fs.Remove(serverCert) catch {}
+    serverKey := try fs.TempPath("/tmp/sword_mtls_server_key.", room[768..1024])
+    defer fs.Remove(serverKey) catch {}
+    clientCert := try fs.TempPath("/tmp/sword_mtls_client_cert.", room[1024..1280])
+    defer fs.Remove(clientCert) catch {}
+    clientKey := try fs.TempPath("/tmp/sword_mtls_client_key.", room[1280..1536])
+    defer fs.Remove(clientKey) catch {}
+
     if !tls.Available() {
         // Without OpenSSL there is nothing to authenticate with, and every entry
         // point has to say so rather than half-work.
@@ -158,7 +169,7 @@ func main() !int {
     mut l := try net.Listen(0)
     scope {
         spawn serve(&l, &ctx, &named, &anonymous, &refused)
-        spawn call(l.Port(), clientCert, clientKey, &welcomed)
+        spawn call(l.Port(), ca, clientCert, clientKey, &welcomed)
     }
     l.Close()
     if welcomed.Load() != 1 || named.Load() != 1 {
@@ -172,7 +183,7 @@ func main() !int {
     mut closed := try net.Listen(0)
     scope {
         spawn serve(&closed, &ctx, &named, &anonymous, &refused)
-        spawn call(closed.Port(), "", "", &turned_away)
+        spawn call(closed.Port(), ca, "", "", &turned_away)
     }
     closed.Close()
     if turned_away.Load() != 0 || refused.Load() != 1 {
@@ -192,7 +203,7 @@ func main() !int {
     mut casual := try net.Listen(0)
     scope {
         spawn serve(&casual, &open, &named, &anonymous, &refused)
-        spawn call(casual.Port(), "", "", &got_in)
+        spawn call(casual.Port(), ca, "", "", &got_in)
     }
     casual.Close()
     open.Free()
@@ -214,19 +225,12 @@ func main() !int {
     mut answered := atomic[u64](0)
     scope {
         spawn serveHTTP(&srv, &site)
-        spawn fetch(srv.Port(), &answered, &srv)
+        spawn fetch(srv.Port(), ca, clientCert, clientKey, &answered, &srv)
     }
     srv.Free()
     if answered.Load() != 1 {
         return 6
     }
-
-    fs.Remove(ca) catch {}
-    fs.Remove(caKey) catch {}
-    fs.Remove(serverCert) catch {}
-    fs.Remove(serverKey) catch {}
-    fs.Remove(clientCert) catch {}
-    fs.Remove(clientKey) catch {}
 
     try io.Print("mutual tls checked: named, refused, anonymous and over http\n")
     return 42

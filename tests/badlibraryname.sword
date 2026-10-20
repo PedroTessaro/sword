@@ -1,0 +1,9 @@
+// expect-error: "-lz" is not a library name
+// What follows -l and nothing else: a path or an option written here would
+// reach the linker unseen by whoever builds the program. Those go to --link.
+
+extern "-lz" func zlibVersion() [*]u8
+
+func main() int {
+    return 0
+}

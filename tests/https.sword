@@ -13,9 +13,6 @@ import "std/net"
 import "std/strings"
 import "std/tls"
 
-const certPath = "/tmp/sword_https_cert.pem"
-const keyPath = "/tmp/sword_https_key.pem"
-
 struct Site {
     n u64
 }
@@ -68,12 +65,12 @@ func ask(ctx *tls.Context, port i32, request string, mut into []u8) !u64 {
 
 // Follows a redirect from plain HTTP to HTTPS, which needs the hop to carry the
 // scheme with it.
-func crossScheme(url string, mut score *atomic[u64], plain *http.Server,
-                 secure *http.Server) !void {
+func crossScheme(url string, ca string, mut score *atomic[u64],
+                 plain *http.Server, secure *http.Server) !void {
     mut backing := [131072]u8{}
     mut arena := mem.NewArena(backing[..])
     mut client := http.NewClient()
-    client.TLS.CAFile = certPath
+    client.TLS.CAFile = ca
 
     res := client.Fetch(url, &arena) catch {
         client.Close()
@@ -90,9 +87,9 @@ func crossScheme(url string, mut score *atomic[u64], plain *http.Server,
     secure.Close()
 }
 
-func drive(port i32, mut score *atomic[u64], s *http.Server) !void {
+func drive(port i32, ca string, mut score *atomic[u64], s *http.Server) !void {
     mut conf := tls.NewConfig()
-    conf.CAFile = certPath // the certificate is its own authority here
+    conf.CAFile = ca // the certificate is its own authority here
     mut ctx := tls.ClientContext(conf) catch {
         s.Close()
         return
@@ -144,7 +141,7 @@ func drive(port i32, mut score *atomic[u64], s *http.Server) !void {
     mut backing := [131072]u8{}
     mut arena := mem.NewArena(backing[..])
     mut client := http.NewClient()
-    client.TLS.CAFile = certPath
+    client.TLS.CAFile = ca
     fetched := client.GetTLS("127.0.0.1", port, "/hello/client", &arena) catch {
         client.Close()
         ctx.Free()
@@ -182,6 +179,15 @@ func drive(port i32, mut score *atomic[u64], s *http.Server) !void {
 }
 
 func main() !int {
+    // Named afresh on every run, so two suites side by side cannot hand each
+    // other a certificate in the middle of a handshake.
+    mut certRoom := [256]u8{}
+    mut keyRoom := [256]u8{}
+    certPath := try fs.TempPath("/tmp/sword_https_cert.", certRoom[..])
+    defer fs.Remove(certPath) catch {}
+    keyPath := try fs.TempPath("/tmp/sword_https_key.", keyRoom[..])
+    defer fs.Remove(keyPath) catch {}
+
     if !tls.Available() {
         // Without OpenSSL there is nothing to serve over, and the answer has to
         // be an error rather than a plain-text server on a port nobody expects.
@@ -214,7 +220,7 @@ func main() !int {
     mut score := atomic[u64](0)
     scope {
         spawn serve(&srv, &mux)
-        spawn drive(port, &score, &srv)
+        spawn drive(port, certPath, &score, &srv)
     }
     srv.Free()
 
@@ -248,15 +254,13 @@ func main() !int {
     scope {
         spawn serve(&secure, &mux)
         spawn servePlain(&plain, &moved)
-        spawn crossScheme(string(target.Bytes()), &hopped, &plain, &secure)
+        spawn crossScheme(string(target.Bytes()), certPath, &hopped, &plain,
+                          &secure)
     }
     secure.Free()
     if hopped.Load() != 1 {
         return 5
     }
-
-    fs.Remove(certPath) catch {}
-    fs.Remove(keyPath) catch {}
 
     try io.Print("https checked: plain, chunked, kept alive, refused and redirected\n")
     return 42

@@ -1,0 +1,10 @@
+// expect-error: cannot initialize func(i32) i32 with extern func(i32) i32
+// A Sword function value can only point at a Sword function: that is what lets
+// the checker follow a call through one. A C function stays an extern func.
+
+extern func abs(x i32) i32
+
+func main() int {
+    g func(i32) i32 = abs
+    return int(g(-1))
+}

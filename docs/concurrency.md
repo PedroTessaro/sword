@@ -233,7 +233,7 @@ scope {
 
 scope {
     spawn write(xs)
-    spawn read(xs)      // error: one writes while the other reads
+    spawn read(xs)      // error: this reads 'xs' while it is already written concurrently
 }
 ```
 
@@ -356,7 +356,7 @@ the loop writes a name, every other mention of it has to be indexed too:
 
 ```sword
 parallel for i in 0..n {
-    xs[i] = xs[i+1]     // error: reads what another iteration writes
+    xs[i] = xs[i+1]     // error: 'xs' is written by this loop, so it can only be reached as 'xs[i]'
 }
 ```
 
@@ -666,7 +666,7 @@ A plain integer gets no such treatment:
 mut counter u64 = 0
 scope {
     spawn bump(&counter)
-    spawn bump(&counter)   // error: two tasks writing 'counter'
+    spawn bump(&counter)   // error: this writes 'counter' while it is already written concurrently
 }
 ```
 

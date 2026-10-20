@@ -16,13 +16,14 @@ func again(path string, mut ok *atomic[u64]) !void {
 }
 
 func main() !int {
-    names := [8]string{
-        "/tmp/sword_makedirs_0", "/tmp/sword_makedirs_1", "/tmp/sword_makedirs_2",
-        "/tmp/sword_makedirs_3", "/tmp/sword_makedirs_4", "/tmp/sword_makedirs_5",
-        "/tmp/sword_makedirs_6", "/tmp/sword_makedirs_7",
-    }
-    for name in names {
-        try fs.MakeDir(name)
+    // A name of this run's own: TempPath makes a file under it, and the
+    // directory takes its place.
+    mut room := [512]u8{}
+    mut names := [8]string{}
+    for i in 0..8 {
+        names[i] = try fs.TempPath("/tmp/sword_makedirs.", room[i * 64..(i + 1) * 64])
+        try fs.Remove(names[i])
+        try fs.MakeDir(names[i])
     }
     mut ok := atomic[u64](0)
     scope {

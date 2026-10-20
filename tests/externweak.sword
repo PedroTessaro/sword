@@ -1,0 +1,21 @@
+// expect: 42
+// expect-output: weak symbols checked
+// A weak symbol is one the program can run without. One the C library has
+// is there; one nobody defines is nil, and the program still links and starts.
+
+import "std/io"
+
+extern weak func strlen(s [*]u8) u64
+extern weak func sword_defined_nowhere(x i32) i32
+
+func main() !int {
+    if missing := sword_defined_nowhere {
+        return 1
+    }
+    measure := strlen orelse return 2
+    if measure("four\0".ptr) != 4 {
+        return 3
+    }
+    try io.Print("weak symbols checked\n")
+    return 42
+}

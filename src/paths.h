@@ -12,8 +12,9 @@ std::string directory_of(const std::string &path);
 // Roots to look for imported packages in, most specific first.
 std::vector<std::string> package_roots();
 
-// The runtime archive linked into every compiled program.
-std::string runtime_archive();
+// The runtime archive linked into every compiled program: this machine's, or
+// the one `make TARGET=<triple>` built for another. Empty when there is none.
+std::string runtime_archive(const std::string &target = "");
 // What else a program has to be linked against, written next to the archive at
 // build time. Empty when there is nothing, which is the usual case.
-std::string runtime_link_flags();
+std::string runtime_link_flags(const std::string &target = "");

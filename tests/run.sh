@@ -189,6 +189,245 @@ else
     fi
 fi
 
+# An integer narrower than an int reaches C widened, the way C would have
+# passed it. Apple's arm64 leaves the widening to the caller, so without it the
+# callee reads -117 as whatever the register's upper bits happened to say.
+mkdir -p "$tmp/narrow"
+cat > "$tmp/narrow/shim.c" <<'EOF'
+#include <stdbool.h>
+#include <stdint.h>
+
+int sword_widen8(int8_t x) { return x; }
+unsigned sword_widen16(uint16_t x) { return x; }
+int sword_truth(bool b) { return b; }
+EOF
+cc -O2 -c "$tmp/narrow/shim.c" -o "$tmp/narrow/shim.o" 2>/dev/null
+cat > "$tmp/narrow/main.sword" <<'EOF'
+extern func sword_widen8(x i8) i32
+extern func sword_widen16(x u16) u32
+extern func sword_truth(b bool) i32
+
+func main() int {
+    mut small i8 = 117
+    small = -small
+    if sword_widen8(small) != -117 {
+        return 1
+    }
+    wide u16 = 65535
+    if sword_widen16(wide) != 65535 {
+        return 2
+    }
+    if sword_truth(small < 0) != 1 {
+        return 3
+    }
+    return 0
+}
+EOF
+if ! "$shield" "$tmp/narrow/main.sword" -o "$tmp/narrow/prog" \
+        --link "$tmp/narrow/shim.o" > "$tmp/narrow/log" 2>&1; then
+    echo "FAIL narrow extern: compilation failed"
+    sed 's/^/     /' "$tmp/narrow/log"
+    fail=$((fail + 1))
+else
+    "$tmp/narrow/prog"
+    got=$?
+    if [ "$got" != 0 ]; then
+        echo "FAIL narrow extern: exit $got"
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+fi
+
+# A library named in the source is linked without being named on the command
+# line: dynamically by default, from its archive with --static. Each way is
+# told apart by taking the library away afterwards — a dynamic program then
+# fails to start, a static one does not notice.
+mkdir -p "$tmp/libs/lib" "$tmp/libs/onlyshared"
+cat > "$tmp/libs/shim.c" <<'EOF'
+int sword_lib_answer(void) { return 42; }
+int sword_lib_present(void) { return 7; }
+EOF
+cc -c -fPIC "$tmp/libs/shim.c" -o "$tmp/libs/shim.o" 2>/dev/null
+ar rcs "$tmp/libs/lib/libswordlib.a" "$tmp/libs/shim.o"
+if [ "$(uname -s)" = Darwin ]; then
+    shared=libswordlib.dylib
+    cc -dynamiclib "$tmp/libs/shim.o" -install_name "@rpath/$shared" \
+        -o "$tmp/libs/lib/$shared" 2>/dev/null
+else
+    shared=libswordlib.so
+    cc -shared "$tmp/libs/shim.o" -o "$tmp/libs/lib/$shared" 2>/dev/null
+fi
+cp "$tmp/libs/lib/$shared" "$tmp/libs/onlyshared/"
+cat > "$tmp/libs/main.sword" <<'EOF'
+extern "swordlib" func sword_lib_answer() i32
+extern weak "swordlib" func sword_lib_present() i32
+extern weak func sword_lib_nowhere() i32
+
+func main() int {
+    if f := sword_lib_nowhere {
+        return 1
+    }
+    g := sword_lib_present orelse return 2
+    if g() != 7 {
+        return 3
+    }
+    return int(sword_lib_answer())
+}
+EOF
+libsrc="$tmp/libs/main.sword"
+libcheck() { # name, exit wanted once the library is moved away, shield args
+    what=$1 want_away=$2
+    shift 2
+    if ! "$shield" "$libsrc" -o "$tmp/libs/prog" "$@" \
+            > "$tmp/libs/log" 2>&1; then
+        echo "FAIL $what: compilation failed"
+        sed 's/^/     /' "$tmp/libs/log"
+        fail=$((fail + 1))
+        return
+    fi
+    "$tmp/libs/prog"
+    got=$?
+    mv "$tmp/libs/lib" "$tmp/libs/away"
+    "$tmp/libs/prog" 2>/dev/null
+    away=$?
+    mv "$tmp/libs/away" "$tmp/libs/lib"
+    if [ "$got" != 42 ]; then
+        echo "FAIL $what: exit $got, want 42"
+        fail=$((fail + 1))
+    elif [ "$want_away" = 42 ] && [ "$away" != 42 ]; then
+        echo "FAIL $what: exit $away once the library was gone, want 42"
+        fail=$((fail + 1))
+    elif [ "$want_away" != 42 ] && [ "$away" = 42 ]; then
+        echo "FAIL $what: still ran without the library, so it was not dynamic"
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+}
+libcheck "extern library, dynamic" gone --link "-L$tmp/libs/lib"
+libcheck "extern library, --static" 42 --static --link "-L$tmp/libs/lib"
+
+# --static with only a shared library to be had is refused rather than quietly
+# linked the other way.
+out=$("$shield" "$tmp/libs/main.sword" -o "$tmp/libs/prog" --static \
+      --link "-L$tmp/libs/onlyshared" 2>&1)
+if [ $? -eq 0 ] || ! printf '%s\n' "$out" | grep -qF "there is no libswordlib.a"; then
+    echo "FAIL --static without an archive: $out"
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
+
+# pkg-config is asked where a library is: under the name the source used, then
+# with lib in front, which is how libz9.pc is found for `extern "z9"` here and
+# turns out to mean -lswordlib. A machine without pkg-config gets a stand-in
+# that knows only --libs.
+mkdir -p "$tmp/libs/pc" "$tmp/libs/bin"
+printf 'Name: z9\nDescription: test\nVersion: 1\nLibs: -L%s -lswordlib\n' \
+    "$tmp/libs/lib" > "$tmp/libs/pc/libz9.pc"
+pkgpath=$PATH
+if ! command -v pkg-config > /dev/null; then
+    cat > "$tmp/libs/bin/pkg-config" <<'EOF'
+#!/bin/sh
+for last; do :; done
+[ -f "$PKG_CONFIG_PATH/$last.pc" ] || exit 1
+sed -n 's/^Libs: //p' "$PKG_CONFIG_PATH/$last.pc"
+EOF
+    chmod +x "$tmp/libs/bin/pkg-config"
+    pkgpath="$tmp/libs/bin:$PATH"
+fi
+sed 's/"swordlib"/"z9"/' "$tmp/libs/main.sword" > "$tmp/libs/viapc.sword"
+libsrc="$tmp/libs/viapc.sword"
+saved_path=$PATH
+PATH=$pkgpath
+PKG_CONFIG_PATH="$tmp/libs/pc"
+export PKG_CONFIG_PATH
+libcheck "extern library through pkg-config" gone
+libcheck "extern library through pkg-config, --static" 42 --static
+PATH=$saved_path
+unset PKG_CONFIG_PATH
+libsrc="$tmp/libs/main.sword"
+
+# Two packages may declare the same C function, but not disagree about it.
+mkdir -p "$tmp/clash/other"
+cat > "$tmp/clash/main.sword" <<'EOF'
+import "other"
+
+extern func sword_lib_answer() i32
+
+func main() int {
+    return int(sword_lib_answer()) + other.Zero()
+}
+EOF
+cat > "$tmp/clash/other/other.sword" <<'EOF'
+package other
+
+extern weak func sword_lib_answer() i32
+
+func Zero() int {
+    return 0
+}
+EOF
+out=$("$shield" "$tmp/clash/main.sword" -o "$tmp/clash/prog" 2>&1)
+if [ $? -eq 0 ] || ! printf '%s\n' "$out" | grep -qF "is weak here and not where it was first declared"; then
+    echo "FAIL weak and not weak: $out"
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
+
+# -c stops at the object, which needs no runtime, so it is also how a program
+# is built for a machine nothing here can link for: the object for x86-64
+# Linux comes out the same on any machine clang targets.
+mkdir -p "$tmp/cross"
+printf 'func main() int {\n    return 0\n}\n' > "$tmp/cross/main.sword"
+expect_object() { # what, file, the first four bytes as od prints them
+    if [ ! -f "$2" ] || [ "$(od -An -tx1 -N4 "$2" | tr -d ' \n')" != "$3" ]; then
+        echo "FAIL $1: no object, or not the kind asked for"
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+}
+"$shield" "$tmp/cross/main.sword" -c -o "$tmp/cross/native.o" > /dev/null 2>&1
+if [ "$(uname -s)" = Darwin ]; then
+    expect_object "-c" "$tmp/cross/native.o" cffaedfe
+else
+    expect_object "-c" "$tmp/cross/native.o" 7f454c46
+fi
+"$shield" "$tmp/cross/main.sword" --target=x86_64-unknown-linux-gnu -c \
+    -o "$tmp/cross/linux.o" > /dev/null 2>&1
+expect_object "--target -c" "$tmp/cross/linux.o" 7f454c46
+
+refused() { # what, the text to find, arguments
+    what=$1 text=$2
+    shift 2
+    out=$("$shield" "$@" 2>&1)
+    if [ $? -eq 0 ] || ! printf '%s\n' "$out" | grep -qF "$text"; then
+        echo "FAIL $what: $out"
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+}
+refused "--target with 16-bit pointers" "not a 64-bit architecture" \
+    "$tmp/cross/main.sword" --target=avr -c
+refused "--target big-endian" "is big-endian" \
+    "$tmp/cross/main.sword" --target=s390x-ibm-linux -c
+refused "--target with no runtime for it" "make TARGET=x86_64-sword-none" \
+    "$tmp/cross/main.sword" --target=x86_64-sword-none -o "$tmp/cross/prog"
+refused "shield test --target" "test runs what it builds" \
+    test "$tmp/picked" --target=x86_64-unknown-linux-gnu
+
+# -O takes a level clang knows and nothing that would reach the shell as more.
+refused "-O with more than a level" "is not a level" \
+    "$tmp/cross/main.sword" "-O2; touch $tmp/cross/ran" -o "$tmp/cross/prog"
+if [ -e "$tmp/cross/ran" ]; then
+    echo "FAIL -O: its value ran as a command"
+    fail=$((fail + 1))
+fi
+
 # A reduction has to answer the same thing whatever the pool looks like. The
 # float sum is the one that shows it: adding the pieces in the order they
 # finish rounds differently from adding them in the order they were cut, so
@@ -248,6 +487,46 @@ picked() { # expected exit, expected text, arguments
 picked 0 "ok    1 tests" -run TestPasses
 picked 1 "2 tests, 1 failed" -run TestPasses -run TestFails
 picked 1 "no test 'TestPass'" -run TestPass
+
+# A program can be tested too: its own main steps aside for the runner's, and
+# the tests still reach everything else it declares (issue #4).
+mkdir -p "$tmp/program"
+cat > "$tmp/program/main.sword" <<'EOF'
+func twice(x int) int {
+    return x * 2
+}
+
+func main() !int {
+    return twice(21)
+}
+EOF
+cat > "$tmp/program/main_test.sword" <<'EOF'
+import "std/testing"
+
+func TestTwice(mut t *testing.T) !void {
+    try t.Equal(twice(21), 42)
+}
+EOF
+out=$("$shield" test "$tmp/program" 2>&1)
+got=$?
+if [ "$got" != 0 ] || ! printf '%s\n' "$out" | grep -qF "ok    1 tests"; then
+    echo "FAIL shield test on a program: exit $got"
+    printf '%s\n' "$out" | sed 's/^/     /'
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
+
+# What -p is given reaches the test binary as one argument, never as more of
+# the command line.
+"$shield" test "$tmp/picked" -run TestPasses -p "1; touch $tmp/injected" \
+    > /dev/null 2>&1
+if [ -e "$tmp/injected" ]; then
+    echo "FAIL shield test -p: its value ran as a command"
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
 
 # `-bench` runs the Benchmark... functions instead of the tests, and finds its
 # own N: the body is called with a small one and scaled until a measurement
@@ -322,6 +601,27 @@ if [ "$again" = 3 ]; then
 else
     echo "FAIL shield test -sim: seed $lost_seed reproduced $again times of 3"
     fail=$((fail + 1))
+fi
+
+# A C function reached through a value is as far outside the simulator as one
+# called by name, and -sim says so about both.
+mkdir -p "$tmp/simextern"
+cat > "$tmp/simextern/simextern_test.sword" <<'EOF'
+import "std/testing"
+
+extern func abs(x i32) i32
+
+func TestThroughAValue(mut t *testing.T) !void {
+    f := abs
+    try t.Equal(f(-3), 3)
+}
+EOF
+out=$("$shield" test "$tmp/simextern" -sim -seeds 1 2>&1)
+if ! printf '%s\n' "$out" | grep -qF "calls out of the language through an extern func"; then
+    echo "FAIL shield test -sim: no warning for a call through an extern func"
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
 fi
 
 # Any program runs simulated under SWORD_SIM_SEED: the clock is virtual, the

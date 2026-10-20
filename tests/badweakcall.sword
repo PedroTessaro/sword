@@ -1,0 +1,10 @@
+// expect-error: 'getentropy' is weak and may be missing when the program runs
+// A weak symbol is null when nothing provides it, and calling it by name would
+// jump to address zero. Its name is an optional, to be looked at first.
+
+extern weak func getentropy(buf [*]u8, n u64) i32
+
+func main() int {
+    mut room := [16]u8{}
+    return int(getentropy(room[..].ptr, 16))
+}

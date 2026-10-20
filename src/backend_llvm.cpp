@@ -24,6 +24,19 @@ std::string ll_type(const Type *t) {
   return "void";
 }
 
+// An integer narrower than 32 bits crosses a call widened, and which side
+// widens it is the platform's choice: Apple's arm64 has the caller do it, and
+// x86-64 has the callee return a widened bool. Naming the extension on every
+// signature and every call, as clang does for C, is right on all of them, and
+// is what lets a C function and a Sword one be called through the same value.
+const char *ext(const Type *t) {
+  if (t->kind == TY_ENUM) t = t->elem;
+  if (t->kind == TY_BOOL) return " zeroext";
+  if (t->kind == TY_INT && t->bits < 32)
+    return t->is_signed ? " signext" : " zeroext";
+  return "";
+}
+
 std::string quote(const std::string &bytes) {
   static const char *hex = "0123456789ABCDEF";
   std::string out;
@@ -62,6 +75,9 @@ struct Emitter {
   const std::string &val(int id) const { return operand[id]; }
   std::string type_of(int id) const { return ll_type(fn->value_type[id]); }
   std::string typed(int id) const { return type_of(id) + " " + val(id); }
+  std::string argument(int id) const {
+    return type_of(id) + ext(fn->value_type[id]) + " " + val(id);
+  }
 
   static int align_for(const Type *t) { return (int)align_of(t); }
 
@@ -331,15 +347,18 @@ struct Emitter {
       if (in.dst >= 0) fprintf(out, "%s = ", val(in.dst).c_str());
       // An empty callee means the target came out of a vtable.
       auto variadic = variadic_type.find(name);
+      const char *widened = ext(in.type);
       if (name.empty())
-        fprintf(out, "call %s %s(", ll_type(in.type).c_str(),
+        fprintf(out, "call%s %s %s(", widened, ll_type(in.type).c_str(),
                 val(in.a).c_str());
       else if (variadic != variadic_type.end())
-        fprintf(out, "call %s @%s(", variadic->second.c_str(), name.c_str());
+        fprintf(out, "call%s %s @%s(", widened, variadic->second.c_str(),
+                name.c_str());
       else
-        fprintf(out, "call %s @%s(", ll_type(in.type).c_str(), name.c_str());
+        fprintf(out, "call%s %s @%s(", widened, ll_type(in.type).c_str(),
+                name.c_str());
       for (size_t i = 0; i < in.args.size(); i++)
-        fprintf(out, "%s%s", i ? ", " : "", typed(in.args[i]).c_str());
+        fprintf(out, "%s%s", i ? ", " : "", argument(in.args[i]).c_str());
       fputs(")\n", out);
       break;
     }
@@ -372,7 +391,9 @@ struct Emitter {
   void signature(const IrFunc &f, const char *keyword) {
     const char *renamed = entry_name(f.name);
     const char *name = renamed ? renamed : f.name.c_str();
-    std::string ret = f.ret_by_pointer ? "void" : ll_type(f.ret);
+    std::string ret =
+        f.ret_by_pointer ? "void" : ext(f.ret) + std::string(" ") + ll_type(f.ret);
+    if (ret[0] == ' ') ret.erase(0, 1);
 
     fprintf(out, "%s %s @%s(", keyword, ret.c_str(), name);
     int index = 0;
@@ -383,8 +404,9 @@ struct Emitter {
     }
     for (size_t i = 0; i < f.params.size(); i++) {
       if (index) fputs(", ", out);
-      std::string type =
-          is_aggregate(f.params[i]) ? "ptr" : ll_type(f.params[i]);
+      std::string type = is_aggregate(f.params[i])
+                             ? "ptr"
+                             : ll_type(f.params[i]) + ext(f.params[i]);
       if (named) fprintf(out, "%s %%v%d", type.c_str(), index);
       else fputs(type.c_str(), out);
       index++;
@@ -405,7 +427,7 @@ struct Emitter {
     if (f.is_extern) {
       if (f.is_c_variadic) variadic_type[f.name] = variadic_signature(f);
       if (!declared.insert(f.name).second) return;
-      signature(f, "declare");
+      signature(f, f.is_weak ? "declare extern_weak" : "declare");
       fputc('\n', out);
       return;
     }
@@ -467,7 +489,8 @@ struct Emitter {
   // itself. The runtime takes a thunk and an argument block, so the answer
   // comes back through a slot on the real stack.
   void main_task(const IrFunc &f) {
-    fputs("define internal i16 @sword_main.task(ptr %args) {\nbb0:\n", out);
+    fputs("define internal zeroext i16 @sword_main.task(ptr %args) {\nbb0:\n",
+          out);
     if (f.ret->is_error_union) {
       fputs("  %slot = load ptr, ptr %args, align 8\n"
             "  call void @sword_main(ptr %slot)\n",

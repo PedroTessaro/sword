@@ -72,6 +72,7 @@ struct IrFunc {
   // C's `...`: the declaration ends in it, and so must every call, or the
   // extra arguments travel where the callee does not look for them.
   bool is_c_variadic = false;
+  bool is_weak = false; // may be missing at run time: its address is then null
   bool is_internal = false; // synthesized: droppable when unused
   // Aggregate returns go through a hidden pointer parameter, ahead of the
   // declared ones.

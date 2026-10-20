@@ -162,6 +162,64 @@ struct Checker {
 
   // --- types -------------------------------------------------------------
 
+  // Aggregates cross our own call boundary as a pointer, which is not the C
+  // ABI; the FFI boundary has to stay scalar.
+  void c_boundary(const Type *fn, Pos pos, const std::string &what) {
+    for (const Type *p : fn->params)
+      if (is_aggregate(p))
+        error(pos, "%s cannot take %s; pass .ptr and .len", what.c_str(),
+              type_str(p).c_str());
+    if (fn->ret && is_aggregate(fn->ret))
+      error(pos, "%s cannot return %s", what.c_str(),
+            type_str(fn->ret).c_str());
+  }
+
+  // What follows -l, and nothing that would reach the linker as an option or a
+  // path: those belong to --link, where whoever builds the program can see them.
+  static bool library_name(const std::string &name) {
+    if (name.empty() || name[0] == '-' || name[0] == '.') return false;
+    for (char c : name)
+      if (!isalnum((unsigned char)c) && c != '_' && c != '-' && c != '.' &&
+          c != '+')
+        return false;
+    return true;
+  }
+
+  // Two packages may each declare the same C function, and agree about it.
+  void c_symbol(Node *fn) {
+    if (!fn->library.empty() && !library_name(fn->library)) {
+      error(fn->pos,
+            "\"%s\" is not a library name; write what follows -l, such as"
+            " \"z\" for libz, and give paths and options to --link",
+            fn->library.c_str());
+      return;
+    }
+    auto at = prog.c_symbols.emplace(fn->name, fn);
+    Node *first = at.first->second;
+    if (!at.second) {
+      if (first->is_weak != fn->is_weak) {
+        error(fn->pos, "'%s' is weak here and not where it was first declared",
+              fn->name.c_str());
+        note(first->pos, "first declared here");
+        return;
+      }
+      if (!first->library.empty() && !fn->library.empty() &&
+          first->library != fn->library) {
+        error(fn->pos, "'%s' comes from \"%s\" here and from \"%s\" where it"
+              " was first declared", fn->name.c_str(), fn->library.c_str(),
+              first->library.c_str());
+        note(first->pos, "first declared here");
+        return;
+      }
+    } else if (fn->is_weak) {
+      prog.weak_symbols.push_back(fn->name);
+    }
+    if (!fn->library.empty() &&
+        std::find(prog.libraries.begin(), prog.libraries.end(),
+                  fn->library) == prog.libraries.end())
+      prog.libraries.push_back(fn->library);
+  }
+
   Type *resolve(Node *n) {
     if (!n) return types.void_ty;
     switch (n->kind) {
@@ -179,7 +237,12 @@ struct Checker {
         params.push_back(resolve(p));
         param_mut.push_back(p->is_mut);
       }
-      return types.func(params, resolve(n->lhs), param_mut);
+      Type *t = types.func(params, resolve(n->lhs), param_mut);
+      if (n->is_extern) {
+        t->is_extern = true;
+        c_boundary(t, n->pos, "an extern function type");
+      }
+      return t;
     }
     case ND_TYPE_RAWPTR: return types.rawptr(resolve(n->lhs));
     case ND_TYPE_SLICE: return types.slice(resolve(n->lhs));
@@ -1263,6 +1326,12 @@ struct Checker {
               (from->kind == TY_RAWPTR && is_integer(target) &&
                target->bits == 64) ||
               (is_integer(from) && from->bits == 64 &&
+               target->kind == TY_RAWPTR) ||
+              // A C function is an address C handed over, typed by whoever
+              // converts it; a Sword one is never made this way.
+              (from->kind == TY_RAWPTR && target->kind == TY_FUNC &&
+               target->is_extern) ||
+              (from->kind == TY_FUNC && from->is_extern &&
                target->kind == TY_RAWPTR);
     if (!ok) {
       error(n->pos, "cannot convert %s to %s", type_str(from).c_str(),
@@ -1575,6 +1644,7 @@ struct Checker {
       return nullptr;
     }
     if (sym->is_generic) return check_generic_call(n, sym, other, {});
+    if (!present(n, sym)) return nullptr;
     n->sym = sym;
     n->name = sym->name;
     if (!check_args(n, sym, 0)) return nullptr;
@@ -2044,6 +2114,7 @@ struct Checker {
     n->lhs->sym = sym;
 
     if (sym->is_generic) return check_generic_call(n, sym, &pkg, {});
+    if (!present(n, sym)) return nullptr;
     n->sym = sym;
     n->name = sym->name;
     if (!check_args(n, sym, 0)) return nullptr;
@@ -2470,6 +2541,17 @@ struct Checker {
   // A function named but not called is its own address. There are no closures,
   // so nothing is captured and nothing is allocated — which is also why a
   // generic has no value: there is no one function to point at.
+  // A weak symbol may be missing when the program runs, and a call by name
+  // would jump to address zero; the value is an optional to be looked at first.
+  bool present(Node *call, Symbol *sym) {
+    if (!sym->decl || !sym->decl->is_weak) return true;
+    error(call->pos,
+          "'%s' is weak and may be missing when the program runs; check it"
+          " first: if f := %s { f(...) }",
+          sym->name.c_str(), sym->name.c_str());
+    return false;
+  }
+
   Type *check_func_value(Node *n, Symbol *sym) {
     if (sym->is_generic) {
       error(n->pos,
@@ -2485,6 +2567,7 @@ struct Checker {
             shown_name(sym->name).c_str());
       return nullptr;
     }
+    if (sym->decl && sym->decl->is_weak) return n->type = types.opt(sym->type);
     return n->type = sym->type;
   }
 
@@ -3767,16 +3850,10 @@ struct Checker {
 
       if (fn->is_c_variadic) sym->type->is_c_variadic = true;
 
-      // Aggregates cross our own call boundary as a pointer, which is not the
-      // C ABI; the FFI boundary has to stay scalar.
       if (fn->is_extern) {
-        for (Type *p : params)
-          if (is_aggregate(p))
-            error(fn->pos, "extern '%s' cannot take %s; pass .ptr and .len",
-                  fn->name.c_str(), type_str(p).c_str());
-        if (is_aggregate(ret))
-          error(fn->pos, "extern '%s' cannot return %s", fn->name.c_str(),
-                type_str(ret).c_str());
+        sym->type->is_extern = true;
+        c_boundary(sym->type, fn->pos, "extern '" + fn->name + "'");
+        c_symbol(fn);
       }
 
       if (fn->name == "main" && pkg.prefix.empty()) {
@@ -3967,6 +4044,9 @@ struct Determinism {
         if (n->form == 3) mark(fn, n->pos, "reads or writes an atomic", nullptr);
         else if (n->form == 5) mark(fn, n->pos, "waits on a shared value", nullptr);
         else if (n->sym && n->sym->decl && n->sym->decl->is_extern)
+          mark(fn, n->pos, "calls out of the language", nullptr);
+        else if (n->form == 4 && n->lhs && n->lhs->type &&
+                 n->lhs->type->kind == TY_FUNC && n->lhs->type->is_extern)
           mark(fn, n->pos, "calls out of the language", nullptr);
         return;
       default:

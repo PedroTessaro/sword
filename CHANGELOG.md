@@ -4,6 +4,63 @@ Releases are numbered by [semantic versioning](https://semver.org): until 1.0,
 a minor version may change the language, and each one says how. Each release is
 also named for a step in making a blade, in the order they happen.
 
+## 0.2.1 — Fold
+
+*2026-10-20.* A patch to Fold that finishes the way out to C: a library named in the
+source and linked either way, a C function as a value, and a library loaded
+while the program runs.
+
+### What changes for existing programs
+
+- **The name of an `extern` function, used as a value, is an `extern func`**,
+  not a `func`. Code that handed one where a `func` was expected no longer
+  compiles; a `func` can only point at Sword code, which is what lets `det`
+  follow a call through one.
+- **An integer narrower than 32 bits reaches C widened.** On Apple's arm64 an
+  `extern` taking an `int8_t`, an `int16_t` or a `bool` read whatever the upper
+  bits of the register held.
+- **Every function but `main` is internal to the program.** LLVM drops what
+  nothing calls: on an Apple M4 a hello world went from 145 376 to 119 400 bytes
+  and the HTTP test from 281 752 to 168 552, and building the latter takes about
+  half the time. A program that uses part of a package no longer references the
+  C symbols the rest of it needs.
+
+### C
+
+- **`extern "z" func ...`** names the library a function comes from, and it is
+  linked without being mentioned on the command line. pkg-config is asked where
+  it is when the machine has pkg-config.
+- **`shield --static`** links each declared library from its archive and refuses
+  to build without one. The system's own libraries stay dynamic.
+- **`extern weak func ...`** — a function the program can run without. Its name
+  is an `?extern func`, to be checked before it is called.
+- **`extern func(T) R`** — a C function as a value. A Sword function converts to
+  one, which is how `qsort` gets a comparison; an address converts to one, which
+  is how a loader's answer gets a type.
+- **`std/dl`** opens a library while the program runs, finds functions in it,
+  and keeps the system's own account of what went wrong in `Loader.Why()`.
+- **`--emit-link`** prints the rest of the link line, for a build that links by
+  its own means.
+
+### Other machines
+
+- **`--target=<triple>`** builds for another 64-bit, little-endian machine,
+  against a runtime built for it with `make TARGET=<triple>`. **`-c`** stops at
+  the object file and needs nothing but clang.
+
+### Fixes
+
+- `shield test` on a program — a package with a `main` — failed in clang every
+  time (#4).
+- A function can return a function value; the parser read the result type as
+  the start of the body.
+- Two copies of the test suite on one machine no longer overwrite each other's
+  certificates, files and test binaries (#36), and `shield test` no longer puts
+  a binary beside the package for the length of a run.
+- The value of `shield test -p` reached the shell unquoted.
+- `-sim` warns about a call through an `extern func`, as it does about a call to
+  an `extern` declaration.
+
 ## 0.2.0 — Fold
 
 *2026-09-28.* Folding the steel is how the flaws are worked out of it: this
