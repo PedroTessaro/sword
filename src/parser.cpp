@@ -125,11 +125,18 @@ struct Parser {
         if (!expect(TK_RBRACK, "after an array length")) return nullptr;
         k = ND_TYPE_ARRAY;
       } else if (kind() == TK_IDENT) {
-        // A named constant, resolved when the type is.
+        // A named constant, resolved when the type is: this package's, or
+        // another's spelled the way an expression would (`crypto.Sha256Size`).
         Node *n = make(ND_TYPE_ARRAY, pos);
         n->ival = 0;
         n->name_pos = peek().pos;
         n->name = advance().text;
+        if (kind() == TK_DOT && kind(1) == TK_IDENT) {
+          advance();
+          n->text = n->name;
+          n->name_pos = peek().pos;
+          n->name = advance().text;
+        }
         if (!expect(TK_RBRACK, "after an array length")) return nullptr;
         n->lhs = type_expr();
         return n->lhs ? n : nullptr;
