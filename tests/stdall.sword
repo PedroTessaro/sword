@@ -6,6 +6,7 @@
 import "std/bytes"
 import "std/collections"
 import "std/crypto"
+import "std/encoding"
 import "std/fmt"
 import "std/fs"
 import "std/http"
