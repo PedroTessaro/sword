@@ -122,10 +122,11 @@ struct Loader {
     }
 
     // Testing a program means not running it: its own main is renamed out of
-    // reach rather than colliding with the one below.
+    // reach rather than colliding with the one below. The dot is what keeps it
+    // out of reach; a space would also be, but it ends a name in LLVM's text.
     for (Node *decl : pkg.unit->kids)
       if (decl->kind == ND_FUNC && !decl->lhs && decl->name == "main")
-        decl->name = "main.under test";
+        decl->name = "main.under_test";
 
     const char *kind = benching ? "Bench" : "Case";
     const char *make = benching ? "NewBench" : "NewCase";

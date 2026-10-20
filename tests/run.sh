@@ -249,6 +249,35 @@ picked 0 "ok    1 tests" -run TestPasses
 picked 1 "2 tests, 1 failed" -run TestPasses -run TestFails
 picked 1 "no test 'TestPass'" -run TestPass
 
+# A program can be tested too: its own main steps aside for the runner's, and
+# the tests still reach everything else it declares (issue #4).
+mkdir -p "$tmp/program"
+cat > "$tmp/program/main.sword" <<'EOF'
+func twice(x int) int {
+    return x * 2
+}
+
+func main() !int {
+    return twice(21)
+}
+EOF
+cat > "$tmp/program/main_test.sword" <<'EOF'
+import "std/testing"
+
+func TestTwice(mut t *testing.T) !void {
+    try t.Equal(twice(21), 42)
+}
+EOF
+out=$("$shield" test "$tmp/program" 2>&1)
+got=$?
+if [ "$got" != 0 ] || ! printf '%s\n' "$out" | grep -qF "ok    1 tests"; then
+    echo "FAIL shield test on a program: exit $got"
+    printf '%s\n' "$out" | sed 's/^/     /'
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
+
 # `-bench` runs the Benchmark... functions instead of the tests, and finds its
 # own N: the body is called with a small one and scaled until a measurement
 # lasts long enough to mean anything.
