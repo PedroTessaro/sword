@@ -1,0 +1,7 @@
+// expect-error: type alias 'Ping' stands for itself
+// Two aliases naming each other stand for nothing at all.
+
+type Ping = Pong
+type Pong = Ping
+
+func main() {}

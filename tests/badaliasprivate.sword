@@ -1,0 +1,9 @@
+// expect-error: package 'shapes' has no exported type 'tally'
+// A lowercase alias is private to its package, like any other name.
+
+import "shapes"
+
+func main() int {
+    n shapes.tally = 1
+    return int(n)
+}

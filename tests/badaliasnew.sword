@@ -1,0 +1,7 @@
+// expect-error: a type alias is written 'type Celsius = T'; a new type is a struct or an enum
+// Go's `type Celsius float64` makes a distinct type. Sword has the alias only;
+// a type of its own is a struct or an enum.
+
+type Celsius f64
+
+func main() {}

@@ -285,6 +285,7 @@ SYNTAX_ERRORS = [
     r"'det' belongs to a function", r"a select case binds",
     r"a select case is a receive or a send", r"unterminated", r"malformed numeric",
     r"unexpected character", r"unknown escape", r"takes two hex digits",
+    r"a type alias is written", r"a type alias takes no type parameters",
 ]
 
 

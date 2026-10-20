@@ -1165,6 +1165,28 @@ struct Parser {
     return expect(TK_RBRACE, "to close an enum body") ? n : nullptr;
   }
 
+  // `type Bytes = []u8`: another name for a type that already exists, the same
+  // type in every respect. `type` is a word only here, the way `error` is, so a
+  // field or a variable called `type` keeps working.
+  Node *alias_decl() {
+    Node *n = make(ND_TYPE_ALIAS, advance().pos); // the word `type`
+    n->name_pos = peek().pos;
+    n->name = advance().text;
+    if (kind() == TK_LBRACK) {
+      fail("a type alias takes no type parameters; name an instance instead,"
+           " as in 'type Set = collections.Map[string, bool]'");
+      return nullptr;
+    }
+    if (kind() != TK_ASSIGN) {
+      fail("a type alias is written 'type %s = T'; a new type is a struct or"
+           " an enum", n->name.c_str());
+      return nullptr;
+    }
+    advance();
+    n->type_expr = type_expr();
+    return n->type_expr ? n : nullptr;
+  }
+
   Node *declaration() {
     // `package name` is documentation: the directory already decides the
     // package. `import "path"` is what actually pulls something in.
@@ -1208,6 +1230,8 @@ struct Parser {
     // a name rather than by a dot.
     if (kind() == TK_IDENT && peek().text == "error" && kind(1) == TK_IDENT)
       return error_decl();
+    if (kind() == TK_IDENT && peek().text == "type" && kind(1) == TK_IDENT)
+      return alias_decl();
 
     bool is_extern = match(TK_EXTERN);
     // `extern weak "z" func f(...)`. Neither word is reserved: `weak` is only
@@ -1244,7 +1268,8 @@ struct Parser {
     if (kind() == TK_STRUCT) return struct_decl(is_extern);
     if (kind() == TK_INTERFACE && !is_extern) return interface_decl();
     if (kind() == TK_ENUM && !is_extern) return enum_decl();
-    fail("expected 'func', 'struct', 'interface', 'enum' or 'const', found %s",
+    fail("expected 'func', 'struct', 'interface', 'enum', 'type' or 'const',"
+         " found %s",
          tok_name(kind()));
     return nullptr;
   }
