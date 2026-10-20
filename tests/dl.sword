@@ -1,0 +1,57 @@
+// expect: 42
+// expect-output: loaded, found, refused and closed
+// A library loaded while the program runs: the C library itself, since it is
+// on every machine, under the name each system gives it. What matters as much
+// as finding a function is the two refusals, and that each comes with the
+// system's own account of what went wrong.
+
+import "std/dl"
+import "std/io"
+import "std/strings"
+
+func main() !int {
+    mut ld := dl.NewLoader()
+    mut name := "libc.so.6"
+    if dl.Suffix() == ".dylib" {
+        name = "/usr/lib/libSystem.B.dylib"
+    }
+    lib := ld.Open(name) catch {
+        try io.Printf("{}\n", ld.Why())
+        return 1
+    }
+    if ld.Why().len != 0 {
+        return 2
+    }
+
+    abs := extern func(i32) i32(try ld.Symbol(lib, "abs"))
+    if abs(-42) != 42 {
+        return 3
+    }
+
+    // Asked for something that is not there, the loader says so, and says
+    // which name it was.
+    ld.Symbol(lib, "sword_no_such_symbol") catch |e| {
+        if e != error.NoSymbol || !strings.Contains(ld.Why(), "sword_no_such_symbol") {
+            try io.Printf("{}: {}\n", nameof(e), ld.Why())
+            return 4
+        }
+    }
+    ld.Open("/nonexistent/libsword_none.so") catch |e| {
+        if e != error.CannotOpen || !strings.Contains(ld.Why(), "libsword_none") {
+            try io.Printf("{}: {}\n", nameof(e), ld.Why())
+            return 5
+        }
+    }
+
+    // The program itself, and what is already loaded into it.
+    self := try ld.Open("")
+    strlen := extern func([*]u8) u64(try ld.Symbol(self, "strlen"))
+    if strlen("forty-two\0".ptr) != 9 {
+        return 6
+    }
+
+    try ld.Close(self)
+    try ld.Close(lib)
+    try io.Print("loaded, found, refused and closed\n")
+    return 42
+}

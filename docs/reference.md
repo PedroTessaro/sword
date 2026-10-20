@@ -342,7 +342,8 @@ if fill := getentropy {
 ```
 
 `weak` is about the function, not the library: a library named after it has to
-be there when the program starts.
+be there when the program starts. A library that may be missing altogether is
+loaded with [`std/dl`](#stddl).
 
 ## Atomics
 
@@ -1313,6 +1314,50 @@ program reading until the end of its input is told that was all of it.
 Starting a program and waiting for one both stop a thread and neither is
 anything a poller can help with, so both go to the same pool as file I/O and
 the task waiting is put down like any other.
+
+### `std/dl`
+
+Loading a library while the program runs. A library named by `extern "z"` has
+to be there for the program to start; this is for one that may not be, or whose
+name the program only learns while running — a plugin, an optional codec.
+
+```sword
+func NewLoader() Loader
+func (mut l *Loader) Open(path string) !Library
+func (mut l *Loader) Symbol(lib Library, name string) ![*]u8
+func (mut l *Loader) Close(lib Library) !void
+func (l *Loader) Why() string
+func Suffix() string                 // ".so" or ".dylib"
+```
+
+```sword
+mut ld := dl.NewLoader()
+lib := ld.Open("libz.so.1") catch {
+    try io.Printf("no zlib: {}\n", ld.Why())
+    return 1
+}
+defer ld.Close(lib) catch {}
+version := extern func() [*]u8(try ld.Symbol(lib, "zlibVersion"))
+```
+
+A path is taken as written, and a name without a slash is searched for the way
+the system searches. `Open("")` is the program itself and everything already
+loaded into it. Every symbol a library needs is bound when it is opened, so a
+missing one is `Open`'s failure rather than a crash at its first call, and what
+one library brings in does not leak into the lookups of the next.
+
+The errors are `CannotOpen`, `NoSymbol` and `CannotClose`, and each has one
+sentence. What the system said — which file it could not find, which symbol a
+library wanted — is kept in the `Loader` for `Why()`, cleared at the start of
+every call. It lives there rather than anywhere global because two loaders in
+two tasks fail for two reasons.
+
+`Symbol` answers the bare address, and converting it to an `extern func` is the
+program's own promise about what is there. After `Close`, nothing found in the
+library may be used: the code may be gone, and as with memory an allocator has
+taken back, nothing checks. Opening and closing read files and run the
+library's initialisers, so both go to the io pool and the task waiting is put
+down like any other.
 
 ### `std/runtime`
 
