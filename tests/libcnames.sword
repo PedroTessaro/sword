@@ -61,7 +61,8 @@ func main() !int {
     l.Close()
 
     // Files go through open, read, write and close as well.
-    path := "/tmp/sword_libcnames.txt"
+    mut room := [256]u8{}
+    path := try fs.TempPath("/tmp/sword_libcnames.", room[..])
     try fs.WriteAll(path, []u8("ok"))
     back := fs.Size(path) orelse return 3
     if back != 2 {

@@ -7,6 +7,7 @@
 import "std/fs"
 import "std/http"
 import "std/io"
+import "std/mem"
 import "std/net"
 import "std/strings"
 
@@ -92,18 +93,27 @@ func drive(port i32, mut score *atomic[u64], s *http.Server) !void {
 }
 
 func main() !int {
-    // One directory, three files in it.
-    try fs.MakeDir("/tmp/sword_static")
-    try fs.WriteAll("/tmp/sword_static/hello.txt", []u8("hello world"))
-    try fs.WriteAll("/tmp/sword_static/index.html", []u8("<h1>index</h1>\n"))
+    // One directory, three files in it. The directory's name is this run's
+    // own: TempPath makes a file under it, and the directory takes its place.
+    mut room := [256]u8{}
+    mut backing := [1024]u8{}
+    mut arena := mem.NewArena(backing[..])
+    root := try fs.TempPath("/tmp/sword_static.", room[..])
+    try fs.Remove(root)
+    try fs.MakeDir(root)
+    hello := try strings.Concat(&arena, root, "/hello.txt")
+    index := try strings.Concat(&arena, root, "/index.html")
+    blob := try strings.Concat(&arena, root, "/big.bin")
+    try fs.WriteAll(hello, []u8("hello world"))
+    try fs.WriteAll(index, []u8("<h1>index</h1>\n"))
 
     mut big := [5000]u8{}
     for i in 0..5000 {
         big[i] = u8(48 + i % 10)
     }
-    try fs.WriteAll("/tmp/sword_static/big.bin", big[..])
+    try fs.WriteAll(blob, big[..])
 
-    mut files := http.NewFiles("/tmp/sword_static")
+    mut files := http.NewFiles(root)
 
     mut mux := http.NewMux()
     try mux.Get("/files/{path...}", &files)
@@ -118,10 +128,10 @@ func main() !int {
         spawn drive(port, &score, &srv)
     }
 
-    fs.Remove("/tmp/sword_static/hello.txt") catch {}
-    fs.Remove("/tmp/sword_static/index.html") catch {}
-    fs.Remove("/tmp/sword_static/big.bin") catch {}
-    fs.RemoveDir("/tmp/sword_static") catch {}
+    fs.Remove(hello) catch {}
+    fs.Remove(index) catch {}
+    fs.Remove(blob) catch {}
+    fs.RemoveDir(root) catch {}
 
     if score.Load() != 63 {
         try io.Printf("score {}\n", score.Load())

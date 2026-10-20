@@ -9,7 +9,6 @@ import "std/fs"
 import "std/io"
 import "std/mem"
 
-const path = "/tmp/sword_files_test.txt"
 const content = "hello from sword\n"
 
 func reader(where string, mut done *atomic[u64]) !void {
@@ -25,6 +24,8 @@ func main() !int {
     mut backing := [65536]u8{}
     mut arena := mem.NewArena(backing[..])
 
+    mut room := [256]u8{}
+    path := try fs.TempPath("/tmp/sword_files.", room[..])
     try fs.WriteAll(path, []u8(content))
     if !fs.Exists(path) {
         return 1

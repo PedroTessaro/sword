@@ -20,7 +20,8 @@ func read(path string, mut ok *atomic[u64]) !void {
 }
 
 func main() !int {
-    path := "/tmp/sword_filepool.txt"
+    mut room := [256]u8{}
+    path := try fs.TempPath("/tmp/sword_filepool.", room[..])
     try fs.WriteAll(path, []u8("ok"))
 
     mut ok := atomic[u64](0)
