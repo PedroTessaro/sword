@@ -632,6 +632,16 @@ void arrived(Fiber *f) {
 // Switching out, from inside the task. `f` comes off the task's own stack, so
 // no thread-local is read on the way out.
 void leave(Fiber *f, bool done) {
+#ifdef SWORD_TSAN
+  // ThreadSanitizer holds a signal that arrives outside a blocking call until
+  // the next call it intercepts, and it holds it in the state of whichever
+  // fiber was running. A task that parks right after would carry the signal
+  // off with it, and one that never resumes — an acceptor waiting for a Close
+  // the signal was meant to cause — keeps it for good. Any intercepted call
+  // delivers what is pending; this one only reads the mask.
+  sigset_t mask;
+  pthread_sigmask(SIG_BLOCK, nullptr, &mask);
+#endif
 #ifdef SWORD_ASAN
   // A task that is finished is never coming back, so it saves no token; the
   // destination is the stack it arrived from.

@@ -1780,7 +1780,9 @@ func MimeType(path string) string            // by extension
 `Files` serves what a `{path...}` route caught, under its root. A path containing
 `..`, a NUL or a backslash is refused rather than resolved. A directory gets
 `Index` — `index.html` by default, and an empty `Index` makes directories 404.
-Only GET and HEAD; anything else is a 405.
+Only GET and HEAD; anything else is a 405. Both send `Last-Modified` and a weak
+`ETag` built from the size and modification time; `Files` answers
+`If-None-Match` and `If-Modified-Since` with 304, the tag taking precedence.
 
 Header lookup is case-insensitive. A request carries at most 32 headers and
 16 KiB of head; beyond that the connection is rejected. An accepted connection
