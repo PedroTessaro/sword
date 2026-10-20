@@ -36,6 +36,13 @@ func dialer(port i32, rounds u64, mut failed *atomic[u64]) {
             failed.Add(1)
             continue
         }
+        // The kernel finishes a handshake without waiting for accept, so a
+        // dialer that closed and dialed again at once could put far more than
+        // one connection in the listen queue, and on macOS a full queue answers
+        // the next SYN with a reset. Waiting for the server's close keeps it to
+        // one per dialer; the numbers still change hands as fast as before.
+        mut buf := [1]u8{}
+        c.Read(buf[..]) catch {}
         c.Close()
     }
 }
