@@ -118,8 +118,8 @@ exact and compensated sums and elementary functions with the same bits on
 every machine (`std/num`), random numbers that do not depend on the
 number of threads (`std/rand`), parallel scan, filter, sort and minimum with
 the same property (`std/par`), printing
-and formatting (`std/io`, `std/fmt`), JSON (`std/json`), hashing
-(`std/crypto`), arguments and environment (`std/os`), files, directories and
+and formatting (`std/io`, `std/fmt`), JSON (`std/json`), hashing, HMAC and
+keys derived from passwords (`std/crypto`), arguments and environment (`std/os`), files, directories and
 standard input (`std/fs`), running another program (`std/process`), loading a
 library while the program runs (`std/dl`), clocks and
 durations (`std/time`), scheduler counters (`std/runtime`), TCP and UDP over IPv4 and IPv6 (`std/net`),
