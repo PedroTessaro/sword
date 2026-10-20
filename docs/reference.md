@@ -1697,6 +1697,7 @@ shield test <file.sword | directory> [options]
   --emit-ast      stop after parsing and checking
   --emit-ir       stop after lowering, print Sword IR
   --emit-llvm     print the LLVM IR
+  --emit-link     print what the linker gets after the program's object
 ```
 
 A `.sword` file compiles alone. A directory compiles as one package.
@@ -1712,6 +1713,11 @@ program's own object and before the declared libraries:
 shield sheath.sword -o sheath --link shim.o --link -L/opt/homebrew/lib \
     --link -lsomething
 ```
+
+A build that links by its own means — through `--emit-llvm` and a Makefile, say
+— asks `--emit-link` for the rest of the line: what the runtime was built
+against, `--link`, the declared libraries and what weak functions need, one
+argument a line, to go after the program's object and the runtime archive.
 
 `shield test` builds the package together with its `*_test.sword` files behind a
 generated entry point, runs it, and hands back its exit status. Those files are
