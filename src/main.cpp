@@ -134,6 +134,36 @@ std::string quoted(const std::string &arg) {
   return out + "'";
 }
 
+// A directory under TMPDIR that takes what was put in it along when it goes.
+struct Scratch {
+  std::string dir;
+  std::vector<std::string> files;
+
+  bool make() {
+    const char *tmp = getenv("TMPDIR");
+    std::string pattern =
+        std::string(tmp && *tmp ? tmp : "/tmp") + "/shield.XXXXXX";
+    if (!mkdtemp(&pattern[0])) return false;
+    dir = pattern;
+    return true;
+  }
+
+  ~Scratch() {
+    if (dir.empty()) return;
+    for (const std::string &f : files) unlink(f.c_str());
+    rmdir(dir.c_str());
+  }
+};
+
+// The last element of a path, which names a package whether it was given as
+// `pkg`, `pkg/` or `./pkg`.
+std::string base_of(std::string path) {
+  while (path.size() > 1 && path.back() == '/') path.pop_back();
+  size_t slash = path.rfind('/');
+  std::string base = slash == std::string::npos ? path : path.substr(slash + 1);
+  return base.empty() || base == "." || base == ".." ? "package" : base;
+}
+
 // Hands the generated LLVM IR to clang, which assembles and links it. This is
 // also where LLVM's own optimization pipeline runs.
 bool assemble(const std::string &ll_path, const std::string &out_path,
@@ -403,9 +433,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // A test binary lands beside the package it tests and is removed after.
-  if (testing && output.empty()) output = std::string(input) + ".test";
-  if (output.empty()) output = "a.out";
+  if (!testing && output.empty()) output = "a.out";
 
   if (opt_level.empty()) {
     // Debug keeps every local on the stack, which is what makes a debug build
@@ -464,6 +492,19 @@ int main(int argc, char **argv) {
     return 0;
   }
 
+  // A test binary is built in a directory of its own and removed after. It
+  // used to land beside the package, where two runs of the same tests wrote
+  // over each other's.
+  Scratch scratch;
+  if (output.empty()) {
+    if (!scratch.make()) {
+      fprintf(stderr, "shield: cannot make a directory for the test build\n");
+      return 1;
+    }
+    output = scratch.dir + "/" + base_of(input) + ".test";
+    scratch.files.push_back(output);
+  }
+
   std::string ll_path = output + ".ll";
   FILE *ll = fopen(ll_path.c_str(), "w");
   if (!ll) {
@@ -489,7 +530,7 @@ int main(int argc, char **argv) {
   // Run it, hand back what it says, and leave nothing behind.
   std::string command = output;
   if (command.find('/') == std::string::npos) command = "./" + command;
-  command += forwarded;
+  command = quoted(command) + forwarded;
   int status = system(command.c_str());
   // A name the user asked for is theirs to keep.
   if (!named) unlink(output.c_str());
