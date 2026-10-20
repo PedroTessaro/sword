@@ -158,3 +158,56 @@ func TestEqual(mut t *testing.T) !void {
     try t.Equal(Equal(a, []u8("0123456789abcde")), false)
     try t.Equal(Equal([]u8(""), []u8("")), true)
 }
+
+// --- PBKDF2 ----------------------------------------------------------------
+
+// RFC 6070's inputs, which that RFC answers for SHA-1, here with SHA-256 and
+// checked against an independent implementation. The 4096-round ones
+// are the point: they are what says the iteration actually iterates.
+func TestPbkdf2Sha256Vectors(mut t *testing.T) !void {
+    mut buf := [128]u8{}
+    mut out := [64]u8{}
+
+    try Pbkdf2Sha256([]u8("password"), []u8("salt"), 1, out[0..32])
+    try t.Equal(hex(out[0..32], buf[0..128]),
+        "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b")
+
+    try Pbkdf2Sha256([]u8("password"), []u8("salt"), 2, out[0..32])
+    try t.Equal(hex(out[0..32], buf[0..128]),
+        "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43")
+
+    try Pbkdf2Sha256([]u8("password"), []u8("salt"), 4096, out[0..32])
+    try t.Equal(hex(out[0..32], buf[0..128]),
+        "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a")
+
+    // 40 bytes out of a 32-byte hash, so the answer spans two blocks and the
+    // counter has to advance.
+    try Pbkdf2Sha256([]u8("passwordPASSWORDpassword"),
+        []u8("saltSALTsaltSALTsaltSALTsaltSALTsalt"), 4096, out[0..40])
+    try t.Equal(hex(out[0..40], buf[0..128]),
+        "348c89dbcbd32b2f32d814b8116e84cf2b17347ebc1800181c4e2a1fb8dd53e1c635518c7dac47e9")
+}
+
+// RFC 7914 §11, the two PBKDF2-HMAC-SHA-256 vectors scrypt is built on. Both
+// ask for exactly two blocks.
+func TestPbkdf2Sha256Rfc7914(mut t *testing.T) !void {
+    mut buf := [128]u8{}
+    mut out := [64]u8{}
+
+    try Pbkdf2Sha256([]u8("passwd"), []u8("salt"), 1, out[0..64])
+    try t.Equal(hex(out[0..64], buf[0..128]),
+        "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783")
+
+    try Pbkdf2Sha256([]u8("Password"), []u8("NaCl"), 80000, out[0..64])
+    try t.Equal(hex(out[0..64], buf[0..128]),
+        "4ddcd8f60b98be21830cee5ef22701f9641a4418d04c0414aeff08876b34ab56a1d425a1225833549adb841b51c9b3176a272bdebba1d078478f62b397f33c8d")
+}
+
+func TestPbkdf2RefusesZeroRounds(mut t *testing.T) !void {
+    mut out := [32]u8{}
+    mut refused := false
+    Pbkdf2Sha256([]u8("password"), []u8("salt"), 0, out[0..32]) catch {
+        refused = true
+    }
+    try t.Equal(refused, true)
+}
