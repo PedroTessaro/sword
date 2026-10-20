@@ -407,7 +407,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(arg, "--emit-ir")) stage = STAGE_IR;
     else if (!strcmp(arg, "--emit-llvm")) stage = STAGE_LLVM;
     else if (testing && !strcmp(arg, "-p") && i + 1 < argc)
-      forwarded += " -p " + std::string(argv[++i]);
+      forwarded += " -p " + quoted(argv[++i]);
     else if (testing && !strcmp(arg, "-run") && i + 1 < argc)
       only.push_back(argv[++i]);
     else if (testing && !strcmp(arg, "-bench")) benching = true;

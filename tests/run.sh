@@ -278,6 +278,17 @@ else
     pass=$((pass + 1))
 fi
 
+# What -p is given reaches the test binary as one argument, never as more of
+# the command line.
+"$shield" test "$tmp/picked" -run TestPasses -p "1; touch $tmp/injected" \
+    > /dev/null 2>&1
+if [ -e "$tmp/injected" ]; then
+    echo "FAIL shield test -p: its value ran as a command"
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
+
 # `-bench` runs the Benchmark... functions instead of the tests, and finds its
 # own N: the body is called with a small one and scaled until a measurement
 # lasts long enough to mean anything.
