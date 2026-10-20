@@ -326,6 +326,16 @@ func (h *Site) Serve(req *http.Request, mut res *http.Response) !void {
 }
 ```
 
+Every file goes out with `Last-Modified` and an `ETag`, so a browser that already
+has it asks again with `If-None-Match` or `If-Modified-Since` and gets a 304 with
+no body when nothing changed. The tag is made from the file's size and modification
+time rather than a hash of its contents, which would mean reading the whole file to
+answer a request that wants none of it; it is marked weak (`W/"..."`) for the same
+reason, since it promises that nothing the filesystem saw happened, not that every
+byte is the same. When a request carries both headers, the tag decides, as RFC 9110
+says it must. `ServeFile` sends the same two headers but has no request to read the
+conditions from, so it always answers in full.
+
 **A path with `..` in it is refused, not resolved.** So are paths holding a NUL or
 a backslash, and paths too long for the buffer they would be built in. Resolving
 first and checking afterwards is where every traversal bug comes from, so this

@@ -1,0 +1,420 @@
+package time
+
+// Wall-clock seconds written as the two dates a server deals in: RFC 3339 for
+// an API and a log, and the HTTP date for Date, Last-Modified and Expires.
+// Always UTC, and only these two, named, rather than a format language — a
+// server needs these and a person reading the call should not have to work out
+// what "Mon Jan 2" stands for. Nothing allocates: the text goes into the
+// caller's slice.
+
+error NoSpace        = "the buffer given has no room for the result"
+error BadDate        = "that is not a date in a form this reads"
+error YearOutOfRange = "the year does not fit in four digits"
+
+const Rfc3339Size = 20  // 2026-10-20T14:03:00Z
+const HttpDateSize = 29 // Tue, 20 Oct 2026 14:03:00 GMT
+
+const secondsPerDay = 86400
+
+// Days since 1970-01-01 to a civil date and back, proleptic Gregorian, in the
+// form Howard Hinnant published ("chrono-compatible low-level date
+// algorithms"). The calendar is shifted to start in March so the leap day is
+// the last of its year, and a 400-year era repeats exactly.
+struct civil {
+    year  i64
+    month i64
+    day   i64
+}
+
+func floorDiv(a i64, b i64) i64 {
+    q := a / b
+    if a % b != 0 && (a < 0) != (b < 0) {
+        return q - 1
+    }
+    return q
+}
+
+func civilFromDays(days i64) civil {
+    z := days + 719468
+    era := floorDiv(z, 146097)
+    doe := z - era * 146097
+    yoe := (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    doy := doe - (365 * yoe + yoe / 4 - yoe / 100)
+    mp := (5 * doy + 2) / 153
+    day := doy - (153 * mp + 2) / 5 + 1
+    mut month := mp + 3
+    if mp >= 10 {
+        month = mp - 9
+    }
+    mut year := yoe + era * 400
+    if month <= 2 {
+        year += 1
+    }
+    return civil{year: year, month: month, day: day}
+}
+
+func daysFromCivil(y i64, month i64, day i64) i64 {
+    mut year := y
+    if month <= 2 {
+        year -= 1
+    }
+    era := floorDiv(year, 400)
+    yoe := year - era * 400
+    mut mp := month - 3
+    if month <= 2 {
+        mp = month + 9
+    }
+    doy := (153 * mp + 2) / 5 + day - 1
+    doe := yoe * 365 + yoe / 4 - yoe / 100 + doy
+    return era * 146097 + doe - 719468
+}
+
+func leap(year i64) bool {
+    return year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+func daysIn(year i64, month i64) i64 {
+    if month == 2 {
+        if leap(year) {
+            return 29
+        }
+        return 28
+    }
+    if month == 4 || month == 6 || month == 9 || month == 11 {
+        return 30
+    }
+    return 31
+}
+
+func monthNames() string {
+    return "JanFebMarAprMayJunJulAugSepOctNovDec"
+}
+
+func dayNames() string {
+    return "SunMonTueWedThuFriSat"
+}
+
+// --- writing ---------------------------------------------------------------
+
+// The pieces of one instant, checked once for both formats.
+struct moment {
+    date    civil
+    weekday i64
+    hour    i64
+    minute  i64
+    second  i64
+}
+
+func momentOf(unix i64) !moment {
+    days := floorDiv(unix, secondsPerDay)
+    rest := unix - days * secondsPerDay
+    date := civilFromDays(days)
+    if date.year < 0 || date.year > 9999 {
+        return error.YearOutOfRange
+    }
+    // 1970-01-01 was a Thursday.
+    mut weekday := (days + 4) % 7
+    if weekday < 0 {
+        weekday += 7
+    }
+    return moment{date: date, weekday: weekday, hour: rest / 3600,
+                  minute: rest / 60 % 60, second: rest % 60}
+}
+
+func put(mut into []u8, at u64, value i64, width u64) {
+    mut v := value
+    mut i := width
+    for i > 0 {
+        i -= 1
+        into[at + i] = u8(48 + v % 10)
+        v = v / 10
+    }
+}
+
+// 2026-10-20T14:03:00Z. The seconds are whole: this is a timestamp to read and
+// sort, and the clock that would justify a fraction is the monotonic one.
+func Rfc3339(unix i64, mut into []u8) !string {
+    if into.len < Rfc3339Size {
+        return error.NoSpace
+    }
+    m := try momentOf(unix)
+    put(into, 0, m.date.year, 4)
+    into[4] = 45 // '-'
+    put(into, 5, m.date.month, 2)
+    into[7] = 45
+    put(into, 8, m.date.day, 2)
+    into[10] = 84 // 'T'
+    put(into, 11, m.hour, 2)
+    into[13] = 58 // ':'
+    put(into, 14, m.minute, 2)
+    into[16] = 58
+    put(into, 17, m.second, 2)
+    into[19] = 90 // 'Z'
+    return string(into[0..Rfc3339Size])
+}
+
+// Tue, 20 Oct 2026 14:03:00 GMT — the IMF-fixdate of RFC 9110, the only form
+// a sender is allowed to write.
+func HttpDate(unix i64, mut into []u8) !string {
+    if into.len < HttpDateSize {
+        return error.NoSpace
+    }
+    m := try momentOf(unix)
+    days := dayNames()
+    months := monthNames()
+    day := u64(m.weekday) * 3
+    month := u64(m.date.month - 1) * 3
+    for i in 0..u64(3) {
+        into[i] = days[day + i]
+        into[8 + i] = months[month + i]
+    }
+    into[3] = 44 // ','
+    into[4] = 32
+    put(into, 5, m.date.day, 2)
+    into[7] = 32
+    into[11] = 32
+    put(into, 12, m.date.year, 4)
+    into[16] = 32
+    put(into, 17, m.hour, 2)
+    into[19] = 58
+    put(into, 20, m.minute, 2)
+    into[22] = 58
+    put(into, 23, m.second, 2)
+    into[25] = 32
+    into[26] = 71 // 'G'
+    into[27] = 77 // 'M'
+    into[28] = 84 // 'T'
+    return string(into[0..HttpDateSize])
+}
+
+// --- reading ---------------------------------------------------------------
+
+// `width` digits at `at`, and nothing else.
+func digits(text string, at u64, width u64) !i64 {
+    if at + width > text.len {
+        return error.BadDate
+    }
+    mut v i64 = 0
+    for i in 0..width {
+        c := text[at + i]
+        if c < 48 || c > 57 {
+            return error.BadDate
+        }
+        v = v * 10 + i64(c - 48)
+    }
+    return v
+}
+
+func expect(text string, at u64, c u8) !void {
+    if at >= text.len || text[at] != c {
+        return error.BadDate
+    }
+}
+
+// Where a three-letter name is in a table of them, or an error.
+func nameIndex(table string, text string, at u64) !i64 {
+    if at + 3 > text.len {
+        return error.BadDate
+    }
+    word := text[at..at + 3]
+    mut i u64 = 0
+    for i < table.len {
+        if table[i..i + 3] == word {
+            return i64(i / 3)
+        }
+        i += 3
+    }
+    return error.BadDate
+}
+
+func checked(year i64, month i64, day i64, hour i64, minute i64,
+             second i64) !i64 {
+    if month < 1 || month > 12 || day < 1 || day > daysIn(year, month) {
+        return error.BadDate
+    }
+    // 60 is a leap second, which Unix time has no way to say.
+    if hour > 23 || minute > 59 || second > 59 {
+        return error.BadDate
+    }
+    return daysFromCivil(year, month, day) * secondsPerDay + hour * 3600 +
+           minute * 60 + second
+}
+
+// Seconds since the epoch from an RFC 3339 timestamp, at whatever offset it
+// was written in: 2026-10-20T14:03:00Z, 2026-10-20T11:03:00.250-03:00. A
+// fraction is read and dropped, which is what the result's whole seconds can
+// hold. Lowercase t and z are accepted, as the RFC allows.
+func ParseRfc3339(text string) !i64 {
+    year := try digits(text, 0, 4)
+    try expect(text, 4, 45)
+    month := try digits(text, 5, 2)
+    try expect(text, 7, 45)
+    day := try digits(text, 8, 2)
+    if text.len < 11 || (text[10] != 84 && text[10] != 116) {
+        return error.BadDate
+    }
+    hour := try digits(text, 11, 2)
+    try expect(text, 13, 58)
+    minute := try digits(text, 14, 2)
+    try expect(text, 16, 58)
+    second := try digits(text, 17, 2)
+
+    mut at u64 = 19
+    if at < text.len && text[at] == 46 { // '.'
+        at += 1
+        start := at
+        for at < text.len && text[at] >= 48 && text[at] <= 57 {
+            at += 1
+        }
+        if at == start {
+            return error.BadDate
+        }
+    }
+    if at >= text.len {
+        return error.BadDate
+    }
+    mut offset i64 = 0
+    zone := text[at]
+    if zone == 90 || zone == 122 { // Z, z
+        at += 1
+    } else if zone == 43 || zone == 45 { // + -
+        oh := try digits(text, at + 1, 2)
+        try expect(text, at + 3, 58)
+        om := try digits(text, at + 4, 2)
+        if oh > 23 || om > 59 {
+            return error.BadDate
+        }
+        offset = oh * 3600 + om * 60
+        if zone == 45 {
+            offset = -offset
+        }
+        at += 6
+    } else {
+        return error.BadDate
+    }
+    if at != text.len {
+        return error.BadDate
+    }
+    local := try checked(year, month, day, hour, minute, second)
+    return local - offset
+}
+
+// Seconds since the epoch from an HTTP date. A recipient has to read all three
+// forms RFC 9110 lists, whichever one the other end was written in:
+//
+//     Sun, 06 Nov 1994 08:49:37 GMT     the one to send
+//     Sunday, 06-Nov-94 08:49:37 GMT    RFC 850, obsolete
+//     Sun Nov  6 08:49:37 1994          C's asctime, obsolete
+//
+// A two-digit year is 19xx from 69 up and 20xx below it, as most readers have
+// settled on. The day's name is checked to be one, not checked against the
+// date.
+func ParseHttpDate(text string) !i64 {
+    if text.len < 4 {
+        return error.BadDate
+    }
+    try nameIndex(dayNames(), text, 0)
+    if text[3] == 44 { // ','
+        return imfFixdate(text)
+    }
+    if text[3] == 32 {
+        return asctime(text)
+    }
+    return rfc850(text)
+}
+
+func clock(text string, at u64) !i64 {
+    hour := try digits(text, at, 2)
+    try expect(text, at + 2, 58)
+    minute := try digits(text, at + 3, 2)
+    try expect(text, at + 5, 58)
+    second := try digits(text, at + 6, 2)
+    if hour > 23 || minute > 59 || second > 59 {
+        return error.BadDate
+    }
+    return hour * 3600 + minute * 60 + second
+}
+
+func gmt(text string, at u64) !void {
+    if at + 3 != text.len || text[at..at + 3] != "GMT" {
+        return error.BadDate
+    }
+}
+
+func onDay(year i64, month i64, day i64, seconds i64) !i64 {
+    midnight := try checked(year, month, day, 0, 0, 0)
+    return midnight + seconds
+}
+
+// Sun, 06 Nov 1994 08:49:37 GMT
+func imfFixdate(text string) !i64 {
+    if text.len != HttpDateSize {
+        return error.BadDate
+    }
+    try expect(text, 4, 32)
+    day := try digits(text, 5, 2)
+    try expect(text, 7, 32)
+    month := try nameIndex(monthNames(), text, 8)
+    try expect(text, 11, 32)
+    year := try digits(text, 12, 4)
+    try expect(text, 16, 32)
+    seconds := try clock(text, 17)
+    try expect(text, 25, 32)
+    try gmt(text, 26)
+    return onDay(year, month + 1, day, seconds)
+}
+
+// Sunday, 06-Nov-94 08:49:37 GMT
+func rfc850(text string) !i64 {
+    mut at u64 = 0
+    for at < text.len && text[at] != 44 {
+        at += 1
+    }
+    full := [7]string{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday",
+                      "Friday", "Saturday"}
+    mut named := false
+    for i in 0..full.len {
+        if text[0..at] == full[i] {
+            named = true
+        }
+    }
+    if !named {
+        return error.BadDate
+    }
+    try expect(text, at, 44)
+    try expect(text, at + 1, 32)
+    day := try digits(text, at + 2, 2)
+    try expect(text, at + 4, 45)
+    month := try nameIndex(monthNames(), text, at + 5)
+    try expect(text, at + 8, 45)
+    short := try digits(text, at + 9, 2)
+    mut year := short + 2000
+    if short >= 69 {
+        year = short + 1900
+    }
+    try expect(text, at + 11, 32)
+    seconds := try clock(text, at + 12)
+    try expect(text, at + 20, 32)
+    try gmt(text, at + 21)
+    return onDay(year, month + 1, day, seconds)
+}
+
+// Sun Nov  6 08:49:37 1994 — the day padded with a space, not a zero.
+func asctime(text string) !i64 {
+    if text.len != 24 {
+        return error.BadDate
+    }
+    month := try nameIndex(monthNames(), text, 4)
+    try expect(text, 7, 32)
+    mut day i64 = 0
+    if text[8] == 32 {
+        day = try digits(text, 9, 1)
+    } else {
+        day = try digits(text, 8, 2)
+    }
+    try expect(text, 10, 32)
+    seconds := try clock(text, 11)
+    try expect(text, 19, 32)
+    year := try digits(text, 20, 4)
+    return onDay(year, month + 1, day, seconds)
+}

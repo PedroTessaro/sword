@@ -1226,6 +1226,33 @@ A method can be called on a temporary — `time.Since(start).AsMillis()` — exc
 one that writes through its receiver, which needs a binding to keep the
 change.
 
+Wall-clock seconds are written as the two dates a server deals in, always in
+UTC, into a slice the caller gives:
+
+```sword
+const Rfc3339Size = 20   // 2026-10-20T14:03:00Z
+const HttpDateSize = 29  // Tue, 20 Oct 2026 14:03:00 GMT
+
+func Rfc3339(unix i64, mut into []u8) !string
+func HttpDate(unix i64, mut into []u8) !string
+
+func ParseRfc3339(text string) !i64
+func ParseHttpDate(text string) !i64
+```
+
+```sword
+mut room := [32]u8{}
+try res.Headers.Set("Date", try time.HttpDate(time.Unix(), room[..]))
+```
+
+`ParseRfc3339` reads any offset (`Z`, `-03:00`, `+05:30`) and drops a fraction
+of a second. `ParseHttpDate` reads the three forms an HTTP recipient must
+accept — the IMF-fixdate above, the obsolete RFC 850 form with a two-digit year
+(69 and up is 19xx), and C's `asctime` — while `HttpDate` writes only the first,
+the one a sender may use. Years run from 0000 to 9999; outside them a date is
+`error.YearOutOfRange`, and a leap second, which Unix time cannot count, is
+refused.
+
 ### `std/testing`
 
 Tests live in `*_test.sword` beside the code and are found by name: `Test...`
@@ -1763,7 +1790,9 @@ func MimeType(path string) string            // by extension
 `Files` serves what a `{path...}` route caught, under its root. A path containing
 `..`, a NUL or a backslash is refused rather than resolved. A directory gets
 `Index` — `index.html` by default, and an empty `Index` makes directories 404.
-Only GET and HEAD; anything else is a 405.
+Only GET and HEAD; anything else is a 405. Both send `Last-Modified` and a weak
+`ETag` built from the size and modification time; `Files` answers
+`If-None-Match` and `If-Modified-Since` with 304, the tag taking precedence.
 
 Header lookup is case-insensitive. A request carries at most 32 headers and
 16 KiB of head; beyond that the connection is rejected. An accepted connection
