@@ -377,6 +377,49 @@ else
     pass=$((pass + 1))
 fi
 
+# -c stops at the object, which needs no runtime, so it is also how a program
+# is built for a machine nothing here can link for: the object for x86-64
+# Linux comes out the same on any machine clang targets.
+mkdir -p "$tmp/cross"
+printf 'func main() int {\n    return 0\n}\n' > "$tmp/cross/main.sword"
+expect_object() { # what, file, the first four bytes as od prints them
+    if [ ! -f "$2" ] || [ "$(od -An -tx1 -N4 "$2" | tr -d ' \n')" != "$3" ]; then
+        echo "FAIL $1: no object, or not the kind asked for"
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+}
+"$shield" "$tmp/cross/main.sword" -c -o "$tmp/cross/native.o" > /dev/null 2>&1
+if [ "$(uname -s)" = Darwin ]; then
+    expect_object "-c" "$tmp/cross/native.o" cffaedfe
+else
+    expect_object "-c" "$tmp/cross/native.o" 7f454c46
+fi
+"$shield" "$tmp/cross/main.sword" --target=x86_64-unknown-linux-gnu -c \
+    -o "$tmp/cross/linux.o" > /dev/null 2>&1
+expect_object "--target -c" "$tmp/cross/linux.o" 7f454c46
+
+refused() { # what, the text to find, arguments
+    what=$1 text=$2
+    shift 2
+    out=$("$shield" "$@" 2>&1)
+    if [ $? -eq 0 ] || ! printf '%s\n' "$out" | grep -qF "$text"; then
+        echo "FAIL $what: $out"
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+}
+refused "--target with 16-bit pointers" "not a 64-bit architecture" \
+    "$tmp/cross/main.sword" --target=avr -c
+refused "--target big-endian" "is big-endian" \
+    "$tmp/cross/main.sword" --target=s390x-ibm-linux -c
+refused "--target with no runtime for it" "make TARGET=x86_64-sword-none" \
+    "$tmp/cross/main.sword" --target=x86_64-sword-none -o "$tmp/cross/prog"
+refused "shield test --target" "test runs what it builds" \
+    test "$tmp/picked" --target=x86_64-unknown-linux-gnu
+
 # A reduction has to answer the same thing whatever the pool looks like. The
 # float sum is the one that shows it: adding the pieces in the order they
 # finish rounds differently from adding them in the order they were cut, so

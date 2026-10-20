@@ -1729,6 +1729,8 @@ shield test <file.sword | directory> [options]
   -I <dir>        another directory to search for packages
   --link <arg>    an object, a library or a linker option; one per --link
   --static        link the libraries `extern` names from their archives
+  --target=<t>    build for another machine, a 64-bit LLVM triple
+  -c              stop at the object file, linking nothing
   --mode=<m>      debug | safe | fast | small, default safe
   -O<level>       override the optimisation level
   -p <n>          test only: how many tests may run at once
@@ -1758,6 +1760,16 @@ program's own object and before the declared libraries:
 shield sheath.sword -o sheath --link shim.o --link -L/opt/homebrew/lib \
     --link -lsomething
 ```
+
+`--target` takes an LLVM triple, `x86_64-unknown-linux-gnu` or
+`aarch64-apple-macos`, and passes it to clang. Sword lays memory out in 64-bit
+words — every pointer, length and `usize` is eight bytes before LLVM sees the
+program — so only a 64-bit, little-endian machine is accepted; a narrower one
+would get every layout wrong. Linking needs a runtime built for the machine
+(see [Installing](install.md#a-runtime-for-another-machine)). `-c` stops at the
+object file instead, and needs nothing but clang: it is how a program goes
+somewhere this machine cannot link for, and the rest of the line comes from
+`--emit-link`.
 
 A build that links by its own means — through `--emit-llvm` and a Makefile, say
 — asks `--emit-link` for the rest of the line: what the runtime was built

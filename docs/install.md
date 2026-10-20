@@ -123,6 +123,32 @@ SWORD_ROOT=/opt/sword/share/sword shield program.sword -o program
 Imports also resolve relative to the file being compiled, which is how a
 program finds packages that live beside it.
 
+## A runtime for another machine
+
+`shield --target=<triple>` builds for another machine, and links against a
+runtime built for it. `make TARGET=<triple>` builds one beside this machine's own,
+as `libsword_rt-<triple>.a`, and `make install` installs it with the rest:
+
+```sh
+make TARGET=x86_64-apple-macos                    # another Apple architecture
+make TARGET=aarch64-linux-gnu SYSROOT=/path/to/sysroot
+```
+
+clang is a cross compiler by nature. What it needs from the other machine is
+its C and C++ headers and libraries — a sysroot — unless they are this
+machine's own, which is the case for the other Apple architecture. Linking a
+program for another machine needs the same sysroot, and a linker that can
+write for it:
+
+```sh
+shield app.sword --target=aarch64-linux-gnu -o app \
+    --link --sysroot=/path/to/sysroot --link -fuse-ld=lld
+```
+
+The runtime switches between tasks in a few lines of assembly written for
+x86-64 and aarch64, so those are the machines it builds for, and it is built
+without TLS: where OpenSSL for another machine lives is not something to guess.
+
 ## Editors
 
 `swordls` speaks LSP over stdin and stdout. It gives you diagnostics as you
