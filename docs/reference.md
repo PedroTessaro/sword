@@ -1120,8 +1120,9 @@ func UnixNanos() i64
 func Sleep(d Duration)            // the scheduler is told first
 ```
 
-A method needs a value with an address, so `time.Since(start).AsMillis()` does
-not compile — bind the duration first.
+A method can be called on a temporary — `time.Since(start).AsMillis()` — except
+one that writes through its receiver, which needs a binding to keep the
+change.
 
 ### `std/testing`
 
