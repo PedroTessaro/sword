@@ -1001,6 +1001,44 @@ try crypto.Random(token[0..32])
 the seed, which is what a simulation wants and exactly what a secret must not
 be.
 
+### `std/encoding`
+
+Bytes as text and back: hex, and base64 in the two alphabets of RFC 4648.
+Like `std/crypto` it allocates nothing — each function writes into the slice it
+is given and answers with the part it filled, and a slice too small is
+`error.NoSpace`, never a write past its end.
+
+```sword
+func Hex(src []u8, mut into []u8) !string           // lowercase
+func DecodeHex(text string, mut into []u8) !u64     // either case
+
+func Base64(src []u8, mut into []u8) !string        // + and /, padded with =
+func Base64Url(src []u8, mut into []u8) !string     // - and _, no padding
+func DecodeBase64(text string, mut into []u8) !u64
+func DecodeBase64Url(text string, mut into []u8) !u64
+
+func HexSize(n u64) u64        // the room an encoding of n bytes takes
+func Base64Size(n u64) u64
+func Base64UrlSize(n u64) u64
+```
+
+The standard alphabet is what SCRAM, MIME and HTTP Basic authentication use;
+the URL one is what goes into a URL, a cookie or a JWT, where `+`, `/` and `=`
+would have to be escaped.
+
+```sword
+mut token := [32]u8{}
+try crypto.Random(token[0..32])
+mut room := [43]u8{}
+cookie := try encoding.Base64Url(token[0..32], room[..])
+```
+
+Decoding is strict. Padding is required in the standard form and optional in
+the URL one, nothing outside the alphabet is accepted — not a line break, not
+a space — and the unused bits of the last character must be zero. A lenient
+decoder reads several texts as the same bytes, and then a token that was
+checked after decoding no longer has one spelling.
+
 ### `std/num`
 
 Adding floating point loses the small terms: once the running total is large
