@@ -189,6 +189,56 @@ else
     fi
 fi
 
+# An integer narrower than an int reaches C widened, the way C would have
+# passed it. Apple's arm64 leaves the widening to the caller, so without it the
+# callee reads -117 as whatever the register's upper bits happened to say.
+mkdir -p "$tmp/narrow"
+cat > "$tmp/narrow/shim.c" <<'EOF'
+#include <stdbool.h>
+#include <stdint.h>
+
+int sword_widen8(int8_t x) { return x; }
+unsigned sword_widen16(uint16_t x) { return x; }
+int sword_truth(bool b) { return b; }
+EOF
+cc -O2 -c "$tmp/narrow/shim.c" -o "$tmp/narrow/shim.o" 2>/dev/null
+cat > "$tmp/narrow/main.sword" <<'EOF'
+extern func sword_widen8(x i8) i32
+extern func sword_widen16(x u16) u32
+extern func sword_truth(b bool) i32
+
+func main() int {
+    mut small i8 = 117
+    small = -small
+    if sword_widen8(small) != -117 {
+        return 1
+    }
+    wide u16 = 65535
+    if sword_widen16(wide) != 65535 {
+        return 2
+    }
+    if sword_truth(small < 0) != 1 {
+        return 3
+    }
+    return 0
+}
+EOF
+if ! "$shield" "$tmp/narrow/main.sword" -o "$tmp/narrow/prog" \
+        --link "$tmp/narrow/shim.o" > "$tmp/narrow/log" 2>&1; then
+    echo "FAIL narrow extern: compilation failed"
+    sed 's/^/     /' "$tmp/narrow/log"
+    fail=$((fail + 1))
+else
+    "$tmp/narrow/prog"
+    got=$?
+    if [ "$got" != 0 ]; then
+        echo "FAIL narrow extern: exit $got"
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+fi
+
 # A reduction has to answer the same thing whatever the pool looks like. The
 # float sum is the one that shows it: adding the pieces in the order they
 # finish rounds differently from adding them in the order they were cut, so
