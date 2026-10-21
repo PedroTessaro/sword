@@ -149,6 +149,7 @@ here does.
 ```sword
 if cond { } else if cond { } else { }
 if x := optional { } else { }
+if mut x := optional { }          // a copy that can be written
 
 for { }                            // until break or return
 for cond { }
@@ -157,6 +158,7 @@ for x in xs { }                    // elements of a slice, array or string
 for i, x in xs { }                 // with the position
 for part in xs.chunks(n) { }
 for off, part in xs.chunks(n) { }
+for x := optional { }              // while it holds something; `for mut x` too
 
 switch subject { case a, b: ... default: ... }
 

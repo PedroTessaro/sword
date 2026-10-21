@@ -3345,8 +3345,8 @@ struct Checker {
           return;
         }
         push_scope();
-        n->sym = declare(n->name, const_cast<Type *>(opt_payload(t)), false,
-                         n->pos);
+        n->sym = declare(n->name, const_cast<Type *>(opt_payload(t)),
+                         n->is_mut, n->pos);
         check_stmt(n->body);
         pop_scope();
         check_stmt(n->els);
@@ -3371,8 +3371,8 @@ struct Checker {
           pop_scope();
           return;
         }
-        n->sym = declare(n->name, const_cast<Type *>(opt_payload(t)), false,
-                         n->name_pos);
+        n->sym = declare(n->name, const_cast<Type *>(opt_payload(t)),
+                         n->is_mut, n->name_pos);
         loop_depth++;
         check_stmt(n->body);
         loop_depth--;
