@@ -4,6 +4,32 @@ Releases are numbered by [semantic versioning](https://semver.org): until 1.0,
 a minor version may change the language, and each one says how. Each release is
 also named for a step in making a blade, in the order they happen.
 
+## 0.2.4 — Fold
+
+*2026-10-21.* A patch to Fold for programs that talk to C: C's types by their
+C names, and the errno a failing C function leaves behind.
+
+### Standard library
+
+- **`std/c`** names C's types the way a header does — `c.Int`, `c.Long`,
+  `c.SizeT`, `c.SSizeT`, `c.Double`, `c.Bool`, `c.String` for a
+  `const char *`, `c.Ptr` for a `void *`, and the rest — so a declaration
+  copied from a header reads like the original. Each is an alias, so a `c.Int`
+  is an `i32` and passes for one. `c.Char` is `u8`, for text; a plain `char`
+  passed by value takes `c.SChar` or `c.UChar`, since whether it is signed is
+  the platform's choice.
+- **`os.Errno`** reads the errno a C function just left, and
+  **`os.ClearErrno`** zeroes it for `strtol` and its family, which say they
+  failed only through errno. errno belongs to the thread, so it is read
+  straight after the call, before anything that could wait.
+
+### Documentation
+
+- The Neovim section of the editors' README, with a fix for installing
+  `swordls` under Lua's conventions.
+
+Nothing that compiled before stops compiling.
+
 ## 0.2.3 — Fold
 
 *2026-10-20.* A hotfix to Fold for programs that talk to C: strings cross
