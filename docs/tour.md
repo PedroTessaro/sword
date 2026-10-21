@@ -1350,6 +1350,27 @@ extern "z" func zlibVersion() [*]u8
 It is linked dynamically unless you build with `shield --static`, which takes
 it from `libz.a` instead.
 
+`std/c` gives C's types their C names, so a declaration reads like the header
+it came from, and `os.Errno` reads what a failing call left behind:
+
+```sword
+import "std/c"
+import "std/io"
+import "std/os"
+
+extern func close(fd c.Int) c.Int
+
+func main() !int {
+    if close(-1) < 0 {
+        try io.Printf("errno {}\n", os.Errno())
+    }
+    return 0
+}
+```
+
+Read errno straight after the call. It belongs to the thread, and a task that
+waits for anything may carry on from another one.
+
 A C function can be a value too. Its type is `extern func(...)`, kept apart
 from `func(...)`, which only ever points at Sword code. A Sword function can be
 handed to C wherever C expects one — this is how `qsort` gets its comparison:

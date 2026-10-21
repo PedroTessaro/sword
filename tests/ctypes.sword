@@ -1,0 +1,51 @@
+// expect: 42
+// expect-output: C's types and errno
+// Declarations in C's own names, against libc. strtol is the case errno exists
+// for: an answer of LONG_MAX is a real number too, so only errno says whether
+// the text overflowed, and only if it was zero before the call.
+
+import "std/c"
+import "std/io"
+import "std/os"
+import "std/strings"
+
+extern func abs(x c.Int) c.Int
+extern func strlen(s c.String) c.SizeT
+extern func strtol(s c.String, end ?[*]c.String, base c.Int) c.Long
+extern func close(fd c.Int) c.Int
+
+func main() !int {
+    if abs(-7) != 7 {
+        return 1
+    }
+    mut room := [32]u8{}
+    big := try strings.ToC("99999999999999999999", room[..])
+    if strlen(big) != 20 {
+        return 2
+    }
+
+    os.ClearErrno()
+    small := strtol("1234\x00".ptr, nil, 10)
+    if small != 1234 || os.Errno() != 0 {
+        return 3
+    }
+    os.ClearErrno()
+    n := strtol(big, nil, 10)
+    // ERANGE is 34 on Linux and on macOS.
+    if n != 9223372036854775807 || os.Errno() != 34 {
+        return 4
+    }
+
+    // EBADF is 9 on both too.
+    if close(-1) != -1 || os.Errno() != 9 {
+        return 5
+    }
+    // An alias is the type itself: no conversion either way.
+    x c.Int = 5
+    y i32 = x
+    if y != 5 {
+        return 6
+    }
+    try io.Println("C's types and errno")
+    return 42
+}
