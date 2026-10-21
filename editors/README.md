@@ -28,15 +28,16 @@ language — see [where a new line lands](#where-a-new-line-lands).
 
 ## Neovim
 
+Drop the following lua snippet into your Neovim configuration file:
 ```lua
 vim.opt.runtimepath:append('/path/to/sword/editors/vim')
-local sword = dofile('/path/to/sword/editors/nvim/sword.lua')
+local sword = dofile(vim.fs.abspath('/path/to/sword/editors/nvim/sword.lua'))
 sword.link_defaults()   -- optional: links @lsp.type.* to the standard groups
 sword.setup{}           -- finds swordls on PATH or beside the repository
 ```
 
-If you installed with `make install`, the paths are
-`~/.local/share/sword/editors/vim` and `~/.local/share/sword/editors/nvim`.
+If you installed the language using `make install`, the paths are `~/.local/share/sword/editors/vim` and `~/.local/share/sword/editors/nvim`.
+Be sure to utilize the `vim.fs.abspath` file system utility in the `dofile` function. Lua interprets the `~` characters as a literal during path expansion.
 
 The `editors/vim` directory is what indents: four spaces, a new line placed by
 the brackets around it, and a comment that carries on when you press Enter

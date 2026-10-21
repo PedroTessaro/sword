@@ -185,6 +185,10 @@ int64_t sword_os_raise_max_files(int64_t want) {
 
 int64_t sword_os_pid(void) { return (int64_t)getpid(); }
 
+// For the C functions that only fail through errno, which has to be zero
+// before they are called. Reading goes through sword_errno, for its reason.
+void sword_os_clear_errno(void) { errno = 0; }
+
 int32_t sword_os_kill(int64_t pid, int32_t sig) {
   return kill((pid_t)pid, sig) == 0 ? 0 : -1;
 }

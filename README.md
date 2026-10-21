@@ -53,7 +53,7 @@ make
 make install
 ```
 
-That builds the latest release, 0.2.3 "Fold", from `main`; `develop` has
+That builds the latest release, 0.2.4 "Fold", from `main`; `develop` has
 what is coming next. What each release changed is in
 [CHANGELOG.md](CHANGELOG.md).
 
@@ -123,8 +123,9 @@ the same property (`std/par`), printing
 and formatting (`std/io`, `std/fmt`), JSON (`std/json`), hashing, HMAC and
 keys derived from passwords (`std/crypto`), hex and base64 (`std/encoding`),
 arguments and environment (`std/os`), files, directories and
-standard input (`std/fs`), running another program (`std/process`), loading a
-library while the program runs (`std/dl`), clocks and
+standard input (`std/fs`), running another program (`std/process`), C's
+types by their C names (`std/c`), loading a library while the program runs
+(`std/dl`), clocks and
 durations (`std/time`), scheduler counters (`std/runtime`), TCP and UDP over IPv4 and IPv6 (`std/net`),
 TLS (`std/tls`), HTTP/1.1 with keep-alive, routing, timeouts, static files and
 HTTPS, server and client (`std/http`), and tests (`std/testing`, run by

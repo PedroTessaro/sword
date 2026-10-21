@@ -1196,7 +1196,17 @@ func RaiseMaxFiles(want u64) !u64 // 0 asks for the hard limit
 func Pid() u64
 func Cpus() u64
 func Hostname() ?string
+
+func Errno() i32                  // what the last C call left
+func ClearErrno()
 ```
+
+`Errno` is for an `extern` declaration that fails the way C does. errno belongs
+to the thread, and a task that waits — on I/O, a lock, a channel, a sleep, the
+end of a scope — may resume on another, so it is read straight after the call
+and before anything that could wait. `ClearErrno` is for the functions that say
+they failed only through errno, `strtol` and its family, whose answer means
+nothing unless errno was zero before the call.
 
 A signal handler may do almost nothing safely, so a signal arrives down a pipe
 and `WaitSignal` is an ordinary task parked on the other end. That is the whole
@@ -1467,6 +1477,36 @@ program reading until the end of its input is told that was all of it.
 Starting a program and waiting for one both stop a thread and neither is
 anything a poller can help with, so both go to the same pool as file I/O and
 the task waiting is put down like any other.
+
+### `std/c`
+
+C's names for its types, so an `extern` declaration says what its header says.
+Each is an alias, so a `c.Int` is an `i32` and passes for one without a
+conversion.
+
+```sword
+extern func write(fd c.Int, buf c.Ptr, n c.SizeT) c.SSizeT
+```
+
+| C | `std/c` | is |
+|---|---|---|
+| `short`, `unsigned short` | `Short`, `UShort` | `i16`, `u16` |
+| `int`, `unsigned int` | `Int`, `UInt` | `i32`, `u32` |
+| `long`, `unsigned long` | `Long`, `ULong` | `i64`, `u64` |
+| `long long`, `unsigned long long` | `LongLong`, `ULongLong` | `i64`, `u64` |
+| `size_t`, `ssize_t`, `ptrdiff_t` | `SizeT`, `SSizeT`, `PtrDiffT` | `u64`, `i64`, `i64` |
+| `float`, `double` | `Float`, `Double` | `f32`, `f64` |
+| `_Bool` | `Bool` | `bool` |
+| `char`, `signed char`, `unsigned char` | `Char`, `SChar`, `UChar` | `u8`, `i8`, `u8` |
+| `const char *` | `String` | `[*]u8` |
+| `void *` | `Ptr` | `[*]u8` |
+
+The sizes are those of every platform Sword builds for, all of them 64-bit.
+Whether a plain `char` is signed is the platform's choice: it is on x86-64 and
+on Apple's arm64, not on Linux's arm64. `Char` is for text, where only the bytes
+matter; a single `char` passed by value takes `SChar` or `UChar`, as the target
+has it. A pointer C may answer with NULL is `?c.String` or `?c.Ptr`, and a
+pointer to anything else stays `[*]T`.
 
 ### `std/dl`
 
