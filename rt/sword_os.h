@@ -30,6 +30,7 @@ int32_t sword_os_wait_signal(void);
 int64_t sword_os_max_files(void);
 int64_t sword_os_raise_max_files(int64_t want);
 int64_t sword_os_pid(void);
+void sword_os_clear_errno(void);
 int32_t sword_os_kill(int64_t pid, int32_t sig);
 const char *sword_os_hostname(int64_t *len);
 int64_t sword_os_cpus(void);
