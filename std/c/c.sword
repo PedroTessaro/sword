@@ -1,0 +1,43 @@
+package c
+
+// C's names for its types, so a declaration copied from a header says what the
+// header says:
+//
+//     extern func write(fd c.Int, buf c.Ptr, n c.SizeT) c.SSizeT
+//
+// Each one is the Sword type of the same size on every platform Sword builds
+// for, which are all 64-bit, with `long` and pointers 64 bits wide. Should a
+// target ever differ, this file is the one place it shows.
+
+type Short = i16
+type UShort = u16
+type Int = i32
+type UInt = u32
+type Long = i64
+type ULong = u64
+type LongLong = i64
+type ULongLong = u64
+
+type SizeT = u64
+type SSizeT = i64
+type PtrDiffT = i64
+
+type Float = f32
+type Double = f64
+
+// `_Bool` is one byte holding 0 or 1, which is what a `bool` is here.
+type Bool = bool
+
+// Whether a plain `char` is signed is the platform's choice — it is on x86-64
+// and Apple's arm64, not on Linux's — so a single `char` passed by value takes
+// SChar or UChar, whichever the target says. Char is for text, where only the
+// bytes matter.
+type Char = u8
+type SChar = i8
+type UChar = u8
+
+// A `const char *` and a `void *`. Nothing tracks what a pointer points at
+// past this point, so a typed pointer stays `[*]T`. A pointer C may hand back
+// as NULL is `?c.String` or `?c.Ptr`.
+type String = [*]u8
+type Ptr = [*]u8

@@ -1,0 +1,33 @@
+// expect: 42
+// expect-output: C's types by their names
+// Declarations in C's own names, against libc.
+
+import "std/c"
+import "std/io"
+import "std/strings"
+
+extern func abs(x c.Int) c.Int
+extern func strlen(s c.String) c.SizeT
+extern func strtol(s c.String, end ?[*]c.String, base c.Int) c.Long
+
+func main() !int {
+    if abs(-7) != 7 {
+        return 1
+    }
+    mut room := [32]u8{}
+    text := try strings.ToC("1234", room[..])
+    if strlen(text) != 4 {
+        return 2
+    }
+    if strtol(text, nil, 10) != 1234 {
+        return 3
+    }
+    // An alias is the type itself: no conversion either way.
+    x c.Int = 5
+    y i32 = x
+    if y != 5 {
+        return 4
+    }
+    try io.Println("C's types by their names")
+    return 42
+}
