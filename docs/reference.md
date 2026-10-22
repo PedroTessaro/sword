@@ -658,7 +658,7 @@ func (mut w *Writer) Flush() !void
 ```sword
 interface Allocator {
     Alloc(n u64, align u64) ?[*]u8
-    Release(p [*]u8, n u64)
+    Release(mut p [*]u8, n u64)
 }
 
 func Align(offset u64, align u64) u64
@@ -672,7 +672,7 @@ func Free[T](mut a Allocator, xs []T)
 ```sword
 func NewArena(backing []u8) Arena
 func (mut a *Arena) Alloc(n u64, align u64) ?[*]u8
-func (mut a *Arena) Release(p [*]u8, n u64)     // does nothing
+func (mut a *Arena) Release(mut p [*]u8, n u64)     // does nothing
 func (mut a *Arena) Reset()
 func (a *Arena) Used() u64
 ```
@@ -685,7 +685,7 @@ reads something obviously wrong. `shield test` sets it on every test's arena.
 ```sword
 func NewWatched(a Allocator) Watched            // { inner, Written }
 func (mut w *Watched) Alloc(n u64, align u64) ?[*]u8
-func (mut w *Watched) Release(p [*]u8, n u64)   // writes over it first
+func (mut w *Watched) Release(mut p [*]u8, n u64)   // writes over it first
 ```
 
 Both cost a write per byte released, so neither is on by default. See [the tour on
@@ -696,7 +696,7 @@ memory that has gone away](tour.md#memory-that-has-gone-away).
 ```sword
 func NewSystem() System
 func (mut s *System) Alloc(n u64, align u64) ?[*]u8
-func (mut s *System) Release(p [*]u8, n u64)
+func (mut s *System) Release(mut p [*]u8, n u64)
 func (s *System) Live() u64
 ```
 
@@ -1810,11 +1810,11 @@ answers 405 rather than 404. Up to 64 routes, no allocation:
 
 ```sword
 func NewMux() Mux
-func (mut m *Mux) Handle(method string, pattern string, h Handler) !void
-func (mut m *Mux) Get(pattern string, h Handler) !void
-func (mut m *Mux) Post(pattern string, h Handler) !void
-func (mut m *Mux) Put(pattern string, h Handler) !void
-func (mut m *Mux) Delete(pattern string, h Handler) !void
+func (mut m *Mux) Handle(method string, pattern string, mut h Handler) !void
+func (mut m *Mux) Get(pattern string, mut h Handler) !void
+func (mut m *Mux) Post(pattern string, mut h Handler) !void
+func (mut m *Mux) Put(pattern string, mut h Handler) !void
+func (mut m *Mux) Delete(pattern string, mut h Handler) !void
 ```
 
 Targets and query strings, decoding into space you provide:
