@@ -94,7 +94,28 @@ import "path/to/package"
 ```
 
 `mut` on a parameter or receiver means the callee may write through it. Only a
-mutable binding can be passed to one.
+mutable binding can be passed to one, and `&x` only when `x` is one.
+
+A copy of a slice or a pointer reaches the same memory as the original, so a
+`mut` binding made from one lent read-only can be reassigned, and its own fields
+written, but nothing it reaches through that copy:
+
+```sword
+func find(head ?*Node, key i32) ?*Node {
+    mut cur := head        // fine: cur moves along the list
+    cur = n.next           // fine
+    cur.key = 0            // refused: cur was copied from head
+}
+```
+
+A struct holding a read-only slice is the same: `p.at += 1` is the struct's own
+field, `p.input[0] = 1` goes through the copy. Whether a method or a function
+writes through what it is given is worked out from its body, so `p.Step()` is
+allowed when Step only moves `p.at`. A call through an interface or a function
+value is taken to write whatever it may. A value with a read-only part cannot be
+stored behind a pointer, and what a function hands back of its arguments keeps
+the right it was given. The check does not follow order within a function: a
+binding that is ever given read-only memory cannot be written through anywhere.
 
 `type Name = T` gives a type a second name, nothing more: a `Name` is a `T`, and
 values pass between the two without a conversion. It is for a name that says
