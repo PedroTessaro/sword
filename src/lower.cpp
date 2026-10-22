@@ -28,6 +28,7 @@ struct Lowerer {
     // A `lock` block's release rather than a user statement: the slot holds the
     // address of the guard, so every way out of the block unlocks it.
     int unlock_guard = -1;
+    bool unlock_read = false;
   };
   // One list per open block. Leaving a block runs its list backwards; leaving
   // through an error runs the errdefer entries as well.
@@ -347,16 +348,41 @@ struct Lowerer {
     Type *opaque = types.rawptr(types.u8_ty);
     int holder = alloca_slot(opaque);
     store(gep_named(base, box, "guard"), holder, opaque);
-    call_runtime("sword_mutex_lock", {load(holder, opaque)}, types.void_ty);
+
+    // `if lock` only goes in when the guard was free; the other branch runs
+    // without it.
+    int else_bb = -1, join = -1;
+    if (n->is_try) {
+      const char *attempt = n->is_read ? "sword_mutex_try_lock_read"
+                                       : "sword_mutex_try_lock";
+      int got = call_runtime(attempt, {load(holder, opaque)}, types.bool_ty);
+      int then_bb = new_block();
+      else_bb = n->els ? new_block() : -1;
+      join = new_block();
+      cond_branch(got, then_bb, else_bb >= 0 ? else_bb : join);
+      cur = then_bb;
+    } else {
+      call_runtime(n->is_read ? "sword_mutex_lock_read" : "sword_mutex_lock",
+                   {load(holder, opaque)}, types.void_ty);
+    }
 
     n->sym->slot = alloca_slot(n->sym->type);
     store(gep_named(base, box, "value"), n->sym->slot, n->sym->type);
 
     scopes.emplace_back();
-    scopes.back().push_back({nullptr, false, holder});
+    scopes.back().push_back({nullptr, false, holder, n->is_read});
     stmt(n->body);
     emit_defers(scopes.size() - 1, false);
     scopes.pop_back();
+
+    if (!n->is_try) return;
+    branch(join);
+    if (else_bb >= 0) {
+      cur = else_bb;
+      stmt(n->els);
+      branch(join);
+    }
+    cur = join;
   }
 
   void scope_stmt(Node *n) {
@@ -745,7 +771,9 @@ struct Lowerer {
         const Deferred &entry = list[j - 1];
         if (entry.unlock_guard >= 0) {
           int guard = load(entry.unlock_guard, types.rawptr(types.u8_ty));
-          call_runtime("sword_mutex_unlock", {guard}, types.void_ty);
+          call_runtime(entry.unlock_read ? "sword_mutex_unlock_read"
+                                         : "sword_mutex_unlock",
+                       {guard}, types.void_ty);
         } else if (!entry.on_error_only || error_path) {
           stmt(entry.stmt);
         }

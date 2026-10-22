@@ -686,7 +686,40 @@ struct Parser {
     return n;
   }
 
+  // `lock name := shared { }`, `lock read name := shared { }`, past the word
+  // `lock`. `read` is only special here, before a name and `:=`, so a binding
+  // called `read` still works: `lock read := shared`.
+  Node *lock_stmt(Node *n) {
+    if (kind() == TK_IDENT && peek().text == "read" && kind(1) == TK_IDENT &&
+        kind(2) == TK_DEFINE) {
+      advance();
+      n->is_read = true;
+    }
+    if (kind() != TK_IDENT || kind(1) != TK_DEFINE) {
+      fail("expected 'lock name := shared'");
+      return nullptr;
+    }
+    n->name_pos = peek().pos;
+    n->name = advance().text;
+    advance(); // ':='
+    n->lhs = header_expr();
+    if (!n->lhs) return nullptr;
+    n->body = block();
+    return n->body ? n : nullptr;
+  }
+
   Node *if_stmt() {
+    Pos at = peek().pos;
+    // `if lock c := shared { } else { }` takes the guard only if nobody has it.
+    if (kind(1) == TK_LOCK) {
+      advance(); // 'if'
+      Node *n = lock_stmt(make(ND_LOCK, advance().pos));
+      if (!n) return nullptr;
+      n->pos = at;
+      n->is_try = true;
+      if (match(TK_ELSE)) n->els = kind() == TK_IF ? if_stmt() : block();
+      return n;
+    }
     Node *n = make(ND_IF, advance().pos);
     if (kind() == TK_MUT && kind(1) == TK_IDENT && kind(2) == TK_DEFINE) {
       advance();
@@ -873,20 +906,8 @@ struct Parser {
       n->lhs = expr();
       return n->lhs ? n : nullptr;
     }
-    case TK_LOCK: {
-      Node *n = make(ND_LOCK, advance().pos);
-      if (kind() != TK_IDENT || kind(1) != TK_DEFINE) {
-        fail("expected 'lock name := shared'");
-        return nullptr;
-      }
-      n->name_pos = peek().pos;
-      n->name = advance().text;
-      advance(); // ':='
-      n->lhs = header_expr();
-      if (!n->lhs) return nullptr;
-      n->body = block();
-      return n->body ? n : nullptr;
-    }
+    case TK_LOCK:
+      return lock_stmt(make(ND_LOCK, advance().pos));
     case TK_DEFER: case TK_ERRDEFER: {
       Node *n = make(ND_DEFER, pos);
       n->is_errdefer = advance().kind == TK_ERRDEFER;

@@ -55,6 +55,7 @@ struct Checker {
   struct HeldLock {
     Symbol *root;
     Pos at;
+    bool read;
   };
   std::vector<HeldLock> held_locks;
   std::vector<size_t> scope_lock_base;
@@ -1616,6 +1617,17 @@ struct Checker {
       error(n->pos, "'%s' takes no arguments", name.c_str());
       return nullptr;
     }
+    // The list of waiters is only ever touched by whoever holds the guard
+    // alone; readers hold it together.
+    Symbol *root = share_root(field->lhs);
+    for (const HeldLock &open : held_locks) {
+      if (!root || open.root != root || !open.read) continue;
+      error(n->pos, "'%s' needs 'lock', not 'lock read': readers hold the value "
+                    "together, and only one holder may wait or wake",
+            name.c_str());
+      note(open.at, "the 'lock read' is here");
+      return nullptr;
+    }
     n->form = CALL_SHARED;
     n->ival = name == "Wait" ? 0 : (name == "Notify" ? 1 : 2);
     n->name = name;
@@ -2877,12 +2889,17 @@ struct Checker {
       return;
     }
 
+    // A reader shares the value with other readers, so its binding is
+    // immutable and nothing reached through it can be written.
     push_scope();
-    n->sym = declare(n->name, types.ptr(owner->elem), true, n->name_pos);
-    held_locks.push_back({root, n->pos});
+    n->sym =
+        declare(n->name, types.ptr(owner->elem), !n->is_read, n->name_pos);
+    held_locks.push_back({root, n->pos, n->is_read});
     check_stmt(n->body);
     held_locks.pop_back();
     pop_scope();
+    // `if lock`: the other branch runs without the guard, and without the name.
+    check_stmt(n->els);
   }
 
   // A task is a call and nothing else: everything it can reach is written on
@@ -3494,7 +3511,10 @@ struct Checker {
       return !n->is_range && !n->cond; // `for {}` only exits via return
     // Leaving a `lock` releases it on the way out, so a `return` inside one
     // counts the same as a `return` in a plain block.
-    case ND_LOCK: return always_returns(n->body);
+    case ND_LOCK:
+      if (n->is_try)
+        return n->els && always_returns(n->body) && always_returns(n->els);
+      return always_returns(n->body);
     // Only with a `default`: without one, falling past every case is a path.
     case ND_SWITCH: {
       // An exhaustive switch over an enum needs no default: the checker has
@@ -3524,6 +3544,8 @@ struct Checker {
     case ND_IF:
       return n->els && always_leaves(n->body) && always_leaves(n->els);
     case ND_LOCK:
+      if (n->is_try)
+        return n->els && always_leaves(n->body) && always_leaves(n->els);
       return always_leaves(n->body);
     default:
       return always_returns(n);

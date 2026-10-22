@@ -72,11 +72,13 @@ nil       orelse    package   parallel  reduce    return    scope
 select    spawn     struct    switch    true      try
 ```
 
-`error`, `type` and `weak` are not keywords. Each is special in one position
-only — `error` and `type` at the start of a top-level declaration followed by a
-name, `weak` between `extern` and what it declares — and is an ordinary
-identifier everywhere else. That is what keeps `error.Timeout` an expression,
-and a field or a variable called `type` a name like any other.
+`error`, `type`, `weak` and `read` are not keywords. Each is special in one
+position only — `error` and `type` at the start of a top-level declaration
+followed by a name, `weak` between `extern` and what it declares, `read` after
+`lock` when a name and `:=` follow it — and is an ordinary identifier
+everywhere else. That is what keeps `error.Timeout` an expression, a field or a
+variable called `type` a name like any other, and `lock read := t` a lock
+whose binding is called `read`.
 
 An identifier that begins with an upper-case letter is exported from its
 package; that is a rule of the checker, not of the grammar.
@@ -234,7 +236,7 @@ VarDecl     = [ "mut" ] identifier ( ":=" Expr | Type "=" Expr ) .
 AssignOp    = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "+%=" | "-%=" | "*%="
             | "&=" | "|=" | "^=" | "<<=" | ">>=" .
 
-IfStmt      = "if" [ [ "mut" ] identifier ":=" ] Expr Block
+IfStmt      = "if" ( [ [ "mut" ] identifier ":=" ] Expr Block | LockStmt )
               [ "else" ( IfStmt | Block ) ] .
 
 ForStmt     = "for" [ "mut" ] identifier ":=" Expr Block
@@ -253,7 +255,7 @@ CommClause  = identifier ":=" "<-" Expr
             | "<-" Expr
             | Expr "<-" Expr .
 
-LockStmt    = "lock" identifier ":=" Expr Block .
+LockStmt    = "lock" [ "read" ] identifier ":=" Expr Block .
 ```
 
 A `return` takes an expression unless the statement ends where the word does.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 // The ABI between generated code and the scheduler. Every task is a thunk the
@@ -62,6 +63,14 @@ enum { SWORD_GUARD_SIZE = 32 };
 
 void sword_mutex_lock(void *guard);
 void sword_mutex_unlock(void *guard);
+
+// Any number of readers, or one writer. Wait and Notify need the writer's.
+void sword_mutex_lock_read(void *guard);
+void sword_mutex_unlock_read(void *guard);
+
+// The guard if it is free now; false, without waiting, when it is not.
+bool sword_mutex_try_lock(void *guard);
+bool sword_mutex_try_lock_read(void *guard);
 
 // A condition to wait on, which is what turns a mutex into something you can
 // build a queue out of. All three must be called with the guard held.

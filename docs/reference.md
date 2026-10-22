@@ -188,6 +188,8 @@ parallel for i in a..b reduce(+: acc) { }
 
 scope { spawn f(args) ... }
 lock name := shared_value { }
+lock read name := shared_value { }  // readers together, a writer alone
+if lock name := shared_value { } else { }   // only if it is free
 
 break
 continue
@@ -421,7 +423,32 @@ the value, which is what makes the race checker's exemption safe. Inside the
 block the name is a mutable `*T`; the brace releases the lock, and so does a
 `return`, a `break`, a `continue` or a `try` that fails.
 
-Three operations beside `lock`, all called with the lock held:
+`lock read` lets any number of readers in at once, and no writer while any of
+them is there. Inside it the name is an immutable `*T`, so nothing reached
+through it can be written:
+
+```sword
+lock read m := &table {
+    seen := m.Get(key) orelse 0
+}
+```
+
+A writer waiting keeps new readers out, so a steady stream of them cannot keep
+it waiting for good.
+
+`if lock` takes the lock only when that would not mean waiting, and runs the
+`else` branch, without it, when somebody has it. It works for both kinds:
+
+```sword
+if lock m := &table {
+    try m.Set(key, 1)
+} else {
+    // busy: come back later
+}
+```
+
+Three operations beside `lock`, all called with the lock held, and held to
+write — readers hold it together, and only one holder may wait or wake:
 
 ```sword
 func (s *shared[T]) Wait()        // let go, wait to be told, take it back
@@ -445,10 +472,12 @@ The rules around it:
 - `spawn` under a lock whose `scope` is outside it is an error: the task would
   still be running when the block released. Put the `scope` inside the `lock`,
   or the `lock` inside the task.
+- a reader holds no name the runtime can check, so a task that reads a value and
+  then, through a call, asks to write it waits for itself; the checker refuses
+  the case it can see.
 
-There is no read-only lock and no try-lock. A contended lock spins briefly and
-then sleeps, telling the scheduler while it waits, so a thread stuck behind a
-long critical section does not cost a core.
+A contended lock spins briefly and then puts the task down until it is its
+turn, so a thread stuck behind a long critical section goes on to other work.
 
 ## Switch
 
