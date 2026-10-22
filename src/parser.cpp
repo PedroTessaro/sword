@@ -688,6 +688,10 @@ struct Parser {
 
   Node *if_stmt() {
     Node *n = make(ND_IF, advance().pos);
+    if (kind() == TK_MUT && kind(1) == TK_IDENT && kind(2) == TK_DEFINE) {
+      advance();
+      n->is_mut = true;
+    }
     if (kind() == TK_IDENT && kind(1) == TK_DEFINE) {
       n->name_pos = peek().pos;
       n->name = advance().text;
@@ -706,6 +710,10 @@ struct Parser {
 
     // `for x := optional { }` runs while there is something there, which is the
     // shape a queue is drained with.
+    if (kind() == TK_MUT && kind(1) == TK_IDENT && kind(2) == TK_DEFINE) {
+      advance();
+      n->is_mut = true;
+    }
     if (kind() == TK_IDENT && kind(1) == TK_DEFINE) {
       n->name_pos = peek().pos;
       n->name = advance().text;

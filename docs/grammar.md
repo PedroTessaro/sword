@@ -234,9 +234,10 @@ VarDecl     = [ "mut" ] identifier ( ":=" Expr | Type "=" Expr ) .
 AssignOp    = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "+%=" | "-%=" | "*%="
             | "&=" | "|=" | "^=" | "<<=" | ">>=" .
 
-IfStmt      = "if" [ identifier ":=" ] Expr Block [ "else" ( IfStmt | Block ) ] .
+IfStmt      = "if" [ [ "mut" ] identifier ":=" ] Expr Block
+              [ "else" ( IfStmt | Block ) ] .
 
-ForStmt     = "for" identifier ":=" Expr Block
+ForStmt     = "for" [ "mut" ] identifier ":=" Expr Block
             | "for" [ ForHead ] [ Reduction ] Block .
 ForHead     = [ identifier "," ] identifier "in" Expr [ ".." Expr ]
             | Expr .

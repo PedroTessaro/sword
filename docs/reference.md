@@ -94,7 +94,28 @@ import "path/to/package"
 ```
 
 `mut` on a parameter or receiver means the callee may write through it. Only a
-mutable binding can be passed to one.
+mutable binding can be passed to one, and `&x` only when `x` is one.
+
+A copy of a slice or a pointer reaches the same memory as the original, so a
+`mut` binding made from one lent read-only can be reassigned, and its own fields
+written, but nothing it reaches through that copy:
+
+```sword
+func find(head ?*Node, key i32) ?*Node {
+    mut cur := head        // fine: cur moves along the list
+    cur = n.next           // fine
+    cur.key = 0            // refused: cur was copied from head
+}
+```
+
+A struct holding a read-only slice is the same: `p.at += 1` is the struct's own
+field, `p.input[0] = 1` goes through the copy. Whether a method or a function
+writes through what it is given is worked out from its body, so `p.Step()` is
+allowed when Step only moves `p.at`. A call through an interface or a function
+value is taken to write whatever it may. A value with a read-only part cannot be
+stored behind a pointer, and what a function hands back of its arguments keeps
+the right it was given. The check does not follow order within a function: a
+binding that is ever given read-only memory cannot be written through anywhere.
 
 `type Name = T` gives a type a second name, nothing more: a `Name` is a `T`, and
 values pass between the two without a conversion. It is for a name that says
@@ -149,6 +170,7 @@ here does.
 ```sword
 if cond { } else if cond { } else { }
 if x := optional { } else { }
+if mut x := optional { }          // a copy that can be written
 
 for { }                            // until break or return
 for cond { }
@@ -157,6 +179,7 @@ for x in xs { }                    // elements of a slice, array or string
 for i, x in xs { }                 // with the position
 for part in xs.chunks(n) { }
 for off, part in xs.chunks(n) { }
+for x := optional { }              // while it holds something; `for mut x` too
 
 switch subject { case a, b: ... default: ... }
 
@@ -656,7 +679,7 @@ func (mut w *Writer) Flush() !void
 ```sword
 interface Allocator {
     Alloc(n u64, align u64) ?[*]u8
-    Release(p [*]u8, n u64)
+    Release(mut p [*]u8, n u64)
 }
 
 func Align(offset u64, align u64) u64
@@ -670,7 +693,7 @@ func Free[T](mut a Allocator, xs []T)
 ```sword
 func NewArena(backing []u8) Arena
 func (mut a *Arena) Alloc(n u64, align u64) ?[*]u8
-func (mut a *Arena) Release(p [*]u8, n u64)     // does nothing
+func (mut a *Arena) Release(mut p [*]u8, n u64)     // does nothing
 func (mut a *Arena) Reset()
 func (a *Arena) Used() u64
 ```
@@ -683,7 +706,7 @@ reads something obviously wrong. `shield test` sets it on every test's arena.
 ```sword
 func NewWatched(a Allocator) Watched            // { inner, Written }
 func (mut w *Watched) Alloc(n u64, align u64) ?[*]u8
-func (mut w *Watched) Release(p [*]u8, n u64)   // writes over it first
+func (mut w *Watched) Release(mut p [*]u8, n u64)   // writes over it first
 ```
 
 Both cost a write per byte released, so neither is on by default. See [the tour on
@@ -694,7 +717,7 @@ memory that has gone away](tour.md#memory-that-has-gone-away).
 ```sword
 func NewSystem() System
 func (mut s *System) Alloc(n u64, align u64) ?[*]u8
-func (mut s *System) Release(p [*]u8, n u64)
+func (mut s *System) Release(mut p [*]u8, n u64)
 func (s *System) Live() u64
 ```
 
@@ -1808,11 +1831,11 @@ answers 405 rather than 404. Up to 64 routes, no allocation:
 
 ```sword
 func NewMux() Mux
-func (mut m *Mux) Handle(method string, pattern string, h Handler) !void
-func (mut m *Mux) Get(pattern string, h Handler) !void
-func (mut m *Mux) Post(pattern string, h Handler) !void
-func (mut m *Mux) Put(pattern string, h Handler) !void
-func (mut m *Mux) Delete(pattern string, h Handler) !void
+func (mut m *Mux) Handle(method string, pattern string, mut h Handler) !void
+func (mut m *Mux) Get(pattern string, mut h Handler) !void
+func (mut m *Mux) Post(pattern string, mut h Handler) !void
+func (mut m *Mux) Put(pattern string, mut h Handler) !void
+func (mut m *Mux) Delete(pattern string, mut h Handler) !void
 ```
 
 Targets and query strings, decoding into space you provide:
