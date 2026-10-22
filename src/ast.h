@@ -106,6 +106,10 @@ struct Node {
   bool is_hidden = false;
   bool is_errdefer = false;
   bool is_parallel = false; // ND_FOR spread across workers
+  // ND_LOCK: `lock read`, one of any number of readers; and `if lock`, which
+  // takes the guard only if it is free and runs `els` when it is not.
+  bool is_read = false;
+  bool is_try = false;
   // ND_PARAM: gathers the rest of the arguments. On a call or an argument:
   // the gathered list is being passed straight through.
   bool is_variadic = false;
