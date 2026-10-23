@@ -165,7 +165,7 @@ ParamName   = [ "mut" ] identifier .
 
 StructDecl  = [ "extern" ] "struct" identifier [ TypeParams ]
               "{" { ";" } { FieldGroup { ";" } } "}" .
-FieldGroup  = ParamGroup .
+FieldGroup  = identifier { "," identifier } Type .
 
 InterfaceDecl = "interface" identifier "{" { ";" } { MethodSpec { ";" } } "}" .
 MethodSpec  = identifier Params [ Type ] .
@@ -220,7 +220,10 @@ generic struct.
 ```ebnf
 Block       = "{" { ";" } { Statement { ";" } } "}" .
 
-Statement   = Block
+Statement   = Deferrable
+            | ( "defer" | "errdefer" ) Deferrable
+            | VarDecl .
+Deferrable  = Block
             | IfStmt | SwitchStmt | SelectStmt | ForStmt
             | "parallel" ForStmt
             | "return" [ Expr ]
@@ -229,8 +232,6 @@ Statement   = Block
             | "scope" Block
             | "spawn" Expr
             | LockStmt
-            | ( "defer" | "errdefer" ) Statement
-            | VarDecl
             | Expr [ AssignOp Expr ] .
 
 VarDecl     = [ "mut" ] identifier ( ":=" Expr | Type "=" Expr ) .
