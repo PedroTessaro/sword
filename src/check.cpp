@@ -517,6 +517,13 @@ struct Checker {
       } else if (e->op == TK_BANG && inner->kind == ND_BOOL_LIT) {
         e->kind = ND_BOOL_LIT;
         e->ival = inner->ival ? 0 : 1;
+      } else if (e->op == TK_TILDE && inner->kind == ND_INT_LIT) {
+        // Every bit of the type flipped, and only those: ~u8(0) is 255.
+        e->kind = ND_INT_LIT;
+        e->ival = ~inner->ival;
+        const Type *t = inner->type;
+        if (t && t->kind == TY_INT && !t->is_signed && t->bits < 64)
+          e->ival &= (uint64_t(1) << t->bits) - 1;
       } else {
         error(e->pos, "'%s' is not allowed in a constant", tok_name(e->op));
         return nullptr;
@@ -2516,6 +2523,13 @@ struct Checker {
     case TK_MINUS:
       if (!is_numeric(operand)) {
         error(n->pos, "'-' needs a numeric value, got %s",
+              type_str(operand).c_str());
+        return nullptr;
+      }
+      return n->type = operand;
+    case TK_TILDE:
+      if (!is_integer(operand)) {
+        error(n->pos, "'~' needs an integer, got %s",
               type_str(operand).c_str());
         return nullptr;
       }

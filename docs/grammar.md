@@ -118,7 +118,7 @@ a literal may hold any UTF-8 text as it is.
 
 ```
 +    -    *    /    %    +%   -%   *%
-&    |    ^    <<   >>   &&   ||   !
+&    |    ^    ~    <<   >>   &&   ||   !
 ==   !=   <    <=   >    >=
 =    :=   +=   -=   *=   /=   %=   +%=  -%=  *%=
 &=   |=   ^=   <<=  >>=
@@ -128,7 +128,8 @@ a literal may hold any UTF-8 text as it is.
 
 The longest token wins, so `a<-b` is a send and not a comparison: a comparison
 with a negative number is written `a < -b`. `+%`, `-%` and `*%` are the wrapping
-forms of `+`, `-` and `*`.
+forms of `+`, `-` and `*`. `~` is only ever the complement, flipping every bit
+of an integer; xor is `^`.
 
 ## Source files
 
@@ -288,7 +289,7 @@ AddExpr     = MulExpr { ( "+" | "-" | "|" | "^" | "+%" | "-%" ) MulExpr } .
 MulExpr     = Unary { ( "*" | "/" | "%" | "<<" | ">>" | "&" | "*%" ) Unary } .
 
 Unary       = "try" Unary [ "<-" OrExpr ]
-            | ( "-" | "!" | "&" | "*" | "<-" ) Unary
+            | ( "-" | "!" | "~" | "&" | "*" | "<-" ) Unary
             | Postfix .
 
 Postfix     = Primary { Call | Selector | Index | Slice } .

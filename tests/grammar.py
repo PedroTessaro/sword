@@ -25,7 +25,7 @@ ENDS_STATEMENT = {"identifier", "int_lit", "float_lit", "string_lit", ")", "]",
 
 # Longest first, so that the first match is the token the lexer would take.
 PUNCT = sorted("""+%= -%= *%= <<= >>= ... += -= *= /= %= &= |= ^= := == != <=
->= && || << >> <- -> .. +% -% *% + - * / % & | ^ ! < > = ( ) [ ] { } , : . ? ;
+>= && || << >> <- .. +% -% *% + - * / % & | ^ ! < > = ( ) [ ] { } , : . ? ;
 ~""".split(), key=len, reverse=True)
 
 
@@ -108,8 +108,6 @@ def lex(text):
         else:
             for p in PUNCT:
                 if text.startswith(p, i):
-                    if p == "~":
-                        raise SyntaxError("'~' is not in the grammar")
                     push(p, p)
                     i += len(p)
                     break

@@ -479,7 +479,7 @@ struct Parser {
       }
       return n;
     }
-    case TK_MINUS: case TK_BANG: case TK_AMP: case TK_STAR: {
+    case TK_MINUS: case TK_BANG: case TK_TILDE: case TK_AMP: case TK_STAR: {
       Node *n = make(ND_UNARY, pos);
       n->op = advance().kind;
       n->lhs = unary();
