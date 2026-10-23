@@ -20,8 +20,9 @@ are why the language exists:
   join;
 - bindings are immutable unless they say `mut`;
 - a program with a data race does not compile;
-- there are no closures, and `spawn` takes a call and nothing else, so that
-  everything a task can reach is written on one line.
+- a function value is a function declared at the top of a file, with nothing
+  captured, and `spawn` takes a call and nothing else, so that everything a task
+  can reach is written on one line.
 
 A proposal that needs one of these to bend is a different language.
 
@@ -84,7 +85,9 @@ never lets LLVM see into the runtime. Temper is about that:
   since a wrong one is undefined behaviour;
 - a faster calling convention for functions nothing outside the program calls,
   and link-time optimisation with the runtime's hot paths;
-- smaller binaries.
+- smaller binaries;
+- `shield checks`, which lists every bounds check that is still there, line by
+  line, so the ones that cost something in a loop can be looked at.
 
 Every change is measured before and after, and the
 numbers go out together with a comparison against C, C++, Rust and Go: the same
@@ -132,7 +135,10 @@ asks for:
   any path through them;
 - a stricter subset in the spirit of MISRA, for code that has to follow one;
 - contracts, `requires` and `ensures`, checked in debug builds and proved where
-  the compiler can;
+  the compiler can — and what a `requires` guarantees, the optimizer gets to use,
+  so `requires n <= xs.len` takes the checks out of the loop below it;
+- a function the compiler confirms has no bounds check left in it, for the
+  kernel that has to stay fast;
 - loops whose bound is proved, inferred as `det` is, which is what an estimate
   of the worst-case running time needs to start from.
 
@@ -141,7 +147,22 @@ Certification itself is a process, not a compiler, and stays out of scope.
 ## 0.7 — types that say more
 
 - Tagged unions with an exhaustive `switch` over them: a message that is one of
-  several shapes, a state machine, a syntax tree.
+  several shapes, a state machine, a syntax tree. A function may also be written
+  once per variant — `area(s Shape.Circle)`, `area(s Shape.Rect)` — and the
+  compiler checks that every variant has one. That is the only overloading Sword
+  will have: a name used as a value always means one function.
+- Blocks: a function written in place and handed to a call, which sees the locals
+  around it and is gone when the call returns.
+
+  ```
+  collections.Sort(people) { a, b => a.age < b.age }
+  evens := par.Keep(xs, &arena) { x => x % 2 == 0 }
+  ```
+
+  A block is not a closure. It cannot be stored, returned or spawned, so a
+  function value is still one function and a task still reaches only what its
+  `spawn` line says; the race checker reads the block as the code it is written
+  in. It compiles to the loop it looks like.
 - Distinct types. `type Millis = distinct u32` is a new type with `u32`'s
   representation, so milliseconds and microseconds stop mixing by accident; an
   alias, as today, stays the same type under another name.
@@ -150,6 +171,11 @@ Certification itself is a process, not a compiler, and stays out of scope.
 - Integers with a byte order, `u32be` and `u32le`, for reading a packet or a
   file format without converting by hand.
 - Generic methods.
+- `link[Node, u16]`, a link stored as a narrow offset from where it sits instead
+  of a full address: a tree of small nodes in half the memory, and a structure
+  that means the same wherever it is copied, flash included.
+- A growable container in the standard library that never moves what it holds,
+  so a pointer to an element stays good as it grows.
 - `mut` on an interface method's receiver, so that a call through an interface
   is checked like any other ([#78](https://github.com/swordlang/sword/issues/78)).
 
