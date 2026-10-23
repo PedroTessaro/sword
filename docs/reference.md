@@ -1888,19 +1888,25 @@ func Escape(s string, mut into []u8) !string
 ```
 
 ```sword
-func (mut r *Response) Stream(status u64) !void   // switch to chunked
-func (mut r *Response) Send(status u64, length u64) !void  // a length you know
-func (mut r *Response) Printf(format string, args ...any) !void
-func (mut r *Response) Text(status u64, s string) !void
-func (mut r *Response) JSON(status u64, s string) !void
-func (mut r *Response) SetHeader(name string, value string) !void
-func (mut r *Response) Write(p []u8) !void
-func (mut r *Response) WriteString(s string) !void
+func (mut r *Response) Stream(status u64)          // switch to chunked
+func (mut r *Response) Send(status u64, length u64)  // a length you know
+func (mut r *Response) Printf(format string, args ...any)
+func (mut r *Response) Text(status u64, s string)
+func (mut r *Response) JSON(status u64, s string)
+func (mut r *Response) SetHeader(name string, value string)
+func (mut r *Response) Write(p []u8)
+func (mut r *Response) WriteString(s string)
+func (r *Response) Err() !void                     // the first write that failed
 ```
 
 Both `Stream` and `Send` put the head out at once, so headers set after either are
 too late, and every write from then on goes to the connection rather than into a
 buffer. After `Send`, write exactly `length` bytes.
+
+No write asks for `try`: the first that fails is kept, the rest do nothing, and
+the server checks once the handler returns — a 500 if the head has not gone, the
+connection closed if it has. `Err` is for a handler whose next step depends on
+it, such as one feeding a stream to a client that may have left.
 
 Files. A piece at a time against the length the file already has, so a large
 download costs one buffer:
