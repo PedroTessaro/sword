@@ -25,6 +25,12 @@ are why the language exists:
 
 A proposal that needs one of these to bend is a different language.
 
+Neither is the way the language grows. A new feature is a word you can read aloud
+— `scope`, `orelse`, `shared[T]` — rather than a symbol to look up, and what the
+compiler can work out for itself, it works out: `det` is inferred for every
+function and checked only where somebody writes it, and that is the pattern for
+everything below.
+
 ## 0.3 Quench — packages
 
 Until now a program could use the standard library and code sitting next to it,
@@ -98,6 +104,21 @@ apart:
 - a runtime for microcontrollers: tasks with small fixed stacks, cooperative,
   and interrupts.
 
+A microcontroller is programmed by reading and writing registers at fixed
+addresses and by answering interrupts, so Polish brings the language for that
+too, rather than leaving every register to a function written in C:
+
+- `mmio[u32](0x4002_0014)`, a register reached only through its methods, the way
+  an `atomic[T]` is, so the compiler never reorders or drops an access;
+- `packed struct`, with fields as wide as the bits they hold — `mode u2` — for
+  registers and wire formats that are fields of bits;
+- `interrupt func`, checked the way `det` is: a handler that allocates, takes a
+  lock or waits does not compile, and the vector table is built from the
+  handlers themselves;
+- `asm` for the few instructions nothing else can say, such as `wfi`;
+- placing code and data in a named section, and constants that are whole arrays
+  and structs, kept in flash instead of copied into RAM.
+
 ## 0.6 — software that must not fail
 
 What the compiler already refuses makes Sword a reasonable fit for software where
@@ -109,33 +130,62 @@ asks for:
   unbounded recursion refused;
 - functions proved not to panic: no bounds check, overflow or `unreachable` on
   any path through them;
-- a stricter subset in the spirit of MISRA, for code that has to follow one.
+- a stricter subset in the spirit of MISRA, for code that has to follow one;
+- contracts, `requires` and `ensures`, checked in debug builds and proved where
+  the compiler can;
+- loops whose bound is proved, inferred as `det` is, which is what an estimate
+  of the worst-case running time needs to start from.
 
 Certification itself is a process, not a compiler, and stays out of scope.
 
-## Not yet placed
+## 0.7 — types that say more
 
-Wanted, and not yet given a version:
-
-- tagged unions with an exhaustive `switch` over them;
-- generic methods;
-- evaluating `const X = f(...)` at compile time when `f` is `det`;
-- debug information and a backtrace on panic;
-- simulated networking for `shield test -sim`;
-- `std/term`, and a terminal UI framework built on it as a package of its own;
-- more of C: structs passed by value, unions, `packed` and `align`, generating
-  bindings from a header, and calling Sword from C;
+- Tagged unions with an exhaustive `switch` over them: a message that is one of
+  several shapes, a state machine, a syntax tree.
+- Distinct types. `type Millis = distinct u32` is a new type with `u32`'s
+  representation, so milliseconds and microseconds stop mixing by accident; an
+  alias, as today, stays the same type under another name.
+- Ranges. `type Percent = u8 in 0..100` is checked where a value comes in, the
+  way Ada does it, and the bounds checker can lean on what it knows.
+- Integers with a byte order, `u32be` and `u32le`, for reading a packet or a
+  file format without converting by hand.
+- Generic methods.
 - `mut` on an interface method's receiver, so that a call through an interface
   is checked like any other ([#78](https://github.com/swordlang/sword/issues/78)).
 
+## 0.8 — compile time, and the rest of C
+
+- Evaluating `const X = f(...)` at compile time when `f` is `det`: a CRC table or
+  a sine table worked out once, by the compiler, and kept in flash. `det` already
+  rules out everything compile time cannot do, so this needs no new keyword.
+- The rest of C: structs passed by value, unions, `packed` and `align` on C
+  types, bindings generated from a header with `shield bind`, and functions
+  written in Sword that C can call.
+
+## 0.9 — tools, and closing the language
+
+- Debug information, and a backtrace when a program panics.
+- `shield size` and `shield stack`: how much flash and how much stack each
+  function costs, which is the first thing asked about a firmware image.
+- Interrupts in simulation. `shield test -sim` already chooses the order tasks
+  run in from a seed; it will also choose when each interrupt arrives, so a race
+  between the main program and a handler — the kind of bug that shows up on the
+  board once a week — happens again every time it is run with that seed.
+- Simulated networking for `shield test -sim`.
+- `std/term`, and a terminal UI framework built on it as a package of its own.
+
+0.9 is the last version that changes the language before 1.0.
+
 ## 1.0 Edge — Sword in Sword
 
-The compiler is written in C++ today. Before 1.0 it is rewritten in Sword, one
-stage at a time, and each stage is checked against the C++ one on everything it
-can print — the syntax tree, Sword's own IR, the LLVM IR — before the next is
-started. Edge is the version whose compiler builds itself, twice, and gets the
-same binary both times. The C++ compiler stays as the seed for building it on a
-new machine.
+The compiler is written in C++ today. After 0.9 it is rewritten in Sword, in a
+series of versions — 0.10, 0.11 and on — that change the compiler and not the
+language. Each stage is checked against the C++ one on everything it can print —
+the syntax tree, Sword's own IR, the LLVM IR — before the next is started.
+
+Edge is the version whose compiler builds itself, twice, and gets the same binary
+both times: a language that has stopped changing, and a compiler written in it.
+The C++ compiler stays as the seed for building it on a new machine.
 
 ## Having a say
 
