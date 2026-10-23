@@ -42,11 +42,13 @@ jobs:
 
       # clang is needed to run the compiler, not only to build it. Emacs is here
       # so the indentation check has both of the editors that implement the rule.
+      # Without --no-install-recommends Emacs brings a mail server and Guile
+      # along: 60 MB that took 27 minutes from a slow mirror and timed jobs out.
       - name: Dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang libssl-dev vim emacs-nox
+          sudo apt-get install -y --no-install-recommends clang libssl-dev vim emacs-nox
 
       - run: make
       - run: make test
@@ -69,7 +71,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang libssl-dev
+          sudo apt-get install -y --no-install-recommends clang libssl-dev
 
       # ThreadSanitizer reserves fixed ranges of the address space, and the
       # runners randomise mappings more widely than the version of it that
@@ -89,6 +91,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: |
           sudo apt-get update
-          sudo apt-get install -y clang libssl-dev
+          sudo apt-get install -y --no-install-recommends clang libssl-dev
       - run: make
       - run: ./tests/docs.sh
