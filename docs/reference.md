@@ -214,7 +214,12 @@ By precedence, tightest first:
 A NaN compares false against everything, itself included, so `x != x` is true
 for one and is how it is recognised.
 
-Prefix: `-` `!` `&` (address of) `*` (dereference) `try`.
+Prefix: `-` `!` `~` (every bit of an integer flipped) `&` (address of) `*`
+(dereference) `try`. `x & ~m` clears the bits of `m`; xor is `^`, and `~` is
+never a binary operator.
+
+A statement standing alone has to do something — call, send or receive. One
+whose value would only be thrown away, `x + 1` or `x == 2`, is an error.
 
 Assignment: `=` `+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=` and the
 wrapping forms below.
