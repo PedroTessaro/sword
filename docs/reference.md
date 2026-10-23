@@ -89,7 +89,7 @@ error Name                         // declared, saying nothing
 error A, B, C
 type Name = T                      // another name for T, the same type
 
-package name                       // documentation; the directory decides
+package name                       // must agree with the import path
 import "path/to/package"
 ```
 
@@ -327,6 +327,35 @@ one, an `f32` as an `f64`. Only scalars fit through — a `string` is two words
 here and a pointer there, so pass `.ptr` and `.len`. And a variadic function
 can only be called by name: a function value carries one word and no
 signature, which is not enough to know where the extra arguments go.
+
+## Packages and modules
+
+A package is a directory, and every `.sword` file in it shares one scope. It is
+imported by its path and called by the last element of that path:
+`import "std/mem"` is `mem`. A `package` clause, when a file has one, has to say
+the same name. A path whose last element is not a name a program can write —
+`github.com/ana/sword-sqlite` — takes its name from the clause instead, and a
+path ending in a major version — `.../sqlite/v2` — from the element before it.
+
+A module is a tree of packages with a `sword.mod` at its root. The compiler finds
+it by looking in the directory being built and every directory above:
+
+```
+module example.com/site
+sword 0.3
+
+replace example.com/lib => ../lib
+```
+
+`module` names the tree, and its packages are imported under that name:
+`example.com/site/util` is the `util` directory beside the `sword.mod`. A module
+path is lower-case letters, digits, `.`, `-` and `_`, in segments joined by `/`,
+and nothing under `std`. `sword` is the oldest compiler the module builds with,
+and a newer requirement is refused rather than half compiled. `replace` points a
+path, and everything under it, at a directory, relative to the module's root.
+`require` names a dependency and its version — `require example.com/lib v1.4.0`,
+or `v2.0.1` under `example.com/lib/v2`, since each major version is a module of
+its own. Lines starting with `//` are comments.
 
 ## C libraries
 
