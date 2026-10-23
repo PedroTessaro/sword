@@ -1352,17 +1352,18 @@ taking one `*T`. See [Testing](testing.md).
 func (t *T) Name() string
 func (t *T) Failed() bool
 
-// These record and carry on.
-func (mut t *T) Same(got any, want any) !void
-func (mut t *T) Check(ok bool) !void
-func (mut t *T) Failf(format string, args ...any) !void
+// These record and carry on, and ask for no `try`.
+func (mut t *T) Equal(got any, want any)
+func (mut t *T) Same(got any, want any)        // Equal by another name
+func (mut t *T) Check(ok bool)
+func (mut t *T) Fail()
+func (mut t *T) Failf(format string, args ...any)
+func (mut t *T) Logf(format string, args ...any)
 
 // These end the test, by returning an error the `try` carries out.
-func (mut t *T) Equal(got any, want any) !void
+func (mut t *T) Must(got any, want any) !void
 func (mut t *T) Require(ok bool) !void
 func (mut t *T) Fatalf(format string, args ...any) !void
-
-func (mut t *T) Logf(format string, args ...any) !void
 func (mut t *T) Skip(why string) !void
 func (mut t *T) Run(name string, body func(mut *T) !void) !void
 func (mut t *T) RunWith(name string, body func(mut *T) !void, arg any) !void
