@@ -1450,7 +1450,7 @@ package strings
 import "std/testing"
 
 func TestTrimSpace(mut t *testing.T) !void {
-    try t.Equal(TrimSpace("  ada  "), "ada")
+    t.Equal(TrimSpace("  ada  "), "ada")
 }
 ```
 

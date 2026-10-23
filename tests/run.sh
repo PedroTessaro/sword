@@ -464,11 +464,11 @@ cat > "$tmp/picked/picked_test.sword" <<'EOF'
 import "std/testing"
 
 func TestPasses(mut t *testing.T) !void {
-    try t.Equal(1 + 1, 2)
+    t.Equal(1 + 1, 2)
 }
 
 func TestFails(mut t *testing.T) !void {
-    try t.Equal(1 + 1, 3)
+    t.Equal(1 + 1, 3)
 }
 EOF
 picked() { # expected exit, expected text, arguments
@@ -488,6 +488,34 @@ picked 0 "ok    1 tests" -run TestPasses
 picked 1 "2 tests, 1 failed" -run TestPasses -run TestFails
 picked 1 "no test 'TestPass'" -run TestPass
 
+# Equal records and carries on, so one run reports every mismatch; Must records
+# and stops, so what depends on the value never runs.
+mkdir -p "$tmp/asserts"
+cat > "$tmp/asserts/asserts_test.sword" <<'EOF'
+import "std/testing"
+
+func TestCarriesOn(mut t *testing.T) !void {
+    t.Equal(1 + 1, 3)
+    t.Equal(2 + 2, 5)
+}
+
+func TestStops(mut t *testing.T) !void {
+    try t.Must(1, 2)
+    t.Equal(9, 10)
+}
+EOF
+out=$("$shield" test "$tmp/asserts" -p 1 2>&1)
+if ! printf '%s\n' "$out" | grep -qF "got 2, want 3" ||
+   ! printf '%s\n' "$out" | grep -qF "got 4, want 5" ||
+   ! printf '%s\n' "$out" | grep -qF "got 1, want 2" ||
+   printf '%s\n' "$out" | grep -qF "got 9"; then
+    echo "FAIL shield test: Equal should carry on and Must should stop"
+    printf '%s\n' "$out" | sed 's/^/     /'
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
+
 # A program can be tested too: its own main steps aside for the runner's, and
 # the tests still reach everything else it declares (issue #4).
 mkdir -p "$tmp/program"
@@ -504,7 +532,7 @@ cat > "$tmp/program/main_test.sword" <<'EOF'
 import "std/testing"
 
 func TestTwice(mut t *testing.T) !void {
-    try t.Equal(twice(21), 42)
+    t.Equal(twice(21), 42)
 }
 EOF
 out=$("$shield" test "$tmp/program" 2>&1)
@@ -536,7 +564,7 @@ cat > "$tmp/bench/bench_test.sword" <<'EOF'
 import "std/testing"
 
 func TestStillRuns(mut t *testing.T) !void {
-    try t.Equal(1 + 1, 2)
+    t.Equal(1 + 1, 2)
 }
 
 func BenchmarkAdding(mut b *testing.B) !void {
@@ -613,7 +641,7 @@ extern func abs(x i32) i32
 
 func TestThroughAValue(mut t *testing.T) !void {
     f := abs
-    try t.Equal(f(-3), 3)
+    t.Equal(f(-3), 3)
 }
 EOF
 out=$("$shield" test "$tmp/simextern" -sim -seeds 1 2>&1)

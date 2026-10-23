@@ -175,8 +175,8 @@ func (m *Mux) Serve(req *Request, mut res *Response) !void {
     }
 
     if wrongMethod {
-        try res.Text(405, "method not allowed\n")
+        res.Text(405, "method not allowed\n")
         return
     }
-    try res.Text(404, "not found\n")
+    res.Text(404, "not found\n")
 }

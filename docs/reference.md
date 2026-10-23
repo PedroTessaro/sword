@@ -988,18 +988,22 @@ func (d *Document) GetText(at u64, key string) string
 func (d *Document) GetNumber(at u64, key string, fallback f64) f64
 ```
 
-Writing is a streaming writer that puts the commas in for you:
+Writing is a streaming writer that puts the commas in for you. No write asks
+for `try`: the first thing that goes wrong — memory running out, a `TooDeep` or
+an `Unbalanced` — is kept, every write after it does nothing, and `Err` says
+what it was once the document is done:
 
 ```sword
 mut w := json.NewWriter(&buffer)
-try w.BeginObject()
-try w.Key("name")
-try w.Str("sword")
-try w.Key("tags")
-try w.BeginArray()
-try w.Str("fast")
-try w.EndArray()
-try w.EndObject()
+w.BeginObject()
+w.Key("name")
+w.Str("sword")
+w.Key("tags")
+w.BeginArray()
+w.Str("fast")
+w.EndArray()
+w.EndObject()
+try w.Err()            // the first thing that went wrong, if anything did
 ```
 
 ### `std/crypto`
@@ -1352,17 +1356,18 @@ taking one `*T`. See [Testing](testing.md).
 func (t *T) Name() string
 func (t *T) Failed() bool
 
-// These record and carry on.
-func (mut t *T) Same(got any, want any) !void
-func (mut t *T) Check(ok bool) !void
-func (mut t *T) Failf(format string, args ...any) !void
+// These record and carry on, and ask for no `try`.
+func (mut t *T) Equal(got any, want any)
+func (mut t *T) Same(got any, want any)        // Equal by another name
+func (mut t *T) Check(ok bool)
+func (mut t *T) Fail()
+func (mut t *T) Failf(format string, args ...any)
+func (mut t *T) Logf(format string, args ...any)
 
 // These end the test, by returning an error the `try` carries out.
-func (mut t *T) Equal(got any, want any) !void
+func (mut t *T) Must(got any, want any) !void
 func (mut t *T) Require(ok bool) !void
 func (mut t *T) Fatalf(format string, args ...any) !void
-
-func (mut t *T) Logf(format string, args ...any) !void
 func (mut t *T) Skip(why string) !void
 func (mut t *T) Run(name string, body func(mut *T) !void) !void
 func (mut t *T) RunWith(name string, body func(mut *T) !void, arg any) !void
@@ -1883,19 +1888,25 @@ func Escape(s string, mut into []u8) !string
 ```
 
 ```sword
-func (mut r *Response) Stream(status u64) !void   // switch to chunked
-func (mut r *Response) Send(status u64, length u64) !void  // a length you know
-func (mut r *Response) Printf(format string, args ...any) !void
-func (mut r *Response) Text(status u64, s string) !void
-func (mut r *Response) JSON(status u64, s string) !void
-func (mut r *Response) SetHeader(name string, value string) !void
-func (mut r *Response) Write(p []u8) !void
-func (mut r *Response) WriteString(s string) !void
+func (mut r *Response) Stream(status u64)          // switch to chunked
+func (mut r *Response) Send(status u64, length u64)  // a length you know
+func (mut r *Response) Printf(format string, args ...any)
+func (mut r *Response) Text(status u64, s string)
+func (mut r *Response) JSON(status u64, s string)
+func (mut r *Response) SetHeader(name string, value string)
+func (mut r *Response) Write(p []u8)
+func (mut r *Response) WriteString(s string)
+func (r *Response) Err() !void                     // the first write that failed
 ```
 
 Both `Stream` and `Send` put the head out at once, so headers set after either are
 too late, and every write from then on goes to the connection rather than into a
 buffer. After `Send`, write exactly `length` bytes.
+
+No write asks for `try`: the first that fails is kept, the rest do nothing, and
+the server checks once the handler returns — a 500 if the head has not gone, the
+connection closed if it has. `Err` is for a handler whose next step depends on
+it, such as one feeding a stream to a client that may have left.
 
 Files. A piece at a time against the length the file already has, so a large
 download costs one buffer:
