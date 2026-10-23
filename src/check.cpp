@@ -519,6 +519,13 @@ struct Checker {
       } else if (e->op == TK_BANG && inner->kind == ND_BOOL_LIT) {
         e->kind = ND_BOOL_LIT;
         e->ival = inner->ival ? 0 : 1;
+      } else if (e->op == TK_TILDE && inner->kind == ND_INT_LIT) {
+        // Every bit of the type flipped, and only those: ~u8(0) is 255.
+        e->kind = ND_INT_LIT;
+        e->ival = ~inner->ival;
+        const Type *t = inner->type;
+        if (t && t->kind == TY_INT && !t->is_signed && t->bits < 64)
+          e->ival &= (uint64_t(1) << t->bits) - 1;
       } else {
         error(e->pos, "'%s' is not allowed in a constant", tok_name(e->op));
         return nullptr;
@@ -2512,6 +2519,14 @@ struct Checker {
 
   Type *check_array_lit(Node *n) {
     Node *spec = n->type_expr;
+    if (spec->kind == ND_TYPE_FUNC) {
+      // `func() { ... }` in an expression is where a closure would be written.
+      error(n->pos,
+            "Sword has no closures: a function value names a function declared "
+            "at the top of a file, and state a callback needs goes in a struct "
+            "behind an interface");
+      return nullptr;
+    }
     if (spec->kind != ND_TYPE_ARRAY) {
       // `[]T{...}` would have to allocate, and Sword has no hidden allocation.
       error(n->pos,
@@ -2578,6 +2593,13 @@ struct Checker {
     case TK_MINUS:
       if (!is_numeric(operand)) {
         error(n->pos, "'-' needs a numeric value, got %s",
+              type_str(operand).c_str());
+        return nullptr;
+      }
+      return n->type = operand;
+    case TK_TILDE:
+      if (!is_integer(operand)) {
+        error(n->pos, "'~' needs an integer, got %s",
               type_str(operand).c_str());
         return nullptr;
       }
@@ -3553,6 +3575,10 @@ struct Checker {
         error(n->lhs->pos,
               "%s cannot be discarded; handle it with 'try' or 'catch'",
               type_str(t).c_str());
+      else if (t && !does_something(n->lhs))
+        error(n->lhs->pos,
+              "this value is worked out and then thrown away; a statement on "
+              "its own has to call something, send or receive");
       break;
     }
 
@@ -3618,6 +3644,21 @@ struct Checker {
       return always_leaves(n->body);
     default:
       return always_returns(n);
+    }
+  }
+
+  // What may stand alone as a statement: something with an effect. Separators
+  // are optional, so `c := a ~ b` reads as `c := a` and then `~b`, and only
+  // refusing the second keeps a typo from compiling into something else.
+  static bool does_something(Node *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case ND_CALL: case ND_SEND: case ND_RECV:
+      return true;
+    case ND_TRY: case ND_CATCH: case ND_ORELSE:
+      return does_something(e->lhs);
+    default:
+      return false;
     }
   }
 

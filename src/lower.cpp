@@ -1484,6 +1484,10 @@ struct Lowerer {
         int p = expr(n->lhs);
         return is_aggregate(n->type) ? p : load(p, n->type);
       }
+      // Every bit flipped is a xor with every bit set, which a constant of -1
+      // is at any width.
+      if (n->op == TK_TILDE)
+        return binop(IR_XOR, expr(n->lhs), constant(-1, n->type), n->type);
       IrInst in{};
       in.op = n->op == TK_BANG ? IR_NOT : IR_NEG;
       in.dst = new_value(n->type);

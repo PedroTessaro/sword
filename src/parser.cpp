@@ -175,6 +175,14 @@ struct Parser {
           bool is_mut = match(TK_MUT);
           Node *param = type_expr();
           if (!param) return nullptr;
+          // `func(x i64)`: a name and then its type, which is how a function
+          // written in place starts in Go or JavaScript.
+          if (kind() == TK_IDENT) {
+            fail("a function type lists types, not names; and if this is a "
+                 "function written in place, Sword has no closures: name a "
+                 "function declared at the top of a file");
+            return nullptr;
+          }
           param->is_mut = is_mut;
           n->kids.push_back(param);
         } while (match(TK_COMMA));
@@ -479,7 +487,7 @@ struct Parser {
       }
       return n;
     }
-    case TK_MINUS: case TK_BANG: case TK_AMP: case TK_STAR: {
+    case TK_MINUS: case TK_BANG: case TK_TILDE: case TK_AMP: case TK_STAR: {
       Node *n = make(ND_UNARY, pos);
       n->op = advance().kind;
       n->lhs = unary();
@@ -911,6 +919,14 @@ struct Parser {
     case TK_DEFER: case TK_ERRDEFER: {
       Node *n = make(ND_DEFER, pos);
       n->is_errdefer = advance().kind == TK_ERRDEFER;
+      // What runs on the way out has nowhere to put a name: nothing after it
+      // in the block could see it.
+      if (kind() == TK_MUT || starts_var_decl()) {
+        fail("'%s' runs a statement on the way out, and a declaration there "
+             "would bind a name nothing can use",
+             n->is_errdefer ? "errdefer" : "defer");
+        return nullptr;
+      }
       n->body = statement();
       return n->body ? n : nullptr;
     }
@@ -950,8 +966,14 @@ struct Parser {
   bool named_group(std::vector<Node *> &out, NodeKind kind_of,
                    const char *what) {
     std::vector<Node *> waiting;
+    bool field = kind_of == ND_FIELD_DECL;
     while (true) {
       Node *p = make(kind_of, peek().pos);
+      if (field && kind() == TK_MUT) {
+        fail("a field takes no 'mut': whether it can be written is decided by "
+             "the binding the struct is reached through");
+        return false;
+      }
       p->is_mut = match(TK_MUT);
       if (kind() != TK_IDENT) {
         fail("expected %s", what);
@@ -964,6 +986,11 @@ struct Parser {
       if (match(TK_COMMA)) continue;
 
       // `args ...T` gathers whatever is left of the argument list.
+      if (field && kind() == TK_ELLIPSIS) {
+        fail("a field cannot gather; '...' is for the last parameter of a "
+             "function");
+        return false;
+      }
       bool gathers = match(TK_ELLIPSIS);
       Node *type = type_expr();
       if (!type) return false;

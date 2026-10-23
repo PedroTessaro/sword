@@ -25,7 +25,7 @@ ENDS_STATEMENT = {"identifier", "int_lit", "float_lit", "string_lit", ")", "]",
 
 # Longest first, so that the first match is the token the lexer would take.
 PUNCT = sorted("""+%= -%= *%= <<= >>= ... += -= *= /= %= &= |= ^= := == != <=
->= && || << >> <- -> .. +% -% *% + - * / % & | ^ ! < > = ( ) [ ] { } , : . ? ;
+>= && || << >> <- .. +% -% *% + - * / % & | ^ ! < > = ( ) [ ] { } , : . ? ;
 ~""".split(), key=len, reverse=True)
 
 
@@ -108,8 +108,6 @@ def lex(text):
         else:
             for p in PUNCT:
                 if text.startswith(p, i):
-                    if p == "~":
-                        raise SyntaxError("'~' is not in the grammar")
                     push(p, p)
                     i += len(p)
                     break
@@ -286,6 +284,8 @@ SYNTAX_ERRORS = [
     r"a select case is a receive or a send", r"unterminated", r"malformed numeric",
     r"unexpected character", r"unknown escape", r"takes two hex digits",
     r"a type alias is written", r"a type alias takes no type parameters",
+    r"a field takes no 'mut'", r"a field cannot gather",
+    r"runs a statement on the way out", r"a function type lists types",
 ]
 
 
