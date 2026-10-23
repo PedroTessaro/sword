@@ -348,7 +348,11 @@ there the message can say what to write instead:
   has nowhere to live, so write `[_]i32{1, 2}` and slice it;
 - a function type followed by braces, which is where a closure would be
   written and is read as an array literal — Sword has no closures;
-- `spawn` of anything but a call.
+- `spawn` of anything but a call;
+- an expression standing alone that does nothing with its value — `x + 1`,
+  `~b`, `x == 2`: only a call, a send or a receive (bare, or under `try`,
+  `catch` or `orelse`) may be a statement by itself. Separators being optional,
+  this is also what keeps `c := a ~ b` from reading as `c := a` and then `~b`.
 
 Between statements, fields, elements and members the separator is optional to
 the parser: a newline is the usual one, and a comma is allowed where a list

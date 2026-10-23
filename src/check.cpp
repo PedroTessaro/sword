@@ -3484,6 +3484,10 @@ struct Checker {
         error(n->lhs->pos,
               "%s cannot be discarded; handle it with 'try' or 'catch'",
               type_str(t).c_str());
+      else if (t && !does_something(n->lhs))
+        error(n->lhs->pos,
+              "this value is worked out and then thrown away; a statement on "
+              "its own has to call something, send or receive");
       break;
     }
 
@@ -3549,6 +3553,21 @@ struct Checker {
       return always_leaves(n->body);
     default:
       return always_returns(n);
+    }
+  }
+
+  // What may stand alone as a statement: something with an effect. Separators
+  // are optional, so `c := a ~ b` reads as `c := a` and then `~b`, and only
+  // refusing the second keeps a typo from compiling into something else.
+  static bool does_something(Node *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case ND_CALL: case ND_SEND: case ND_RECV:
+      return true;
+    case ND_TRY: case ND_CATCH: case ND_ORELSE:
+      return does_something(e->lhs);
+    default:
+      return false;
     }
   }
 
