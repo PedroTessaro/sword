@@ -3,6 +3,7 @@
 #include "ir.h"
 #include "package.h"
 
+#include <algorithm>
 #include <cctype>
 #include <deque>
 #include <functional>
@@ -38,6 +39,7 @@ struct Checker {
   // are a race unless both only read, or they are pieces of one partition.
   struct Access {
     Symbol *root = nullptr;  // the binding the memory hangs off
+    Symbol *via = nullptr;   // the name it was reached by, when that is another
     Symbol *chunk = nullptr; // set when the value is a piece of a partition
     bool writes = false;
     // A spawn inside a loop happens once per iteration, so its accesses have
@@ -738,23 +740,80 @@ struct Checker {
     }
   }
 
-  Access access_of(Node *value, bool writes) {
+  // The bindings whose memory a binding's value reaches: its own, or, for a
+  // copy of another's slice or pointer, that other's.
+  static void canonical(Symbol *s, std::vector<Symbol *> &out) {
+    const std::vector<Symbol *> &from = s->aliases;
+    for (Symbol *r : from.empty() ? std::vector<Symbol *>{s} : from)
+      if (std::find(out.begin(), out.end(), r) == out.end()) out.push_back(r);
+  }
+
+  void roots_of(Node *value, std::vector<Symbol *> &out) {
+    if (!value) return;
+    switch (value->kind) {
+    case ND_STRUCT_LIT:
+      for (Node *init : value->kids)
+        if (init->kind == ND_FIELD_INIT && init->rhs && init->rhs->type &&
+            shares_memory(init->rhs->type))
+          roots_of(init->rhs, out);
+      return;
+    case ND_ARRAY_LIT:
+      for (Node *kid : value->kids)
+        if (kid->type && shares_memory(kid->type)) roots_of(kid, out);
+      return;
+    case ND_TRY:
+      roots_of(value->lhs, out);
+      return;
+    case ND_ORELSE: case ND_CATCH:
+      roots_of(value->lhs, out);
+      roots_of(value->rhs, out);
+      return;
+    default:
+      if (Symbol *root = share_root(value))
+        if (!root->is_func) canonical(root, out);
+    }
+  }
+
+  // `ys := xs`, `p := &n`, `h := H{xs: xs}`: the new binding reaches memory
+  // another one names, and a task given one is touching the other. A binding
+  // reassigned keeps every memory it was ever given, its own included. A call
+  // answers with something of its own and is not followed.
+  void alias(Symbol *sym, Node *value, bool declared) {
+    if (!sym || !sym->type || !shares_memory(sym->type)) return;
+    std::vector<Symbol *> roots;
+    roots_of(value, roots);
+    roots.erase(std::remove(roots.begin(), roots.end(), sym), roots.end());
+    if (roots.empty()) return;
+    if (sym->aliases.empty() && !declared) sym->aliases.push_back(sym);
+    for (Symbol *r : roots)
+      if (std::find(sym->aliases.begin(), sym->aliases.end(), r) ==
+          sym->aliases.end())
+        sym->aliases.push_back(r);
+  }
+
+  std::vector<Access> access_of(Node *value, bool writes) {
     Access use;
     use.writes = writes;
     use.at = value->pos;
     Symbol *root = share_root(value);
-    if (!root) return use;
+    if (!root) return {use};
     const Type *reached = root->type;
     while (reached && (reached->kind == TY_PTR || reached->kind == TY_RAWPTR))
       reached = reached->elem;
     use.is_synced = ::is_atomic(reached) || ::is_shared(reached);
     if (root->chunk_of) {
       use.chunk = root;
-      use.root = root->chunk_of;
-    } else {
-      use.root = root;
+      root = root->chunk_of;
     }
-    return use;
+    std::vector<Symbol *> roots;
+    canonical(root, roots);
+    std::vector<Access> uses;
+    for (Symbol *r : roots) {
+      use.root = r;
+      use.via = r != root ? root : nullptr;
+      uses.push_back(use);
+    }
+    return uses;
   }
 
   static bool clashes(const Access &a, const Access &b) {
@@ -786,8 +845,11 @@ struct Checker {
         if (!clashes(use, other)) continue;
         const char *mine = use.writes ? "writes" : "reads";
         const char *theirs = other.writes ? "written" : "read";
-        error(use.at, "this %s '%s' while it is already %s concurrently",
-              mine, use.root->name.c_str(), theirs);
+        std::string through =
+            use.via ? std::string(", through '") + use.via->name + "',"
+                    : std::string();
+        error(use.at, "this %s '%s'%s while it is already %s concurrently",
+              mine, use.root->name.c_str(), through.c_str(), theirs);
         note(other.at, "the other use is here");
         if (use.root->type && use.root->type->kind == TY_SLICE)
           note(use.root->pos,
@@ -934,10 +996,10 @@ struct Checker {
     });
     walk(body, [&](Node *n) {
       if (n->kind == ND_ASSIGN) {
-        record_use(access_of(n->lhs, true));
+        for (const Access &use : access_of(n->lhs, true)) record_use(use);
       } else if (n->kind == ND_IDENT && n->sym && !n->sym->is_func &&
                  !written.count(n)) {
-        record_use(access_of(n, false));
+        for (const Access &use : access_of(n, false)) record_use(use);
       }
     });
   }
@@ -2733,6 +2795,7 @@ struct Checker {
       return;
     }
     if (!require_mutable(n->lhs, "assign to")) return;
+    if (n->op == TK_ASSIGN) alias(place_root(n->lhs), n->rhs, false);
 
     bool bitwise = n->op == TK_AND_ASSIGN || n->op == TK_OR_ASSIGN ||
                    n->op == TK_XOR_ASSIGN || n->op == TK_SHL_ASSIGN ||
@@ -2954,9 +3017,10 @@ struct Checker {
       Type *param = callee->type->params[i];
       if (!shares_memory(param)) continue;
       Node *decl = callee->decl ? callee->decl->kids[i] : nullptr;
-      Access use = access_of(n->lhs->kids[i], decl && decl->is_mut);
-      use.repeated = in_loop;
-      record_use(use);
+      for (Access use : access_of(n->lhs->kids[i], decl && decl->is_mut)) {
+        use.repeated = in_loop;
+        record_use(use);
+      }
     }
   }
 
@@ -3079,6 +3143,8 @@ struct Checker {
     // The element is a copy, so it is its own value and immutable the same way
     // a range variable is. Write through the slice to change anything.
     n->sym = declare(n->name, elem, false, n->name_pos);
+    // An element that is itself a pointer reaches what the slice's owner does.
+    alias(n->sym, n->lhs, true);
     if (!n->name2.empty())
       n->index_sym = declare(n->name2, types.usize_ty, false, n->name_pos);
     return true;
@@ -3301,6 +3367,7 @@ struct Checker {
       }
       n->type = t;
       n->sym = declare(n->name, t, n->is_mut, n->pos);
+      alias(n->sym, n->rhs, true);
       break;
     }
 
@@ -3367,6 +3434,7 @@ struct Checker {
         push_scope();
         n->sym = declare(n->name, const_cast<Type *>(opt_payload(t)),
                          n->is_mut, n->pos);
+        alias(n->sym, n->cond, true);
         check_stmt(n->body);
         pop_scope();
         check_stmt(n->els);
@@ -3393,6 +3461,7 @@ struct Checker {
         }
         n->sym = declare(n->name, const_cast<Type *>(opt_payload(t)),
                          n->is_mut, n->name_pos);
+        alias(n->sym, n->cond, true);
         loop_depth++;
         check_stmt(n->body);
         loop_depth--;
