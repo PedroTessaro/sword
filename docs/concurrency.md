@@ -288,6 +288,23 @@ scope {
 }
 ```
 
+A second name for the same memory is the same memory. A binding made from a
+copy of another's slice or pointer — `ys := xs`, `p := &n`, a struct literal
+holding `xs` — reaches what that other one reaches, and the checker compares
+them as one:
+
+```sword
+mut p := &n
+scope {
+    spawn bump(p)
+    n = 5               // error: this writes 'n' while it is already written
+}
+```
+
+A binding reassigned keeps everything it was ever given. What a function hands
+back is not followed: `ys := same(xs)` is a new name as far as this goes, so
+keep copies that cross tasks in plain sight.
+
 ## Partitions
 
 Handing different pieces of one slice to different tasks is safe, and it is the

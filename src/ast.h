@@ -167,6 +167,10 @@ struct Symbol {
   Pos pos;
   int slot = -1;         // IR value holding this local's address
   Node *decl = nullptr;  // for functions: the declaration, for parameter info
+  // For a binding that holds a copy of another's slice or pointer: the bindings
+  // whose memory it reaches, so the race checker sees one memory under two
+  // names. Empty when the binding's memory is its own.
+  std::vector<Symbol *> aliases;
 };
 
 // Owns the nodes and the symbols they point at, so both outlive the passes
