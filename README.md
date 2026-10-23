@@ -47,7 +47,7 @@ that makes it happen again.
 ## Install
 
 ```sh
-git clone https://github.com/PedroTessaro/sword
+git clone https://github.com/swordlang/sword
 cd sword
 make
 make install
