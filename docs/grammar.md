@@ -310,7 +310,7 @@ Primary     = int_lit | float_lit | string_lit | "true" | "false" | "nil"
 StructLit   = ( identifier [ TypeArgs ] | identifier "." identifier )
               "{" { ";" } { FieldInit [ "," ] { ";" } } "}" .
 FieldInit   = identifier ":" Expr .
-ArrayLit    = ArrayType "{" { ";" } { Expr [ "," ] { ";" } } "}" .
+ArrayLit    = ( ArrayType | FuncType ) "{" { ";" } { Expr [ "," ] { ";" } } "}" .
 Conversion  = ( ArrayType | [ "extern" ] FuncType ) "(" Expr ")" .
 ArrayType   = "[" [ "*" | ArrayLength ] "]" Type .
 ```

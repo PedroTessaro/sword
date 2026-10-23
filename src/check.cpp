@@ -2457,6 +2457,14 @@ struct Checker {
 
   Type *check_array_lit(Node *n) {
     Node *spec = n->type_expr;
+    if (spec->kind == ND_TYPE_FUNC) {
+      // `func() { ... }` in an expression is where a closure would be written.
+      error(n->pos,
+            "Sword has no closures: a function value names a function declared "
+            "at the top of a file, and state a callback needs goes in a struct "
+            "behind an interface");
+      return nullptr;
+    }
     if (spec->kind != ND_TYPE_ARRAY) {
       // `[]T{...}` would have to allocate, and Sword has no hidden allocation.
       error(n->pos,

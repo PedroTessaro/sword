@@ -285,7 +285,7 @@ SYNTAX_ERRORS = [
     r"unexpected character", r"unknown escape", r"takes two hex digits",
     r"a type alias is written", r"a type alias takes no type parameters",
     r"a field takes no 'mut'", r"a field cannot gather",
-    r"runs a statement on the way out",
+    r"runs a statement on the way out", r"a function type lists types",
 ]
 
 

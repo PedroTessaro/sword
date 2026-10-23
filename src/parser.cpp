@@ -175,6 +175,14 @@ struct Parser {
           bool is_mut = match(TK_MUT);
           Node *param = type_expr();
           if (!param) return nullptr;
+          // `func(x i64)`: a name and then its type, which is how a function
+          // written in place starts in Go or JavaScript.
+          if (kind() == TK_IDENT) {
+            fail("a function type lists types, not names; and if this is a "
+                 "function written in place, Sword has no closures: name a "
+                 "function declared at the top of a file");
+            return nullptr;
+          }
           param->is_mut = is_mut;
           n->kids.push_back(param);
         } while (match(TK_COMMA));
