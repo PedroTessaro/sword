@@ -1723,7 +1723,7 @@ struct Checker {
         n->form = 2; // dynamic: the function pointer comes from the vtable
         n->ival = i;
         Symbol probe{field->name, m.type, false,      false, false,
-                     nullptr,     nullptr, field->pos, -1,    nullptr};
+                     nullptr,     nullptr, field->pos, -1,    nullptr, {}};
         if (!check_args(n, &probe, 0)) return nullptr;
         return n->type = m.type->ret;
       }
@@ -2744,7 +2744,7 @@ struct Checker {
   Type *check_indirect_call(Node *n, Type *signature,
                             const std::string &shown) {
     Symbol probe{shown, signature, false, false, false, nullptr,
-                 nullptr, n->pos, -1, nullptr};
+                 nullptr, n->pos, -1, nullptr, {}};
     n->form = CALL_INDIRECT;
     n->name.clear();
     if (!check_args(n, &probe, 0)) return nullptr;
