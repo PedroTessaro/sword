@@ -95,18 +95,38 @@ func rejects(mut t *testing.T) !void {
 func TestWriterRoundTrip(mut t *testing.T) !void {
     mut out := try bytes.New(t.Mem, 128)
     mut w := NewWriter(&out)
-    try w.BeginObject()
-    try w.Key("name")
-    try w.Str("grace")
-    try w.Key("age")
-    try w.Number(45.0, 0)
-    try w.EndObject()
+    w.BeginObject()
+    w.Key("name")
+    w.Str("grace")
+    w.Key("age")
+    w.Number(45.0, 0)
+    w.EndObject()
+    try w.Err()
 
     mut doc := try Parse([]u8(out.Str()), t.Mem)
     root := doc.Root()
     t.Equal(doc.Kind(root), Kind.Object)
     t.Equal(doc.GetText(root, "name"), "grace")
     t.Equal(doc.GetNumber(root, "age", 0.0), 45.0)
+}
+
+// The first thing that goes wrong is kept and everything after it does
+// nothing, so a document with a mistake halfway is not half written.
+func TestWriterKeepsFirstError(mut t *testing.T) !void {
+    mut out := try bytes.New(t.Mem, 64)
+    mut w := NewWriter(&out)
+    w.BeginArray()
+    w.Int(1)
+    w.EndArray()
+    w.EndArray()
+    w.Int(2)
+    w.BeginObject()
+    t.Equal(out.Str(), "[1]")
+    w.Err() catch |e| {
+        t.Check(e == error.Unbalanced)
+        return
+    }
+    t.Failf("no error kept")
 }
 
 // The nearest double to what the document says, not a sum of digits that

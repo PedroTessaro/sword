@@ -988,18 +988,22 @@ func (d *Document) GetText(at u64, key string) string
 func (d *Document) GetNumber(at u64, key string, fallback f64) f64
 ```
 
-Writing is a streaming writer that puts the commas in for you:
+Writing is a streaming writer that puts the commas in for you. No write asks
+for `try`: the first thing that goes wrong — memory running out, a `TooDeep` or
+an `Unbalanced` — is kept, every write after it does nothing, and `Err` says
+what it was once the document is done:
 
 ```sword
 mut w := json.NewWriter(&buffer)
-try w.BeginObject()
-try w.Key("name")
-try w.Str("sword")
-try w.Key("tags")
-try w.BeginArray()
-try w.Str("fast")
-try w.EndArray()
-try w.EndObject()
+w.BeginObject()
+w.Key("name")
+w.Str("sword")
+w.Key("tags")
+w.BeginArray()
+w.Str("fast")
+w.EndArray()
+w.EndObject()
+try w.Err()            // the first thing that went wrong, if anything did
 ```
 
 ### `std/crypto`
