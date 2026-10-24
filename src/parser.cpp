@@ -1252,7 +1252,8 @@ struct Parser {
 
   Node *declaration() {
     // `package name` is documentation: the directory already decides the
-    // package. `import "path"` is what actually pulls something in.
+    // package. `import "path"` is what actually pulls something in, and
+    // `import name "path"` calls it something else in this package.
     if (kind() == TK_PACKAGE) {
       advance();
       if (kind() != TK_IDENT) {
@@ -1266,6 +1267,10 @@ struct Parser {
     }
     if (kind() == TK_IMPORT) {
       Node *n = make(ND_IMPORT, advance().pos);
+      if (kind() == TK_IDENT) {
+        n->name_pos = peek().pos;
+        n->name = advance().text;
+      }
       if (kind() != TK_STRING) {
         fail("expected an import path in quotes");
         return nullptr;

@@ -336,7 +336,16 @@ imported by its path and called by the last element of that path:
 the same name. A path whose last element is not a name a program can write —
 `github.com/ana/sword-sqlite` — takes its name from the clause instead, and a
 path ending in a major version — `.../sqlite/v2` — from the element before it.
-Two imports that would give the same name are an error.
+Two imports that would give the same name are an error, and one of them is
+given another name where it is imported:
+
+```sword
+import "example.com/deep"
+import deep2 "example.com/deep/v2"
+```
+
+That name holds for the whole package, every file of it, and the package's own
+name no longer reaches it there.
 
 A module is a tree of packages with a `sword.mod` at its root. The compiler finds
 it by looking in the directory being built and every directory above:

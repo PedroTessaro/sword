@@ -139,12 +139,13 @@ TopLevel    = PackageDecl | ImportDecl | ConstDecl | ErrorDecl
             | FuncDecl | StructDecl | InterfaceDecl | EnumDecl | AliasDecl .
 
 PackageDecl = "package" identifier .
-ImportDecl  = "import" string_lit .
+ImportDecl  = "import" [ identifier ] string_lit .
 ConstDecl   = "const" identifier "=" Expr .
 ```
 
 `package` names the package for whoever reads the file; the directory is what
-decides it.
+decides it. An identifier before an import's path is the name the package goes
+by in this one, in place of its own.
 
 ## Declarations
 

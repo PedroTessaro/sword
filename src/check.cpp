@@ -81,12 +81,9 @@ struct Checker {
   // --- packages ----------------------------------------------------------
 
   Package *imported(const std::string &name) {
-    if (name.empty()) return nullptr;
-    for (const std::string &path : pkg.imports) {
-      Package *other = prog.by_path[path];
-      if (other && other->name == name) return other;
-    }
-    return nullptr;
+    auto found = pkg.import_names.find(name);
+    if (found == pkg.import_names.end()) return nullptr;
+    return prog.by_path[found->second];
   }
 
   // A name is visible outside its package only when it starts uppercase.
