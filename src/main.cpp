@@ -4,6 +4,7 @@
 #include "package.h"
 #include "paths.h"
 #include "diag.h"
+#include "fetch.h"
 #include "ir.h"
 #include "lexer.h"
 #include "link.h"
@@ -38,6 +39,7 @@ enum Stage {
 void usage() {
   fputs("usage: shield <file.sword | directory> [options]\n"
         "       shield test <file.sword | directory> [options]\n"
+        "       shield get <module>[@version | @commit | @none]\n"
         "\n"
         "  -o <path>      output binary (default: a.out)\n"
         "  -p <n>         test only: how many tests may run at once\n"
@@ -51,6 +53,7 @@ void usage() {
         "  -I <dir>       add a directory to the package search path\n"
         "  --link <arg>   an object, a library or a linker option to link\n"
         "                 against; one argument each, repeat for more\n"
+        "  --locked       refuse to add anything to sword.sum\n"
         "  --static       link the libraries extern declarations name from\n"
         "                 their archives (lib<name>.a)\n"
         "  --target=<t>   build for another machine, a 64-bit LLVM triple such\n"
@@ -436,11 +439,15 @@ int simulate(const std::string &output, const char *input, uint64_t first,
 } // namespace
 
 int main(int argc, char **argv) {
+  if (argc > 1 && !strcmp(argv[1], "get"))
+    return get_command(std::vector<std::string>(argv + 2, argv + argc));
+
   const char *input = nullptr;
   std::vector<std::string> search;
   // Objects and libraries of the caller's own, in the order they were given.
   std::vector<std::string> link_with;
   bool prefer_static = false;
+  bool locked = false;      // --locked: sword.sum stays as committed
   std::string target;       // --target: empty for this machine
   bool object_only = false; // -c
   std::string output = "a.out";
@@ -469,6 +476,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(arg, "--link") && i + 1 < argc)
       link_with.push_back(argv[++i]);
     else if (!strcmp(arg, "--static")) prefer_static = true;
+    else if (!strcmp(arg, "--locked")) locked = true;
     else if (!strncmp(arg, "--target=", 9)) target = arg + 9;
     else if (!strcmp(arg, "--target") && i + 1 < argc) target = argv[++i];
     else if (!strcmp(arg, "-c")) object_only = true;
@@ -562,7 +570,7 @@ int main(int argc, char **argv) {
   Program prog;
   LoadMode how = LOAD_BUILD;
   if (testing) how = benching ? LOAD_BENCH : LOAD_TESTS;
-  if (!load_program(input, search, prog, how, only))
+  if (!load_program(input, search, prog, how, only, locked))
     return 1;
 
   TypeTable types;

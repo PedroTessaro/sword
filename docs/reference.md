@@ -345,6 +345,7 @@ it by looking in the directory being built and every directory above:
 module example.com/site
 sword 0.3
 
+require github.com/ana/sqlite v1.4.0
 replace example.com/lib => ../lib
 ```
 
@@ -354,9 +355,59 @@ path is lower-case letters, digits, `.`, `-` and `_`, in segments joined by `/`,
 and nothing under `std`. `sword` is the oldest compiler the module builds with,
 and a newer requirement is refused rather than half compiled. `replace` points a
 path, and everything under it, at a directory, relative to the module's root.
-`require` names a dependency and its version — `require example.com/lib v1.4.0`,
-or `v2.0.1` under `example.com/lib/v2`, since each major version is a module of
-its own. Lines starting with `//` are comments.
+Lines starting with `//` are comments.
+
+### Dependencies
+
+`require` names another module and the version wanted of it. A module lives at
+the root of a git repository, and its path is where that repository is:
+`github.com/ana/sqlite` is fetched from `https://github.com/ana/sqlite.git`,
+with the credentials git already has. A version is a tag, `v1.4.0`. Each major
+version from 2 on is a module of its own, imported under its own path —
+`github.com/ana/sqlite/v2`, with `module github.com/ana/sqlite/v2` in its
+`sword.mod` and tags `v2.x.y` — so a program can use both while it moves from one
+to the other.
+
+```
+shield get github.com/ana/sqlite           # the newest release
+shield get github.com/ana/sqlite@v1.4.0    # this one
+shield get github.com/ana/sqlite@main      # a branch or a commit
+shield get github.com/ana/sqlite@none      # take it out
+```
+
+`shield get` writes the `require` line and fetches the module. A commit with no
+tag gets a version of its own, `v0.0.0-20261023-a1b2c3d4e5f6`, the day it was
+made and its hash, which sorts before every release: it is for using a fix before
+its author has released it. Without a version, `get` takes the newest release,
+and never goes back from a newer version already required.
+
+A build fetches whatever `sword.mod` requires and is not on this machine yet, and
+nothing else: importing a module nobody required is an error, and so is
+importing one the program only has because a dependency required it. A
+dependency, in turn, imports only what its own `sword.mod` requires. Fetching a
+module never runs any of its code; a Sword package has no build script.
+
+When several modules require the same one, the build uses the newest version
+any of them asks for — not the newest that exists. A release nobody asked for
+never enters a build, so the same `sword.mod` builds the same code next year.
+Only the module being built may `replace`; a dependency's `replace` lines are
+ignored.
+
+`sword.sum`, beside `sword.mod`, holds a hash of every module version the build
+has read, and both belong in version control:
+
+```
+github.com/ana/sqlite v1.4.0 sha256:3f1c...
+```
+
+The hash covers the files the compiler reads, `.sword` files and `sword.mod`.
+A version whose code no longer matches its line — a tag moved to other code — is
+refused. A build adds the line for a version it has not seen before;
+`--locked` refuses to, for a build that has to use exactly what was committed.
+
+Fetched modules are kept in `~/.sword`, or wherever `SWORD_CACHE` says, one
+directory per version, read-only, with the code and its licence and nothing
+else.
 
 ## C libraries
 

@@ -1,5 +1,6 @@
 #include "package.h"
 
+#include "fetch.h"
 #include "lexer.h"
 #include "module.h"
 #include "parser.h"
@@ -75,6 +76,8 @@ struct Loader {
   // The module the program belongs to, when it has a sword.mod.
   Module module;
   bool in_module = false;
+  // Everything the module requires, at the versions selected for this build.
+  Deps deps;
 
   Loader(Program &p, const std::vector<std::string> &s) : prog(p), search(s) {}
 
@@ -189,6 +192,9 @@ struct Loader {
     // named under `std`, so nothing below can shadow it.
     if (in_module && import_path.compare(0, 4, "std/") != 0) {
       std::string dir = module.resolve(import_path);
+      if (dir.empty())
+        if (const Dep *dep = deps.owner(import_path))
+          dir = dep->dir + import_path.substr(dep->path.size());
       if (!dir.empty()) return is_directory(dir) ? dir : "";
     }
     for (const std::string &root : search) {
@@ -243,19 +249,58 @@ struct Loader {
     return true;
   }
 
-  // A dependency the module requires but that is not on disk yet: fetching
-  // one is the next step, and until then `replace` is the way to it.
-  void required_note(const std::string &path) {
+  // Why an import was not found, when a module has something to say about
+  // it: a package the module does not have, one the editor cannot see until a
+  // build has fetched it, or a module nobody required.
+  void required_note(const std::string &path, Pos at) {
     if (!in_module) return;
     for (const Module::Require &r : module.required) {
-      if (path != r.path && path.compare(0, r.path.size() + 1, r.path + "/") != 0)
-        continue;
-      note(r.at, "it is required here at %s, and this version of shield does "
-                 "not fetch packages yet; 'replace %s => <directory>' uses a "
-                 "copy on disk",
-           r.version.c_str(), r.path.c_str());
+      if (!path_under(path, r.path)) continue;
+      const Dep *dep = deps.owner(path);
+      if (dep && dep->path == r.path)
+        note(r.at, "%s %s has no package '%s'", r.path.c_str(),
+             dep->version.c_str(), path.c_str());
+      else
+        note(r.at, "%s is required here, and a build fetches it", r.path.c_str());
       return;
     }
+    // A host name comes first in a module path, and nothing else has a dot.
+    std::string first = path.substr(0, path.find('/'));
+    if (first.find('.') != std::string::npos)
+      note(at, "sword.mod does not require it; 'shield get <module>' adds the "
+               "module it is in");
+  }
+
+  // A package imports from its own module, the standard library and what its
+  // module's sword.mod requires, and nothing else: no dependency enters a
+  // build without somebody having asked for it.
+  bool importable(const Package &pkg, const std::string &path) {
+    if (!in_module || path_under(path, "std")) return true;
+    if (pkg.import_path.empty() || path_under(pkg.import_path, module.path)) {
+      if (path_under(path, module.path)) return true;
+      for (const Module::Replace &r : module.replaces)
+        if (path_under(path, r.path)) return true;
+      for (const Module::Require &r : module.required)
+        if (path_under(path, r.path)) return true;
+      // The program's own directory and -I are searched as they always were.
+      const Dep *other = deps.owner(path);
+      if (!other) return true;
+      std::string what = path == other->path
+                             ? "'" + path + "'"
+                             : "'" + path + "' is in " + other->path + ", which";
+      error(import_pos(pkg, path), "%s is required only by another module; "
+                                   "'shield get %s' requires it here",
+            what.c_str(), other->path.c_str());
+      return false;
+    }
+    const Dep *owner = deps.owner(pkg.import_path);
+    if (!owner || path_under(path, owner->path)) return true;
+    for (const std::string &r : owner->required)
+      if (path_under(path, r)) return true;
+    error(import_pos(pkg, path), "%s imports '%s', and its sword.mod does not "
+                                 "require it",
+          owner->path.c_str(), path.c_str());
+    return false;
   }
 
   // A package is called by its name alone, so two imports that give the same
@@ -268,15 +313,19 @@ struct Loader {
       if (!other) continue;
       auto had = taken.emplace(other->name, path);
       if (had.second || had.first->second == path) continue;
-      Pos at = pkg.unit->kids.empty() ? Pos{} : pkg.unit->kids.front()->pos;
-      for (Node *decl : pkg.unit->kids)
-        if (decl->kind == ND_IMPORT && decl->text == path) at = decl->pos;
-      error(at, "'%s' and '%s' are both called '%s', and a package can import "
-                "only one of them",
+      error(import_pos(pkg, path), "'%s' and '%s' are both called '%s', and a "
+                                   "package can import only one of them",
             had.first->second.c_str(), path.c_str(), other->name.c_str());
       return false;
     }
     return true;
+  }
+
+  static Pos import_pos(const Package &pkg, const std::string &path) {
+    Pos at = pkg.unit->kids.empty() ? Pos{} : pkg.unit->kids.front()->pos;
+    for (Node *decl : pkg.unit->kids)
+      if (decl->kind == ND_IMPORT && decl->text == path) at = decl->pos;
+    return at;
   }
 
   // Depth-first, appending each package after its dependencies.
@@ -318,13 +367,11 @@ struct Loader {
     if (!import_path.empty() && !settle_name(pkg)) return nullptr;
 
     for (const std::string &path : pkg.imports) {
+      if (!importable(pkg, path)) return nullptr;
       std::string found_dir = locate(path);
       if (found_dir.empty()) {
-        Pos at = pkg.unit->kids.empty() ? Pos{} : pkg.unit->kids.front()->pos;
-        for (Node *decl : pkg.unit->kids)
-          if (decl->kind == ND_IMPORT && decl->text == path) at = decl->pos;
-        error(at, "cannot find package '%s'", path.c_str());
-        required_note(path);
+        error(import_pos(pkg, path), "cannot find package '%s'", path.c_str());
+        required_note(path, import_pos(pkg, path));
         return nullptr;
       }
       if (!load(path, found_dir, Pos{})) return nullptr;
@@ -352,7 +399,8 @@ bool exported(const std::string &name) {
 
 bool load_program(const std::string &input,
                   const std::vector<std::string> &search, Program &out,
-                  LoadMode mode, const std::vector<std::string> &only) {
+                  LoadMode mode, const std::vector<std::string> &only,
+                  bool locked) {
   Loader loader(out, search);
   loader.mode = mode;
   loader.label = input;
@@ -360,6 +408,12 @@ bool load_program(const std::string &input,
   if (!find_module(is_directory(input) ? input : parent_of(input),
                    loader.module, loader.in_module))
     return false;
+  if (loader.in_module) {
+    Settle how;
+    how.cache_only = mode == LOAD_EDITOR;
+    how.locked = locked;
+    if (!settle_deps(loader.module, how, loader.deps)) return false;
+  }
 
   if (is_directory(input)) return loader.load("", input, Pos{}) != nullptr;
 
@@ -376,13 +430,12 @@ bool load_program(const std::string &input,
     return false;
 
   for (const std::string &path : pkg.imports) {
+    if (!loader.importable(pkg, path)) return false;
     std::string dir = loader.locate(path);
     if (dir.empty()) {
-      Pos at{};
-      for (Node *decl : pkg.unit->kids)
-        if (decl->kind == ND_IMPORT && decl->text == path) at = decl->pos;
-      error(at, "cannot find package '%s'", path.c_str());
-      loader.required_note(path);
+      error(Loader::import_pos(pkg, path), "cannot find package '%s'",
+            path.c_str());
+      loader.required_note(path, Loader::import_pos(pkg, path));
       return false;
     }
     if (!loader.load(path, dir, Pos{})) return false;
