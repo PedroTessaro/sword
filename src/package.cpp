@@ -412,6 +412,19 @@ bool exported(const std::string &name) {
   return !name.empty() && isupper((unsigned char)name[0]);
 }
 
+std::string find_package(const std::string &import_path, const std::string &from,
+                         const std::vector<std::string> &search) {
+  Program prog;
+  Loader loader(prog, search);
+  if (!find_module(from, loader.module, loader.in_module)) return "";
+  if (loader.in_module) {
+    Settle how;
+    how.cache_only = true;
+    settle_deps(loader.module, how, loader.deps);
+  }
+  return loader.locate(import_path);
+}
+
 bool load_program(const std::string &input,
                   const std::vector<std::string> &search, Program &out,
                   LoadMode mode, const std::vector<std::string> &only,

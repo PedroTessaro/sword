@@ -611,6 +611,36 @@ else
     fail=$((fail + 1))
 fi
 
+# shield doc prints what a package exports as it was written, with the comment
+# above it, and nothing it keeps to itself.
+said=$("$shield" doc std/mem 2>&1)
+if printf '%s\n' "$said" | grep -qx 'func NewArena(backing \[\]u8) Arena' &&
+    printf '%s\n' "$said" | grep -qx '    func (mut a \*Arena) Reset()' &&
+    ! "$shield" doc std/strings 2>&1 | grep -q 'isSpace'; then
+    pass=$((pass + 1))
+else
+    echo "FAIL shield doc std/mem"
+    printf '%s\n' "$said" | sed 's/^/     /'
+    fail=$((fail + 1))
+fi
+said=$("$shield" doc mem.Arena 2>&1)
+if printf '%s\n' "$said" | grep -q '^    Bumps a pointer through a buffer' &&
+    printf '%s\n' "$said" | grep -qx '    Watch bool' &&
+    printf '%s\n' "$said" | grep -qx '    // and more that only the package sees'; then
+    pass=$((pass + 1))
+else
+    echo "FAIL shield doc mem.Arena"
+    printf '%s\n' "$said" | sed 's/^/     /'
+    fail=$((fail + 1))
+fi
+if ! "$shield" doc std/mem.Nope > "$tmp/doc.out" 2>&1 &&
+    grep -qF "std/mem has nothing exported called 'Nope'" "$tmp/doc.out"; then
+    pass=$((pass + 1))
+else
+    echo "FAIL shield doc std/mem.Nope"
+    fail=$((fail + 1))
+fi
+
 # A program can be tested too: its own main steps aside for the runner's, and
 # the tests still reach everything else it declares (issue #4).
 mkdir -p "$tmp/program"

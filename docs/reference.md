@@ -348,6 +348,22 @@ import deep2 "example.com/deep/v2"
 That name holds for the whole package, every file of it, and the package's own
 name no longer reaches it there.
 
+A comment directly above a declaration is its documentation, and one above a
+`package` clause documents the package. `shield doc` prints them beside what
+they describe, as it was written:
+
+```
+shield doc std/http                # everything it exports, a line each
+shield doc std/http.Server         # one type, its fields and its methods
+shield doc std/http.Server.Close   # one method
+shield doc mem.Arena               # a package of std needs no std/
+shield doc .                       # the package here
+```
+
+Fields and methods the package keeps to itself are left out. Inside a module,
+`shield doc` finds the module's packages and its dependencies the way a build
+would, though it never fetches one.
+
 A module is a tree of packages with a `sword.mod` at its root. The compiler finds
 it by looking in the directory being built and every directory above:
 
@@ -358,6 +374,13 @@ sword 0.3
 require github.com/ana/sqlite v1.4.0
 replace example.com/lib => ../lib
 ```
+
+`shield new example.com/site` starts one: a `site` directory with the
+`sword.mod`, a `main.sword` and a test for it, in a git repository of its own
+unless it is made inside one. `shield new --lib example.com/geo` starts a
+library instead, a package with one function and its test; when the last element
+of the path is not a name a program can write, the package's name follows it:
+`shield new --lib example.com/sword-geo geo`.
 
 `module` names the tree, and its packages are imported under that name:
 `example.com/site/util` is the `util` directory beside the `sword.mod`. A module
