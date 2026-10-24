@@ -72,9 +72,10 @@ nil       orelse    package   parallel  reduce    return    scope
 select    spawn     struct    switch    true      try
 ```
 
-`error`, `type`, `weak` and `read` are not keywords. Each is special in one
-position only — `error` and `type` at the start of a top-level declaration
-followed by a name, `weak` between `extern` and what it declares, `read` after
+`error`, `type`, `weak`, `blocking` and `read` are not keywords. Each is
+special in one position only — `error` and `type` at the start of a top-level
+declaration followed by a name, `weak` and `blocking` straight after `extern`,
+`read` after
 `lock` when a name and `:=` follow it — and is an ordinary identifier
 everywhere else. That is what keeps `error.Timeout` an expression, a field or a
 variable called `type` a name like any other, and `lock read := t` a lock
@@ -154,7 +155,7 @@ ErrorDecl   = "error" ErrorName { "," ErrorName } .
 ErrorName   = identifier [ "=" string_lit ] .
 
 FuncDecl    = [ "det" ] "func" [ Receiver ] identifier [ TypeParams ] Params [ Type ] Block
-            | "extern" [ "weak" ] [ string_lit ] [ "det" ] "func" [ Receiver ] identifier
+            | "extern" [ "weak" | "blocking" ] [ string_lit ] [ "det" ] "func" [ Receiver ] identifier
               CParams [ Type ] .
 Receiver    = "(" [ "mut" ] identifier Type ")" .
 TypeParams  = "[" TypeParam { "," TypeParam } "]" .
@@ -181,8 +182,9 @@ AliasDecl   = "type" identifier "=" Type .
 `args ...T` gathers the rest of the arguments into a slice. An `extern`
 function is one written in C: it has no body, cannot be generic, may end its
 parameters in C's own bare `...`, and may name the library it comes from in
-quotes. `weak` makes it a value that may be missing at run time. `det` is a
-claim the checker verifies, not a hint.
+quotes. `weak` makes it a value that may be missing at run time. `blocking`
+sends each call to the io pool, putting the task down rather than the thread,
+and leaves the function callable only by name. `det` is a claim the checker verifies, not a hint.
 
 `type Name = T` is another name for `T`, the same type in every respect: values
 pass between the two without a conversion. An alias takes no type parameters,

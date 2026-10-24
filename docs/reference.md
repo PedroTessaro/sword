@@ -78,6 +78,7 @@ extern func c_name(a T) R          // C ABI, name unchanged
 extern func c_name(a T, ...) R     // C's own variadic: ioctl, fcntl, printf
 extern "z" func c_name(a T) R      // and it comes from libz
 extern weak func c_name(a T) R     // and it may be missing at run time
+extern blocking "z" func c_name(a T) R  // or a call may take a long time
 
 struct Name { field T ... }
 struct Name[T] { field T ... }     // generic; a type only once instantiated
@@ -502,6 +503,31 @@ if fill := getentropy {
 `weak` is about the function, not the library: a library named after it has to
 be there when the program starts. A library that may be missing altogether is
 loaded with [`std/dl`](#stddl).
+
+### Blocking functions
+
+A task waiting on a socket, a lock or a channel is put down and its thread
+moves on to other tasks. A C function cannot be put down: while it waits, the
+thread waits with it, and a few such calls at once hold every thread the
+scheduler has. `blocking` says a function may take its time — a database query,
+a read from a device, a call into a library that does its own network I/O:
+
+```sword
+extern blocking "sqlite3" func sqlite3_step(stmt c.Ptr) c.Int
+```
+
+Each call to it is made on the threads kept for files and name resolution, and
+the task is put down until it returns, exactly as a file read is. Outside any
+task the call is made where it is. `errno` comes back with the answer, so
+`os.Errno()` right after the call is the one the function left.
+
+A blocking function is called by name only. As a value it would be an ordinary
+`extern func`, and a call through it would hold a thread with nothing in the
+code to say so. That is why `blocking` takes the place of `weak`, which is only
+called through its value, and why a blocking function cannot take C's `...`.
+The hand-off costs a few microseconds, which is nothing next to a call that
+blocks and too much for one that does not: leave `blocking` off a function that
+only computes.
 
 ## Atomics
 
