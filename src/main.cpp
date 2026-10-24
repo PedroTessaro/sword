@@ -40,6 +40,7 @@ void usage() {
   fputs("usage: shield <file.sword | directory> [options]\n"
         "       shield test <file.sword | directory> [options]\n"
         "       shield get <module>[@version | @commit | @none]\n"
+        "       shield vendor\n"
         "\n"
         "  -o <path>      output binary (default: a.out)\n"
         "  -p <n>         test only: how many tests may run at once\n"
@@ -439,8 +440,10 @@ int simulate(const std::string &output, const char *input, uint64_t first,
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc > 1 && !strcmp(argv[1], "get"))
-    return get_command(std::vector<std::string>(argv + 2, argv + argc));
+  if (argc > 1 && (!strcmp(argv[1], "get") || !strcmp(argv[1], "vendor"))) {
+    std::vector<std::string> args(argv + 2, argv + argc);
+    return !strcmp(argv[1], "get") ? get_command(args) : vendor_command(args);
+  }
 
   const char *input = nullptr;
   std::vector<std::string> search;

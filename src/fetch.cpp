@@ -129,7 +129,7 @@ void files_of(const std::string &root, const std::string &rel,
 
 // One line per file the compiler reads, its own hash and its path, in byte
 // order, and the hash of those lines. The same code hashes the same from a
-// clone or the cache, whatever else sits around it.
+// clone, the cache or vendor/, whatever else sits around it.
 std::string module_hash(const std::string &root) {
   std::vector<std::string> files;
   files_of(root, "", files);
@@ -448,7 +448,8 @@ struct Sums {
     return false;
   }
 
-  // `at` is the require line that brought the module in, when there is one.
+  // `at` is the require line that brought the module in, when there is one;
+  // a module only vendor/ names has none.
   bool check(const std::string &path, const std::string &version,
              const std::string &hash, const Pos *at, bool locked) {
     used.insert({path, version});
@@ -492,10 +493,73 @@ struct Sums {
   }
 };
 
+// vendor/modules.txt: the versions `shield vendor` copied, one per line.
+bool read_vendored(const std::string &file,
+                   std::map<std::string, std::string> &out) {
+  std::string text;
+  if (!slurp(file, text)) return false;
+  size_t at = 0;
+  while (at < text.size()) {
+    size_t end = text.find('\n', at);
+    if (end == std::string::npos) end = text.size();
+    std::string line = trimmed(text.substr(at, end - at));
+    at = end + 1;
+    if (line.empty() || line[0] == '#') continue;
+    size_t space = line.find(' ');
+    if (space == std::string::npos) continue;
+    out[line.substr(0, space)] = line.substr(space + 1);
+  }
+  return true;
+}
+
 const Module::Replace *replacement(const Module &main, const std::string &path) {
   for (const Module::Replace &r : main.replaces)
     if (path_under(path, r.path)) return &r;
   return nullptr;
+}
+
+bool settle_from_vendor(const Module &main, bool locked, Sums &sums,
+                        Deps &out) {
+  std::string vendor = main.root + "/vendor";
+  std::map<std::string, std::string> vendored;
+  read_vendored(vendor + "/modules.txt", vendored);
+  bool ok = true;
+  // Without the network there is no graph to walk, so vendor/ is taken as
+  // the answer and checked against what can be checked here: every module
+  // sword.mod asks for is there, at least as new, and is the code sword.sum
+  // recorded.
+  for (const Module::Require &r : main.required) {
+    if (replacement(main, r.path)) continue;
+    auto had = vendored.find(r.path);
+    if (had == vendored.end() || compare_versions(had->second, r.version) < 0) {
+      error(r.at, "vendor/ %s; run 'shield vendor' after changing sword.mod",
+            had == vendored.end()
+                ? ("does not have " + r.path).c_str()
+                : ("has " + r.path + " " + had->second).c_str());
+      ok = false;
+    }
+  }
+  for (const auto &v : vendored) {
+    Dep dep;
+    dep.path = v.first;
+    dep.version = v.second;
+    dep.dir = vendor + "/" + v.first;
+    Module mod;
+    if (!read_module(dep.dir, mod)) {
+      ok = false;
+      continue;
+    }
+    for (const Module::Require &r : mod.required) dep.required.push_back(r.path);
+    // The vendored copy is in the project, where anybody can edit it, so it
+    // is checked on every build rather than once when it was fetched.
+    const Pos *at = nullptr;
+    for (const Module::Require &r : main.required)
+      if (r.path == dep.path) at = &r.at;
+    if (!sums.check(dep.path, dep.version, module_hash(dep.dir), at, locked))
+      ok = false;
+    out.modules.push_back(dep);
+  }
+  return ok;
 }
 
 } // namespace
@@ -513,6 +577,10 @@ bool settle_deps(const Module &main, const Settle &how, Deps &out) {
   Sums sums;
   sums.file = main.root + "/sword.sum";
   if (!sums.read()) return false;
+  if (!how.ignore_vendor && is_file(main.root + "/vendor/modules.txt")) {
+    bool ok = settle_from_vendor(main, how.locked, sums, out);
+    return ok && (!sums.changed || how.cache_only || sums.write());
+  }
 
   // Minimal version selection: walk every version anybody asks for and keep
   // the newest of those for each path. A newer release that nobody asked for
@@ -778,6 +846,7 @@ int get_command(const std::vector<std::string> &args) {
   bool found = false;
   Deps deps;
   Settle how;
+  how.ignore_vendor = true;
   how.tidy = true;
   if (!find_module(main.root, after, found) || !settle_deps(after, how, deps)) {
     spit(file, before);
@@ -792,5 +861,52 @@ int get_command(const std::vector<std::string> &args) {
   if (dep && dep->path == path && dep->version != version)
     fprintf(stderr, "        a build uses %s, which another module requires\n",
             dep->version.c_str());
+  if (is_file(main.root + "/vendor/modules.txt"))
+    fprintf(stderr, "        vendor/ is now out of date; 'shield vendor' "
+                    "rewrites it\n");
+  return 0;
+}
+
+int vendor_command(const std::vector<std::string> &args) {
+  if (!args.empty()) {
+    fprintf(stderr, "usage: shield vendor\n");
+    return 1;
+  }
+  Module main;
+  if (!here(main)) return 1;
+  std::string vendor = main.root + "/vendor";
+  if (is_dir(vendor) && !is_file(vendor + "/modules.txt")) {
+    fprintf(stderr, "shield: '%s' was not written by shield vendor, so it is "
+                    "left alone\n",
+            vendor.c_str());
+    return 1;
+  }
+  Deps deps;
+  Settle how;
+  how.ignore_vendor = true;
+  if (!settle_deps(main, how, deps)) return 1;
+
+  remove_tree(vendor);
+  std::string listing = "# Written by shield vendor: what a build reads in "
+                        "place of the cache.\n";
+  int copied = 0;
+  for (const Dep &dep : deps.modules) {
+    if (dep.replaced) continue;
+    if (!copy_tree(dep.dir, vendor + "/" + dep.path)) {
+      fprintf(stderr, "shield: cannot copy %s into vendor/\n", dep.path.c_str());
+      return 1;
+    }
+    listing += dep.path + " " + dep.version + "\n";
+    copied++;
+  }
+  if (!copied) {
+    fprintf(stderr, "shield: nothing to vendor; this module requires nothing\n");
+    return 0;
+  }
+  if (!spit(vendor + "/modules.txt", listing)) {
+    fprintf(stderr, "shield: cannot write '%s/modules.txt'\n", vendor.c_str());
+    return 1;
+  }
+  fprintf(stderr, "shield: vendored %d module%s\n", copied, copied == 1 ? "" : "s");
   return 0;
 }

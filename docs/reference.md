@@ -407,7 +407,11 @@ refused. A build adds the line for a version it has not seen before;
 
 Fetched modules are kept in `~/.sword`, or wherever `SWORD_CACHE` says, one
 directory per version, read-only, with the code and its licence and nothing
-else.
+else. `shield vendor` copies every dependency into `vendor/` with a
+`vendor/modules.txt` listing them, and from then on a build reads `vendor/`
+instead, with no network and no cache. It is checked against `sword.sum` on
+every build, since it sits where anybody can edit it, and after `sword.mod`
+changes, `shield vendor` is run again.
 
 ## C libraries
 

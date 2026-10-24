@@ -30,6 +30,8 @@ struct Settle {
   // --locked: refuse to add anything to sword.sum, for a build that has to use
   // exactly what was committed.
   bool locked = false;
+  // shield vendor reads the cache even when vendor/ is there, to rewrite it.
+  bool ignore_vendor = false;
   // shield get drops the sword.sum lines nothing uses any more.
   bool tidy = false;
 };
@@ -38,5 +40,6 @@ struct Settle {
 // module, fetches what the cache is missing, and checks each against sword.sum.
 bool settle_deps(const Module &main, const Settle &how, Deps &out);
 
-// `shield get <path>[@version|@none]`.
+// `shield get <path>[@version|@none]` and `shield vendor`.
 int get_command(const std::vector<std::string> &args);
+int vendor_command(const std::vector<std::string> &args);

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Modules that come from somewhere else: fetching what sword.mod requires,
-# choosing versions, sword.sum and shield get. The repositories
+# choosing versions, sword.sum, shield get and shield vendor. The repositories
 # are local, and git's own url.<base>.insteadOf points https:// at them, so
 # nothing here touches the network and the compiler has no hook for tests.
 set -u
@@ -265,6 +265,33 @@ func main() int {
     return lib.Thirty() + helper.Two()
 }
 EOF
+
+# vendor/ is what the build reads, with no network and no cache.
+expect_exit "vendor" 0 vendor
+if [ "$(grep -v '^#' "$tmp/site/vendor/modules.txt" | tr '\n' ,)" = \
+    "example.com/deep/v2 v2.0.0,example.com/helper v0.1.0,example.com/lib v1.1.0," ] &&
+    [ -f "$tmp/site/vendor/example.com/lib/LICENSE" ]; then ok
+else bad "vendor/modules.txt: $(cat "$tmp/site/vendor/modules.txt")"; fi
+GIT_CONFIG_COUNT=0 SWORD_CACHE="$tmp/nowhere"
+answer "built from vendor" 32
+GIT_CONFIG_COUNT=1 SWORD_CACHE="$tmp/cache"
+[ ! -e "$tmp/nowhere" ] || bad "a vendored build touched the cache"
+
+# vendor/ sits in the project, so it is checked on every build.
+chmod u+w "$tmp/site/vendor/example.com/lib/lib.sword"
+echo '// edited' >> "$tmp/site/vendor/example.com/lib/lib.sword"
+expect_said "edited vendor" "example.com/lib v1.1.0 is not the code sword.sum recorded for it" . -o "$tmp/prog"
+
+# Asking for more than vendor/ has is caught before anything is built from it.
+expect_exit "vendor again" 0 vendor
+sed 's|require example.com/lib v1.0.0|require example.com/lib v1.2.0-rc.1|' "$tmp/site/sword.mod" > "$tmp/mod" &&
+    cp "$tmp/mod" "$tmp/site/sword.mod"
+expect_said "stale vendor" "run 'shield vendor' after changing sword.mod" . -o "$tmp/prog"
+
+mkdir -p "$tmp/other/vendor"
+printf 'module example.com/other\n' > "$tmp/other/sword.mod"
+(cd "$tmp/other" && "$shield" vendor) >"$tmp/out" 2>&1
+if [ $? -ne 0 ] && grep -qF "was not written by shield vendor" "$tmp/out"; then ok; else bad "vendor over somebody's vendor/"; fi
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
