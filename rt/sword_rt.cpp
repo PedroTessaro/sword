@@ -1709,6 +1709,7 @@ void sword_sim_refuse(const char *what) {
 // because the thread it started on had errno 0. A call into another file, never
 // inlined, has to ask for the address again every time.
 __attribute__((noinline)) int sword_errno(void) { return errno; }
+__attribute__((noinline)) void sword_set_errno(int value) { errno = value; }
 
 void sword_runtime_stats(struct sword_stats *out) {
   memset(out, 0, sizeof(*out));

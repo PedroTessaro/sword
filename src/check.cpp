@@ -2732,6 +2732,13 @@ struct Checker {
             shown_name(sym->name).c_str());
       return nullptr;
     }
+    // As a value it would be an ordinary extern func, and a call through it
+    // would hold a scheduler thread with nothing on the page to say so.
+    if (sym->decl && sym->decl->is_blocking) {
+      error(n->pos, "'%s' is blocking, so it can only be called by name",
+            shown_name(sym->name).c_str());
+      return nullptr;
+    }
     if (sym->decl && sym->decl->is_weak) return n->type = types.opt(sym->type);
     return n->type = sym->type;
   }
@@ -4059,6 +4066,12 @@ struct Checker {
         sym->type->is_extern = true;
         c_boundary(sym->type, fn->pos, "extern '" + fn->name + "'");
         c_symbol(fn);
+        // A blocking call is made by name, through a wrapper that knows its
+        // signature, and C's `...` is settled at each call site, with nothing
+        // a wrapper could pass along.
+        if (fn->is_blocking && fn->is_c_variadic)
+          error(fn->pos, "'%s' cannot be blocking and take C's '...'",
+                fn->name.c_str());
       }
 
       if (fn->name == "main" && pkg.prefix.empty()) {
