@@ -303,20 +303,35 @@ struct Loader {
     return false;
   }
 
-  // A package is called by its name alone, so two imports that give the same
-  // one would leave the second unreachable, and every use quietly meaning the
-  // first: `example.com/deep` and `example.com/deep/v2` are both `deep`.
-  bool distinct_names(const Package &pkg) {
-    std::unordered_map<std::string, std::string> taken;
+  // A package is called by its name, so two imports that give the same one
+  // would leave the second unreachable, and every use quietly meaning the
+  // first: `example.com/deep` and `example.com/deep/v2` are both `deep`. One of
+  // them has to be named at its import.
+  bool name_imports(Package &pkg) {
+    auto take = [&](const std::string &name, const std::string &path,
+                    Pos at) {
+      auto had = pkg.import_names.emplace(name, path);
+      if (had.second || had.first->second == path) return true;
+      error(at, "'%s' and '%s' are both called '%s'; give one of them another "
+                "name where it is imported: import other \"%s\"",
+            had.first->second.c_str(), path.c_str(), name.c_str(), path.c_str());
+      return false;
+    };
+    for (Node *decl : pkg.unit->kids) {
+      if (decl->kind != ND_IMPORT) continue;
+      Package *other = prog.by_path[decl->text];
+      if (!other) continue;
+      if (!take(decl->name.empty() ? other->name : decl->name, decl->text,
+                decl->name.empty() ? decl->pos : decl->name_pos))
+        return false;
+    }
+    // An import no file wrote, the way `chan` arrives, goes by its own name.
     for (const std::string &path : pkg.imports) {
       Package *other = prog.by_path[path];
-      if (!other) continue;
-      auto had = taken.emplace(other->name, path);
-      if (had.second || had.first->second == path) continue;
-      error(import_pos(pkg, path), "'%s' and '%s' are both called '%s', and a "
-                                   "package can import only one of them",
-            had.first->second.c_str(), path.c_str(), other->name.c_str());
-      return false;
+      bool written = false;
+      for (const auto &named : pkg.import_names) written |= named.second == path;
+      if (other && !written && !take(other->name, path, import_pos(pkg, path)))
+        return false;
     }
     return true;
   }
@@ -376,7 +391,7 @@ struct Loader {
       }
       if (!load(path, found_dir, Pos{})) return nullptr;
     }
-    if (!distinct_names(pkg)) return nullptr;
+    if (!name_imports(pkg)) return nullptr;
 
     visiting.pop_back();
     prog.by_path[import_path] = &pkg;
@@ -440,7 +455,7 @@ bool load_program(const std::string &input,
     }
     if (!loader.load(path, dir, Pos{})) return false;
   }
-  if (!loader.distinct_names(pkg)) return false;
+  if (!loader.name_imports(pkg)) return false;
 
   out.by_path[""] = &pkg;
   out.order.push_back(&pkg);

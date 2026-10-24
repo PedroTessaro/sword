@@ -17,6 +17,9 @@ struct Package {
   std::string dir;
   Node *unit = nullptr;
   std::vector<std::string> imports;
+  // What this package calls each of them: the imported package's own name, or
+  // the one its import gave it.
+  std::unordered_map<std::string, std::string> import_names;
 
   // Set when a file in this package mentions `chan`, which is what pulls in the
   // package that implements one.

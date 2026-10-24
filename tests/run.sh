@@ -588,18 +588,27 @@ printf 'package other\n\nfunc Two() int {\n    return 2\n}\n' > "$tmp/mod/site/u
 badmod "but it is imported as 'example.com/site/util'" "module example.com/site
 sword 0.2"
 
-# Two imports that give one name: every use would quietly mean the first.
+# Two imports that give one name: every use would quietly mean the first, so
+# one of them has to be named where it is imported.
 mkdir -p "$tmp/twice/a/util" "$tmp/twice/b/util"
 printf 'package util\n\nfunc One() int {\n    return 1\n}\n' > "$tmp/twice/a/util/util.sword"
 printf 'package util\n\nfunc One() int {\n    return 2\n}\n' > "$tmp/twice/b/util/util.sword"
 printf 'import "a/util"\nimport "b/util"\n\nfunc main() int {\n    return util.One()\n}\n' > "$tmp/twice/main.sword"
 out=$("$shield" "$tmp/twice/main.sword" -o "$tmp/twice/prog" 2>&1)
-if [ $? -eq 0 ] || ! printf '%s\n' "$out" | grep -qF "'a/util' and 'b/util' are both called 'util'"; then
+if [ $? -eq 0 ] || ! printf '%s\n' "$out" | grep -qF "'a/util' and 'b/util' are both called 'util'; give one of them another name"; then
     echo "FAIL two imports called util: want an error"
     printf '%s\n' "$out" | sed 's/^/     /'
     fail=$((fail + 1))
 else
     pass=$((pass + 1))
+fi
+printf 'import "a/util"\nimport other "b/util"\n\nfunc main() int {\n    return util.One() * 10 + other.One()\n}\n' > "$tmp/twice/main.sword"
+if "$shield" "$tmp/twice/main.sword" -o "$tmp/twice/prog" >"$tmp/twice/err" 2>&1 && { "$tmp/twice/prog"; [ $? = 12 ]; }; then
+    pass=$((pass + 1))
+else
+    echo "FAIL two imports called util, one renamed: want 12"
+    sed 's/^/     /' "$tmp/twice/err"
+    fail=$((fail + 1))
 fi
 
 # A program can be tested too: its own main steps aside for the runner's, and
