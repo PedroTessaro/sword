@@ -54,6 +54,12 @@ struct Lowerer {
   };
   std::vector<Thunk> thunks;
 
+  // Every `extern blocking func` called somewhere. Each gets a wrapper with its
+  // own signature, which callers reach instead of the C symbol, and a job the
+  // io pool runs.
+  std::vector<Node *> blocking;
+  std::set<std::string> blocking_names;
+
   // The body of a `parallel for` runs on other workers, so the locals it
   // touches are reached through a block of pointers the loop hands over.
   struct Chunk {
@@ -481,6 +487,101 @@ struct Lowerer {
 
     auto &entry = out.blocks[0].insts;
     entry.insert(entry.begin(), entry_allocas.begin(), entry_allocas.end());
+  }
+
+  // --- blocking calls -----------------------------------------------------
+
+  // The arguments, the answer and errno, in one block on the caller's stack,
+  // which stays put while the task is down.
+  Type *blocking_block(Node *decl) {
+    std::string name = "sword.offload." + decl->name;
+    if (Type *known = types.named(name)) return known;
+    Type *block = types.declare_struct(name);
+    block->is_extern = true;
+    Type *sig = decl->sym->type;
+    std::vector<Field> fields;
+    for (size_t i = 0; i < sig->params.size(); i++)
+      fields.push_back(Field{"a" + std::to_string(i), sig->params[i], 0, 0});
+    fields.push_back(Field{"errno", types.named("i32"), 0, 0});
+    if (sig->ret->kind != TY_VOID) fields.push_back(Field{"ret", sig->ret, 0, 0});
+    types.layout_struct(block, std::move(fields));
+    mod.structs.push_back(block);
+    return block;
+  }
+
+  void start(IrFunc &out) {
+    fn = &out;
+    cur = 0;
+    sret = -1;
+    entry_allocas.clear();
+    loops.clear();
+    scopes.clear();
+    scope_blobs.clear();
+  }
+
+  void finish(IrFunc &out) {
+    auto &entry = out.blocks[0].insts;
+    entry.insert(entry.begin(), entry_allocas.begin(), entry_allocas.end());
+  }
+
+  // What callers call: the same signature as the C function, handing the call
+  // to the io pool and the task down until it is done. errno travels back with
+  // the answer, so os.Errno right after the call means what it says.
+  void emit_blocking_wrapper(Node *decl, IrFunc &out) {
+    start(out);
+    Type *sig = decl->sym->type;
+    Type *block = blocking_block(decl);
+    out.name = decl->name + ".blocking";
+    out.ret = ret = sig->ret;
+    out.params = sig->params;
+    out.is_internal = true;
+    std::vector<int> params;
+    for (Type *p : sig->params) params.push_back(new_value(p));
+    new_block();
+
+    int slot = alloca_slot(block);
+    for (size_t i = 0; i < params.size(); i++)
+      store(params[i], gep_field(slot, block, (int)i), sig->params[i]);
+    call_runtime("sword_offload", {func_address(decl->name + ".job"), slot},
+                 types.named("i64"));
+    int errno_at = (int)sig->params.size();
+    call_runtime("sword_set_errno",
+                 {load(gep_field(slot, block, errno_at), types.named("i32"))},
+                 types.void_ty);
+    if (sig->ret->kind == TY_VOID) emit_ret(-1, nullptr);
+    else emit_ret(load(gep_field(slot, block, errno_at + 1), sig->ret), sig->ret);
+    finish(out);
+  }
+
+  // What the io thread runs: the C call itself. errno is cleared first, so a
+  // function that fails only through errno can be told from one that did not.
+  void emit_blocking_job(Node *decl, IrFunc &out) {
+    start(out);
+    Type *sig = decl->sym->type;
+    Type *block = blocking_block(decl);
+    out.name = decl->name + ".job";
+    out.ret = ret = types.named("i64");
+    out.params.push_back(types.rawptr(types.u8_ty));
+    out.is_internal = true;
+    int argp = new_value(types.rawptr(types.u8_ty));
+    new_block();
+
+    call_runtime("sword_set_errno", {constant(0, types.named("i32"))}, types.void_ty);
+    IrInst in{};
+    in.op = IR_CALL;
+    in.callee = decl->name;
+    in.type = sig->ret;
+    for (size_t i = 0; i < sig->params.size(); i++)
+      in.args.push_back(load(gep_field(argp, block, (int)i), sig->params[i]));
+    if (sig->ret->kind != TY_VOID) in.dst = new_value(sig->ret);
+    emit(in);
+    int errno_at = (int)sig->params.size();
+    store(call_runtime("sword_errno", {}, types.named("i32")),
+          gep_field(argp, block, errno_at), types.named("i32"));
+    if (in.dst >= 0)
+      store(in.dst, gep_field(argp, block, errno_at + 1), sig->ret);
+    emit_ret(constant(0, types.named("i64")), types.named("i64"));
+    finish(out);
   }
 
   // --- captures -----------------------------------------------------------
@@ -1359,6 +1460,11 @@ struct Lowerer {
     in.op = IR_CALL;
     in.callee = n->name.empty() ? n->lhs->name : n->name;
     in.type = n->type;
+    if (n->form == 0 && n->sym && n->sym->decl && n->sym->decl->is_blocking) {
+      if (blocking_names.insert(in.callee).second)
+        blocking.push_back(n->sym->decl);
+      in.callee += ".blocking";
+    }
 
     int result = -1;
     if (is_aggregate(n->type)) {
@@ -2445,5 +2551,11 @@ void lower(Program &prog, TypeTable &types, Mode mode, IrModule &mod) {
   for (const auto &chunk : lowerer.chunks) {
     mod.funcs.emplace_back();
     lowerer.emit_chunk(chunk, mod.funcs.back());
+  }
+  for (Node *decl : lowerer.blocking) {
+    mod.funcs.emplace_back();
+    lowerer.emit_blocking_wrapper(decl, mod.funcs.back());
+    mod.funcs.emplace_back();
+    lowerer.emit_blocking_job(decl, mod.funcs.back());
   }
 }

@@ -1302,14 +1302,27 @@ struct Parser {
       return alias_decl();
 
     bool is_extern = match(TK_EXTERN);
-    // `extern weak "z" func f(...)`. Neither word is reserved: `weak` is only
-    // special between `extern` and what it declares.
-    bool is_weak = false;
+    // `extern weak "z" func f(...)` or `extern blocking "z" func f(...)`, one
+    // or the other: a weak function is called through its value, and a
+    // blocking one only by name. Neither word is reserved; each is special
+    // only straight after `extern`.
+    bool is_weak = false, is_blocking = false;
     std::string library;
-    if (is_extern && kind() == TK_IDENT && peek().text == "weak" &&
-        (kind(1) == TK_STRING || kind(1) == TK_FUNC)) {
-      advance();
-      is_weak = true;
+    auto marked = [&](const char *word) {
+      return is_extern && kind() == TK_IDENT && peek().text == word &&
+             (kind(1) == TK_STRING || kind(1) == TK_FUNC || kind(1) == TK_DET ||
+              (kind(1) == TK_IDENT &&
+               (peek(1).text == "weak" || peek(1).text == "blocking")));
+    };
+    if (marked("weak") || marked("blocking")) {
+      is_weak = advance().text == "weak";
+      is_blocking = !is_weak;
+      if (kind() == TK_IDENT &&
+          (peek().text == "weak" || peek().text == "blocking")) {
+        fail("an extern function is weak or blocking, not both: a weak one is"
+             " called through its value, and a blocking one only by name");
+        return nullptr;
+      }
     }
     if (is_extern && kind() == TK_STRING) library = advance().text;
     // `det func f(...)`: a claim the compiler checks — what this answers is a
@@ -1320,13 +1333,14 @@ struct Parser {
       if (fn) {
         fn->is_det = is_det;
         fn->is_weak = is_weak;
+        fn->is_blocking = is_blocking;
         fn->library = library;
       }
       return fn;
     }
-    if (is_weak || !library.empty()) {
-      fail("a library and 'weak' belong to an extern function; an extern"
-           " struct is only a layout");
+    if (is_weak || is_blocking || !library.empty()) {
+      fail("a library, 'weak' and 'blocking' belong to an extern function; an"
+           " extern struct is only a layout");
       return nullptr;
     }
     if (is_det) {

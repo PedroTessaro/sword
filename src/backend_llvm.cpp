@@ -632,10 +632,14 @@ struct Emitter {
          "declare i64 @sword_chan_select(ptr, ptr, ptr, i64, i32, ptr)"},
         {"sword_mutex_notify_all",
          "declare void @sword_mutex_notify_all(ptr)"},
+        {"sword_offload", "declare i64 @sword_offload(ptr, ptr)"},
+        {"sword_errno", "declare i32 @sword_errno()"},
+        {"sword_set_errno", "declare void @sword_set_errno(i32)"},
     };
     bool any = false;
     for (const auto &entry : runtime) {
-      if (!calls(entry.name)) continue;
+      // std/os declares sword_errno itself, and one declaration is enough.
+      if (!calls(entry.name) || declared.count(entry.name)) continue;
       fprintf(out, "%s\n", entry.decl);
       any = true;
     }

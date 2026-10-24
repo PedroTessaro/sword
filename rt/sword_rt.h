@@ -97,6 +97,9 @@ void sword_sim_refuse(const char *what);
 // errno, read on the thread the caller is on now. Code that may have parked
 // reads it through this rather than directly — see sword_rt.cpp.
 int sword_errno(void);
+// And written, for an `extern blocking` call: the C function ran on an io
+// thread, and its errno is handed back to the thread the task is on now.
+void sword_set_errno(int value);
 // The same for the clock: waits without holding the thread, and answers -1 when
 // there is no task to put down.
 int sword_park_timer(int64_t deadline_ns);
