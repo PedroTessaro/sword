@@ -220,7 +220,7 @@ struct Ast {
   Symbol *make_symbol(const std::string &name, Type *type, bool is_mut,
                       Pos pos) {
     symbols.push_back(Symbol{name, type, is_mut, false, false, nullptr,
-                             nullptr, pos, -1});
+                             nullptr, pos, -1, nullptr, {}});
     return &symbols.back();
   }
 

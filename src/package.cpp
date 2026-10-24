@@ -1,6 +1,7 @@
 #include "package.h"
 
 #include "lexer.h"
+#include "module.h"
 #include "parser.h"
 
 #include <algorithm>
@@ -20,11 +21,6 @@ bool is_directory(const std::string &path) {
 std::string parent_of(const std::string &path) {
   size_t cut = path.find_last_of('/');
   return cut == std::string::npos ? std::string(".") : path.substr(0, cut);
-}
-
-std::string last_segment(const std::string &path) {
-  size_t cut = path.find_last_of('/');
-  return cut == std::string::npos ? path : path.substr(cut + 1);
 }
 
 bool ends_with(const std::string &name, const std::string &suffix) {
@@ -76,6 +72,9 @@ struct Loader {
   LoadMode mode = LOAD_BUILD;
   std::string label; // what the user named on the command line
   std::vector<std::string> only; // the tests asked for by name; empty is all
+  // The module the program belongs to, when it has a sword.mod.
+  Module module;
+  bool in_module = false;
 
   Loader(Program &p, const std::vector<std::string> &s) : prog(p), search(s) {}
 
@@ -186,11 +185,77 @@ struct Loader {
   }
 
   std::string locate(const std::string &import_path) {
+    // The standard library is found where it always was; a module cannot be
+    // named under `std`, so nothing below can shadow it.
+    if (in_module && import_path.compare(0, 4, "std/") != 0) {
+      std::string dir = module.resolve(import_path);
+      if (!dir.empty()) return is_directory(dir) ? dir : "";
+    }
     for (const std::string &root : search) {
       std::string candidate = root + "/" + import_path;
       if (is_directory(candidate)) return candidate;
     }
     return "";
+  }
+
+  static bool identifier(const std::string &name) {
+    if (name.empty() || !(isalpha((unsigned char)name[0]) || name[0] == '_'))
+      return false;
+    for (char c : name)
+      if (!(isalnum((unsigned char)c) || c == '_')) return false;
+    return true;
+  }
+
+  // What importers call a package: the last element of its path, which the
+  // `package` clause has to agree with when there is one. A repository is
+  // often named `sword-sqlite`, which no program could write before a dot, and
+  // then the clause is what names it.
+  bool settle_name(Package &pkg) {
+    Node *said = nullptr;
+    for (Node *decl : pkg.unit->kids) {
+      if (decl->kind != ND_PACKAGE) continue;
+      if (said && said->name != decl->name) {
+        error(decl->name_pos, "this file says package '%s', and another in "
+                              "the same directory says '%s'",
+              decl->name.c_str(), said->name.c_str());
+        note(said->name_pos, "the other is here");
+        return false;
+      }
+      if (!said) said = decl;
+    }
+    if (identifier(pkg.name)) {
+      if (said && said->name != pkg.name) {
+        error(said->name_pos, "this says package '%s', but it is imported as "
+                              "'%s', and that is the name its importers write",
+              said->name.c_str(), pkg.import_path.c_str());
+        return false;
+      }
+      return true;
+    }
+    if (!said) {
+      Pos at = pkg.unit->kids.empty() ? Pos{} : pkg.unit->kids.front()->pos;
+      error(at, "'%s' cannot be written in a program; give the package a name "
+                "with 'package <name>'",
+            pkg.name.c_str());
+      return false;
+    }
+    pkg.name = said->name;
+    return true;
+  }
+
+  // A dependency the module requires but that is not on disk yet: fetching
+  // one is the next step, and until then `replace` is the way to it.
+  void required_note(const std::string &path) {
+    if (!in_module) return;
+    for (const Module::Require &r : module.required) {
+      if (path != r.path && path.compare(0, r.path.size() + 1, r.path + "/") != 0)
+        continue;
+      note(r.at, "it is required here at %s, and this version of shield does "
+                 "not fetch packages yet; 'replace %s => <directory>' uses a "
+                 "copy on disk",
+           r.version.c_str(), r.path.c_str());
+      return;
+    }
   }
 
   // Depth-first, appending each package after its dependencies.
@@ -216,7 +281,7 @@ struct Loader {
     // have the runtime call that instead of the one in libc.
     pkg.prefix = "main.";
     if (!import_path.empty()) {
-      pkg.name = last_segment(import_path);
+      pkg.name = package_name_of(import_path);
       pkg.prefix = import_path + ".";
       for (char &c : pkg.prefix)
         if (c == '/') c = '.';
@@ -229,6 +294,7 @@ struct Loader {
     if ((mode == LOAD_TESTS || mode == LOAD_BENCH) &&
         import_path.empty() && !add_test_main(pkg))
       return nullptr;
+    if (!import_path.empty() && !settle_name(pkg)) return nullptr;
 
     for (const std::string &path : pkg.imports) {
       std::string found_dir = locate(path);
@@ -237,6 +303,7 @@ struct Loader {
         for (Node *decl : pkg.unit->kids)
           if (decl->kind == ND_IMPORT && decl->text == path) at = decl->pos;
         error(at, "cannot find package '%s'", path.c_str());
+        required_note(path);
         return nullptr;
       }
       if (!load(path, found_dir, Pos{})) return nullptr;
@@ -268,6 +335,9 @@ bool load_program(const std::string &input,
   loader.mode = mode;
   loader.label = input;
   loader.only = only;
+  if (!find_module(is_directory(input) ? input : parent_of(input),
+                   loader.module, loader.in_module))
+    return false;
 
   if (is_directory(input)) return loader.load("", input, Pos{}) != nullptr;
 
@@ -290,6 +360,7 @@ bool load_program(const std::string &input,
       for (Node *decl : pkg.unit->kids)
         if (decl->kind == ND_IMPORT && decl->text == path) at = decl->pos;
       error(at, "cannot find package '%s'", path.c_str());
+      loader.required_note(path);
       return false;
     }
     if (!loader.load(path, dir, Pos{})) return false;

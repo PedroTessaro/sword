@@ -516,6 +516,78 @@ else
     pass=$((pass + 1))
 fi
 
+# A module: sword.mod names the tree, its packages are imported under that name,
+# `replace` points a path at a directory, and a /v2 path is the package before it.
+mkdir -p "$tmp/mod/site/util" "$tmp/mod/lib" "$tmp/mod/deep2" "$tmp/mod/sword-term"
+cat > "$tmp/mod/site/sword.mod" <<'EOF'
+// The site, and two packages it works on beside it.
+module example.com/site
+sword 0.2
+
+replace example.com/lib => ../lib
+replace example.com/deep/v2 => ../deep2
+replace example.com/sword-term => ../sword-term
+EOF
+cat > "$tmp/mod/site/main.sword" <<'EOF'
+import "example.com/site/util"
+import "example.com/lib"
+import "example.com/deep/v2"
+import "example.com/sword-term"
+
+func main() int {
+    return util.Two() + lib.Thirty() + deep.Ten() + term.Zero()
+}
+EOF
+printf 'package util\n\nfunc Two() int {\n    return 2\n}\n' > "$tmp/mod/site/util/util.sword"
+printf 'package lib\n\nfunc Thirty() int {\n    return 30\n}\n' > "$tmp/mod/lib/lib.sword"
+printf 'package deep\n\nfunc Ten() int {\n    return 10\n}\n' > "$tmp/mod/deep2/deep.sword"
+# A path no program could write before a dot is named by its package clause.
+printf 'package term\n\nfunc Zero() int {\n    return 0\n}\n' > "$tmp/mod/sword-term/term.sword"
+if ! "$shield" "$tmp/mod/site" -o "$tmp/mod/prog" 2>"$tmp/mod/err"; then
+    echo "FAIL module: did not build"
+    sed 's/^/     /' "$tmp/mod/err"
+    fail=$((fail + 1))
+else
+    "$tmp/mod/prog"
+    got=$?
+    if [ "$got" != 42 ]; then
+        echo "FAIL module: exit $got, want 42"
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+fi
+
+# What a sword.mod may not say, each refused where it is written.
+badmod() { # expected text, then the sword.mod
+    want=$1
+    printf '%s\n' "$2" > "$tmp/mod/site/sword.mod"
+    out=$("$shield" "$tmp/mod/site" -o "$tmp/mod/prog" 2>&1)
+    if [ $? -eq 0 ] || ! printf '%s\n' "$out" | grep -qF "$want"; then
+        echo "FAIL sword.mod: want '$want'"
+        printf '%s\n' "$out" | sed 's/^/     /'
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+}
+badmod "this module needs Sword 9.9" "module example.com/site
+sword 9.9"
+badmod "'1.4' is not a version" "module example.com/site
+require example.com/lib 1.4"
+badmod "required as 'example.com/lib/v2'" "module example.com/site
+require example.com/lib v2.0.1"
+badmod "is not something a sword.mod says" "module example.com/site
+include example.com/lib"
+badmod "a sword.mod starts by naming its module" "sword 0.2"
+badmod "'Example.com/Site' is not a module path" "module Example.com/Site"
+badmod "a module cannot be named under it" "module std/site"
+
+# A package clause has to agree with the name its importers write.
+printf 'package other\n\nfunc Two() int {\n    return 2\n}\n' > "$tmp/mod/site/util/util.sword"
+badmod "but it is imported as 'example.com/site/util'" "module example.com/site
+sword 0.2"
+
 # A program can be tested too: its own main steps aside for the runner's, and
 # the tests still reach everything else it declares (issue #4).
 mkdir -p "$tmp/program"
