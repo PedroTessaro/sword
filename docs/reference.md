@@ -347,6 +347,22 @@ import deep2 "example.com/deep/v2"
 That name holds for the whole package, every file of it, and the package's own
 name no longer reaches it there.
 
+A comment directly above a declaration is its documentation, and one above a
+`package` clause documents the package. `shield doc` prints them beside what
+they describe, as it was written:
+
+```
+shield doc std/http                # everything it exports, a line each
+shield doc std/http.Server         # one type, its fields and its methods
+shield doc std/http.Server.Close   # one method
+shield doc mem.Arena               # a package of std needs no std/
+shield doc .                       # the package here
+```
+
+Fields and methods the package keeps to itself are left out. Inside a module,
+`shield doc` finds the module's packages and its dependencies the way a build
+would, though it never fetches one.
+
 A module is a tree of packages with a `sword.mod` at its root. The compiler finds
 it by looking in the directory being built and every directory above:
 

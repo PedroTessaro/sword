@@ -102,6 +102,12 @@ void clear_overlay(const std::string &path);
 // `main` because it is a library.
 enum LoadMode { LOAD_BUILD, LOAD_TESTS, LOAD_BENCH, LOAD_EDITOR };
 
+// The directory an import path names, found the way a build from `from` would
+// find it — the standard library, the module `from` is in and what it requires,
+// then `search` — except that nothing is fetched. Empty when it is nowhere.
+std::string find_package(const std::string &import_path, const std::string &from,
+                         const std::vector<std::string> &search);
+
 // `input` is a directory (the whole package) or a single .sword file. Parses it
 // and everything it imports, in dependency order. `only` narrows a test build to
 // the tests it names. In a module, what its sword.mod requires is fetched first;

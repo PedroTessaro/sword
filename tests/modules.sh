@@ -266,6 +266,12 @@ func main() int {
 }
 EOF
 
+# shield doc reads a dependency from the cache, the way a build would find it.
+said=$(cd "$tmp/site" && "$shield" doc example.com/lib 2>&1)
+if printf '%s\n' "$said" | grep -qx 'func Forty() int' &&
+    printf '%s\n' "$said" | grep -qx 'package lib // import "example.com/lib"'; then ok
+else bad "shield doc example.com/lib: $said"; fi
+
 # vendor/ is what the build reads, with no network and no cache.
 expect_exit "vendor" 0 vendor
 if [ "$(grep -v '^#' "$tmp/site/vendor/modules.txt" | tr '\n' ,)" = \
