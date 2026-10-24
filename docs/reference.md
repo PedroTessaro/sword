@@ -358,6 +358,13 @@ require github.com/ana/sqlite v1.4.0
 replace example.com/lib => ../lib
 ```
 
+`shield new example.com/site` starts one: a `site` directory with the
+`sword.mod`, a `main.sword` and a test for it, in a git repository of its own
+unless it is made inside one. `shield new --lib example.com/geo` starts a
+library instead, a package with one function and its test; when the last element
+of the path is not a name a program can write, the package's name follows it:
+`shield new --lib example.com/sword-geo geo`.
+
 `module` names the tree, and its packages are imported under that name:
 `example.com/site/util` is the `util` directory beside the `sword.mod`. A module
 path is lower-case letters, digits, `.`, `-` and `_`, in segments joined by `/`,

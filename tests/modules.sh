@@ -1,6 +1,6 @@
 #!/bin/sh
 # Modules that come from somewhere else: fetching what sword.mod requires,
-# choosing versions, sword.sum, shield get and shield vendor. The repositories
+# choosing versions, sword.sum, shield get and shield vendor, and shield new. The repositories
 # are local, and git's own url.<base>.insteadOf points https:// at them, so
 # nothing here touches the network and the compiler has no hook for tests.
 set -u
@@ -292,6 +292,22 @@ mkdir -p "$tmp/other/vendor"
 printf 'module example.com/other\n' > "$tmp/other/sword.mod"
 (cd "$tmp/other" && "$shield" vendor) >"$tmp/out" 2>&1
 if [ $? -ne 0 ] && grep -qF "was not written by shield vendor" "$tmp/out"; then ok; else bad "vendor over somebody's vendor/"; fi
+
+# shield new: a program and a library, each passing its own test.
+mkdir -p "$tmp/new"
+if (cd "$tmp/new" && "$shield" new example.com/hello && cd hello && "$shield" test . &&
+        "$shield" . -o "$tmp/hello" && [ "$("$tmp/hello")" = "hello, world" ] &&
+        grep -qx 'module example.com/hello' sword.mod) >"$tmp/out" 2>&1; then ok
+else bad "shield new example.com/hello"; fi
+if (cd "$tmp/new" && "$shield" new --lib example.com/sword-term term && cd sword-term &&
+        "$shield" test . && grep -qx 'package term' term.sword) >"$tmp/out" 2>&1; then ok
+else bad "shield new --lib example.com/sword-term term"; fi
+(cd "$tmp/new" && "$shield" new --lib example.com/sword-cell) >"$tmp/out" 2>&1
+if [ $? -ne 0 ] && grep -qF "'sword-cell' cannot be written in a program" "$tmp/out" &&
+    [ ! -e "$tmp/new/sword-cell" ]; then ok; else bad "shield new --lib with no name to give"; fi
+(cd "$tmp/new" && "$shield" new example.com/hello) >"$tmp/out" 2>&1
+if [ $? -ne 0 ] && grep -qF "'hello' is already there, and not empty" "$tmp/out"; then ok
+else bad "shield new over a directory with something in it"; fi
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
