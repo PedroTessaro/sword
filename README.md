@@ -141,6 +141,9 @@ TLS comes from OpenSSL, found at build time — `http.ListenTLS` for a server,
 asks its clients for a certificate of their own. A build made on a machine without
 OpenSSL says so (`tls.Available()`) instead of failing to link.
 
+What comes next — packages, speed, smaller machines, and the compiler rewritten
+in Sword — is in the [roadmap](docs/roadmap.md).
+
 ## Contributing
 
 Bug reports, fixes, library code, documentation and editor support are all
