@@ -43,30 +43,6 @@ bool valid_path(const std::string &path) {
   return true;
 }
 
-bool under(const std::string &import_path, const std::string &prefix) {
-  return import_path == prefix ||
-         (import_path.size() > prefix.size() &&
-          import_path.compare(0, prefix.size(), prefix) == 0 &&
-          import_path[prefix.size()] == '/');
-}
-
-// The major version a path carries in its last element, `.../v2`, or 0.
-int path_major(const std::string &path) {
-  size_t cut = path.find_last_of('/');
-  if (cut == std::string::npos || cut + 2 > path.size()) return 0;
-  if (path[cut + 1] != 'v') return 0;
-  int major = 0;
-  for (size_t i = cut + 2; i < path.size(); i++) {
-    if (!isdigit((unsigned char)path[i])) return 0;
-    major = major * 10 + (path[i] - '0');
-  }
-  return major >= 2 ? major : 0;
-}
-
-int version_major(const std::string &version) {
-  return atoi(version.c_str() + 1);
-}
-
 struct Line {
   std::vector<std::string> words;
   std::vector<int> cols;
@@ -123,7 +99,7 @@ bool parse(const std::string &file, const std::string &root, Module &out) {
                      "'.', '-' and '_', in segments joined by '/'",
               line.words[1].c_str());
         ok = false;
-      } else if (under(line.words[1], "std")) {
+      } else if (path_under(line.words[1], "std")) {
         error(at(1), "'std' is the standard library's; a module cannot be "
                      "named under it");
         ok = false;
@@ -217,7 +193,84 @@ bool parse(const std::string &file, const std::string &root, Module &out) {
   return ok;
 }
 
+// Pre-release identifiers, compared the way semantic versioning does: digits
+// as numbers and below anything with a letter, the rest as text.
+int compare_pre(const std::string &a, const std::string &b) {
+  size_t i = 0, j = 0;
+  while (i < a.size() && j < b.size()) {
+    size_t ei = a.find('.', i), ej = b.find('.', j);
+    if (ei == std::string::npos) ei = a.size();
+    if (ej == std::string::npos) ej = b.size();
+    std::string x = a.substr(i, ei - i), y = b.substr(j, ej - j);
+    bool xn = x.find_first_not_of("0123456789") == std::string::npos;
+    bool yn = y.find_first_not_of("0123456789") == std::string::npos;
+    if (xn && yn) {
+      if (x.size() != y.size()) return x.size() < y.size() ? -1 : 1;
+      if (x != y) return x < y ? -1 : 1;
+    } else if (xn != yn) {
+      return xn ? -1 : 1;
+    } else if (x != y) {
+      return x < y ? -1 : 1;
+    }
+    i = ei + 1;
+    j = ej + 1;
+  }
+  bool a_left = i < a.size(), b_left = j < b.size();
+  return a_left == b_left ? 0 : a_left ? 1 : -1;
+}
+
 } // namespace
+
+bool path_under(const std::string &import_path, const std::string &prefix) {
+  return import_path == prefix ||
+         (import_path.size() > prefix.size() &&
+          import_path.compare(0, prefix.size(), prefix) == 0 &&
+          import_path[prefix.size()] == '/');
+}
+
+int path_major(const std::string &path) {
+  size_t cut = path.find_last_of('/');
+  if (cut == std::string::npos || cut + 2 > path.size()) return 0;
+  if (path[cut + 1] != 'v') return 0;
+  int major = 0;
+  for (size_t i = cut + 2; i < path.size(); i++) {
+    if (!isdigit((unsigned char)path[i])) return 0;
+    major = major * 10 + (path[i] - '0');
+  }
+  return major >= 2 ? major : 0;
+}
+
+int version_major(const std::string &version) {
+  return atoi(version.c_str() + 1);
+}
+
+bool major_fits(const std::string &path, const std::string &version) {
+  int major = version_major(version);
+  return path_major(path) ? path_major(path) == major : major < 2;
+}
+
+bool valid_module_path(const std::string &path) { return valid_path(path); }
+
+int compare_versions(const std::string &a, const std::string &b) {
+  long x[3] = {}, y[3] = {};
+  sscanf(a.c_str(), "v%ld.%ld.%ld", &x[0], &x[1], &x[2]);
+  sscanf(b.c_str(), "v%ld.%ld.%ld", &y[0], &y[1], &y[2]);
+  for (int i = 0; i < 3; i++)
+    if (x[i] != y[i]) return x[i] < y[i] ? -1 : 1;
+  size_t pa = a.find('-'), pb = b.find('-');
+  if (pa == std::string::npos || pb == std::string::npos)
+    return pa == pb ? 0 : pa == std::string::npos ? 1 : -1;
+  return compare_pre(a.substr(pa + 1), b.substr(pb + 1));
+}
+
+bool read_module(const std::string &root, Module &out) {
+  std::string file = root + "/sword.mod";
+  if (!is_file(file)) {
+    fprintf(stderr, "shield: '%s' has no sword.mod\n", root.c_str());
+    return false;
+  }
+  return parse(file, root, out);
+}
 
 bool valid_version(const std::string &version) {
   if (version.size() < 6 || version[0] != 'v') return false;
@@ -254,12 +307,12 @@ std::string package_name_of(const std::string &import_path) {
 }
 
 std::string Module::resolve(const std::string &import_path) const {
-  if (!path.empty() && under(import_path, path))
+  if (!path.empty() && path_under(import_path, path))
     return root + import_path.substr(path.size());
   // Only the module being built replaces anything: a dependency redirecting
   // somebody else's code would be a dependency deciding what everybody runs.
   for (const Replace &r : replaces)
-    if (under(import_path, r.path)) return r.dir + import_path.substr(r.path.size());
+    if (path_under(import_path, r.path)) return r.dir + import_path.substr(r.path.size());
   return "";
 }
 

@@ -37,9 +37,32 @@ struct Module {
 // when one was found and could not be read; `found` says whether there was one.
 bool find_module(const std::string &dir, Module &out, bool &found);
 
+// The sword.mod at the root of a dependency, which has to be there.
+bool read_module(const std::string &root, Module &out);
+
 // Whether `version` reads as a version: v1.4.0, or a pseudo-version for a
-// commit with no tag, v0.0.0-20261023-a1b2c3d.
+// commit with no tag, v0.0.0-20261023-a1b2c3d4e5f6.
 bool valid_version(const std::string &version);
+
+// Negative, zero or positive as `a` comes before, is, or comes after `b`, in
+// semantic version order: a pre-release comes before its release, which is
+// what puts a pseudo-version before every tag.
+int compare_versions(const std::string &a, const std::string &b);
+
+// The major version a version string starts with.
+int version_major(const std::string &version);
+
+// The major version a path carries in its last element, `.../v2`, or 0.
+int path_major(const std::string &path);
+
+// Whether a version may be required under `path`: v0 and v1 under a plain
+// path, vN under `.../vN`.
+bool major_fits(const std::string &path, const std::string &version);
+
+bool valid_module_path(const std::string &path);
+
+// Whether `import_path` is `prefix` or a package below it.
+bool path_under(const std::string &import_path, const std::string &prefix);
 
 // The package name an import path gives, which is its last element unless that
 // is a major version (`.../sqlite/v2` is package sqlite).

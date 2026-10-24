@@ -101,8 +101,10 @@ enum LoadMode { LOAD_BUILD, LOAD_TESTS, LOAD_BENCH, LOAD_EDITOR };
 
 // `input` is a directory (the whole package) or a single .sword file. Parses it
 // and everything it imports, in dependency order. `only` narrows a test build to
-// the tests it names.
+// the tests it names. In a module, what its sword.mod requires is fetched first;
+// `locked` refuses to add to sword.sum while doing it.
 bool load_program(const std::string &input,
                   const std::vector<std::string> &search, Program &out,
                   LoadMode mode = LOAD_BUILD,
-                  const std::vector<std::string> &only = {});
+                  const std::vector<std::string> &only = {},
+                  bool locked = false);
