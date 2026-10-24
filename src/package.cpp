@@ -258,6 +258,27 @@ struct Loader {
     }
   }
 
+  // A package is called by its name alone, so two imports that give the same
+  // one would leave the second unreachable, and every use quietly meaning the
+  // first: `example.com/deep` and `example.com/deep/v2` are both `deep`.
+  bool distinct_names(const Package &pkg) {
+    std::unordered_map<std::string, std::string> taken;
+    for (const std::string &path : pkg.imports) {
+      Package *other = prog.by_path[path];
+      if (!other) continue;
+      auto had = taken.emplace(other->name, path);
+      if (had.second || had.first->second == path) continue;
+      Pos at = pkg.unit->kids.empty() ? Pos{} : pkg.unit->kids.front()->pos;
+      for (Node *decl : pkg.unit->kids)
+        if (decl->kind == ND_IMPORT && decl->text == path) at = decl->pos;
+      error(at, "'%s' and '%s' are both called '%s', and a package can import "
+                "only one of them",
+            had.first->second.c_str(), path.c_str(), other->name.c_str());
+      return false;
+    }
+    return true;
+  }
+
   // Depth-first, appending each package after its dependencies.
   Package *load(const std::string &import_path, const std::string &dir,
                 Pos at) {
@@ -308,6 +329,7 @@ struct Loader {
       }
       if (!load(path, found_dir, Pos{})) return nullptr;
     }
+    if (!distinct_names(pkg)) return nullptr;
 
     visiting.pop_back();
     prog.by_path[import_path] = &pkg;
@@ -365,6 +387,7 @@ bool load_program(const std::string &input,
     }
     if (!loader.load(path, dir, Pos{})) return false;
   }
+  if (!loader.distinct_names(pkg)) return false;
 
   out.by_path[""] = &pkg;
   out.order.push_back(&pkg);
